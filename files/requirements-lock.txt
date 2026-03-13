@@ -1,0 +1,9 @@
+# Pinned versions for reproducible builds.
+# Generated from a known-good environment — update via: pip freeze | grep -i ...
+customtkinter==5.2.2
+matplotlib==3.10.8
+numpy==2.4.3
+anthropic==0.84.0
+reportlab==4.4.10
+keyring==25.7.0
+tkinterdnd2==0.4.3

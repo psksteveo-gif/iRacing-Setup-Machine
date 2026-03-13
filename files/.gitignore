@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.spec.bak
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# App config (may contain secrets)
+*.json
+!pyrightconfig.json
+
+# PyInstaller
+*.manifest
+*.log
+
+# Virtual environments
+venv/
+.venv/
+env/
