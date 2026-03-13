@@ -196,6 +196,10 @@ class DrivingStyleAnalyzer:
         else:
             s = steering
 
+        if len(s) < 2:
+            report.steering_reversals = 0
+            return 50.0
+
         sign_changes = np.sum(np.diff(np.sign(s)) != 0)
         per_lap = sign_changes / max(1, len(s) / (60 * 90))
         report.steering_reversals = int(per_lap)

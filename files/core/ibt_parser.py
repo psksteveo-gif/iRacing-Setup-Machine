@@ -108,6 +108,7 @@ class IBTParser:
         for i in range(num_vars):
             offset = var_header_offset + i * 144
             if offset + 144 > len(raw):
+                logger.warning("IBT header truncated: only %d of %d variables fit in file", i, num_vars)
                 break
             var_type = struct.unpack_from('i', raw, offset)[0]
             var_offset = struct.unpack_from('i', raw, offset + 4)[0]
@@ -146,22 +147,68 @@ class IBTParser:
                     continue
             del raw_buf, raw  # Free large buffers before lap derivation
 
-        # Derive lap data from LapDistPct channel
+        # Derive lap data from LapDistPct channel (primary), fallback to SessionTime gaps
         lap_dist = data.get_channel('LapDistPct')
         if lap_dist is not None and len(lap_dist) > 0:
             self._derive_laps(data, lap_dist)
+        else:
+            # Fallback: try LapCurrentLapTime resets, or SessionTime-based heuristic
+            logger.warning("LapDistPct channel missing — using fallback lap detection.")
+            self._derive_laps_fallback(data)
 
         return data
+
+    # LapDistPct must drop by more than this between consecutive samples
+    # to indicate a lap boundary (start/finish line crossing).
+    LAP_RESET_THRESHOLD = 0.5
 
     def _derive_laps(self, data: TelemetryData, lap_dist: np.ndarray):
         """Find lap boundaries from LapDistPct resets."""
         boundaries = [0]
         for i in range(1, len(lap_dist)):
-            if lap_dist[i] < lap_dist[i - 1] - 0.5:
+            if lap_dist[i] < lap_dist[i - 1] - self.LAP_RESET_THRESHOLD:
                 boundaries.append(i)
         boundaries.append(len(lap_dist))
 
         session_time = data.get_channel('SessionTime')
+        lap_times = []
+        for i in range(len(boundaries) - 1):
+            if session_time is not None:
+                t0 = session_time[boundaries[i]]
+                t1 = session_time[boundaries[i + 1] - 1]
+                lap_times.append(t1 - t0)
+            else:
+                samples = boundaries[i + 1] - boundaries[i]
+                lap_times.append(samples / max(data.tick_rate, 1))
+
+        data.lap_boundaries = boundaries
+        data.lap_times = lap_times
+        data.num_laps = len(lap_times)
+
+    def _derive_laps_fallback(self, data: TelemetryData):
+        """Fallback lap detection using LapCurrentLapTime resets or fixed-length splits."""
+        lap_cur = data.get_channel('LapCurrentLapTime')
+        session_time = data.get_channel('SessionTime')
+
+        if lap_cur is not None and len(lap_cur) > 100:
+            # Detect resets in LapCurrentLapTime (drops by > 5 seconds)
+            boundaries = [0]
+            for i in range(1, len(lap_cur)):
+                if lap_cur[i] < lap_cur[i - 1] - 5.0:
+                    boundaries.append(i)
+            boundaries.append(len(lap_cur))
+        elif session_time is not None and len(session_time) > 100:
+            # Last resort: split into ~90-second chunks
+            total_time = session_time[-1] - session_time[0]
+            est_lap = 90.0
+            boundaries = [0]
+            for i in range(1, len(session_time)):
+                if session_time[i] - session_time[boundaries[-1]] >= est_lap:
+                    boundaries.append(i)
+            boundaries.append(len(session_time))
+        else:
+            return
+
         lap_times = []
         for i in range(len(boundaries) - 1):
             if session_time is not None:

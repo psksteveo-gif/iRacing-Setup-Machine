@@ -13,6 +13,18 @@ class TestClassifyCar:
         ("porsche_718_gt4", CarClass.GT4),
         ("porsche_992_cup", CarClass.PORSCHE_CUP),
         ("dallara_p217", CarClass.LMP2),
+        ("acuraarx06gtp", CarClass.GTP),
+        ("cadillacvseriesr", CarClass.GTP),
+        ("formulair04", CarClass.FORMULA),
+        ("dallarasfir23", CarClass.SUPER_FORMULA),
+        ("hyundaitcn", CarClass.TCR),
+        ("fordmustangfrgt3ichallenge", CarClass.GT4),
+        ("crosscartn11", CarClass.RALLY_CROSS),
+        ("dirtlatemodel", CarClass.DIRT_OVAL),
+        ("mx5", CarClass.ROAD_ROOKIE),
+        ("cadillacctsvr", CarClass.SPORTS_CAR),
+        ("supercarsford", CarClass.V8_SUPERCAR),
+        ("corvettec8rgte", CarClass.GTE),
         ("totally_unknown_car", CarClass.DEFAULT),
     ])
     def test_classification(self, name, expected):

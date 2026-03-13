@@ -64,7 +64,7 @@ class TestGetSetupTemplate:
         assert tmpl.front_wing is not None
 
     def test_unknown_car_class_falls_back_to_gt3(self):
-        tmpl = get_setup_template("prototype", "Monza")
+        tmpl = get_setup_template("totally_fake_class", "Monza")
         gt3 = get_setup_template("gt3", "Monza")
         assert tmpl.tire_pressures_psi == gt3.tire_pressures_psi
 
@@ -83,3 +83,38 @@ class TestGetSetupTemplate:
         assert tmpl.camber_deg is not None
         for corner, val in tmpl.camber_deg.items():
             assert val < 0, f"{corner} camber should be negative"
+
+    @pytest.mark.parametrize("car_class", [
+        "gt3", "gt4", "gtp", "gte", "lmp2", "prototype", "formula",
+        "super_formula", "porsche_cup", "tcr", "v8_supercar", "stock",
+        "rally_cross", "dirt_oval", "road_rookie", "sports_car",
+    ])
+    def test_all_car_classes_have_templates(self, car_class):
+        tmpl = get_setup_template(car_class, "Monza")
+        assert isinstance(tmpl, SetupTemplate)
+        assert tmpl.tire_pressures_psi is not None
+
+
+class TestFuzzyTrackMatching:
+    def test_keyword_match(self):
+        info = get_track_info("Road America full")
+        assert info is not None
+        assert "Road America" in info.name
+
+    def test_case_insensitive(self):
+        info = get_track_info("monza")
+        assert info is not None
+        assert info.name == "Monza"
+
+    def test_partial_match(self):
+        info = get_track_info("Silverstone Circuit GP")
+        assert info is not None
+        assert "Silverstone" in info.name
+
+    def test_no_match_returns_none(self):
+        info = get_track_info("totally_nonexistent_track_xyz")
+        assert info is None
+
+    def test_empty_string_returns_none(self):
+        info = get_track_info("")
+        assert info is None

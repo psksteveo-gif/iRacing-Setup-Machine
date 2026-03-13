@@ -97,3 +97,43 @@ class TestIBTParser:
         result = parser._parse_session_yaml(yaml_text)
         # Should not raise; bad floats are silently skipped
         assert isinstance(result, dict)
+
+
+# ── LapDistPct fallback ─────────────────────────────────────────────
+
+class TestLapFallback:
+    def test_fallback_with_lap_current_time(self):
+        """When LapDistPct is missing, _derive_laps_fallback uses LapCurrentLapTime."""
+        data = TelemetryData(tick_rate=60)
+        total = 3 * 5400  # 3 laps at 90s, 60 Hz
+        session_time = np.linspace(0, 270, total)
+        # Simulate LapCurrentLapTime resetting each lap
+        lap_cur = np.concatenate([
+            np.linspace(0, 89.9, 5400),
+            np.linspace(0, 89.9, 5400),
+            np.linspace(0, 89.9, 5400),
+        ])
+        data.set_channel('SessionTime', session_time)
+        data.set_channel('LapCurrentLapTime', lap_cur)
+
+        parser = IBTParser.__new__(IBTParser)
+        parser._derive_laps_fallback(data)
+        assert data.num_laps >= 2
+
+    def test_fallback_with_session_time_only(self):
+        """When both LapDistPct and LapCurrentLapTime are missing, use fixed splits."""
+        data = TelemetryData(tick_rate=60)
+        total = 5 * 5400
+        session_time = np.linspace(0, 450, total)
+        data.set_channel('SessionTime', session_time)
+
+        parser = IBTParser.__new__(IBTParser)
+        parser._derive_laps_fallback(data)
+        assert data.num_laps >= 3
+
+    def test_fallback_no_channels_does_nothing(self):
+        """With no channels at all, fallback silently does nothing."""
+        data = TelemetryData()
+        parser = IBTParser.__new__(IBTParser)
+        parser._derive_laps_fallback(data)
+        assert data.num_laps == 0

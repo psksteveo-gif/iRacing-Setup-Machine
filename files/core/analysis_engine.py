@@ -148,15 +148,27 @@ class AnalysisEngine:
         self._analyze_grip(data, report)
         self._analyze_suspension(data, report)
         self._analyze_shifts(data, report)
+        self._analyze_weather(data, report)
+        self._analyze_wind(data, report)
 
         return report
 
+    def _is_wet(self) -> bool:
+        """Return True if the session has wet/rain conditions."""
+        weather = str(self._session_info.get('weather_type', '')).lower()
+        skies = str(self._session_info.get('skies', '')).lower()
+        return any(w in weather or w in skies for w in ('rain', 'wet', 'storm', 'drizzle'))
+
     def _tire_overheat_threshold(self) -> float:
-        """Return the overheat temperature threshold, adjusted for ambient conditions."""
+        """Return the overheat temperature threshold, adjusted for ambient and weather."""
         air_temp = self._session_info.get('air_temp_c')
+        base = TIRE_OVERHEAT_BASE_C
         if air_temp is not None:
-            return TIRE_OVERHEAT_BASE_C + TIRE_OVERHEAT_SCALE * (air_temp - 25.0)
-        return TIRE_OVERHEAT_BASE_C
+            base = TIRE_OVERHEAT_BASE_C + TIRE_OVERHEAT_SCALE * (air_temp - 25.0)
+        # Wet conditions cool tires significantly
+        if self._is_wet():
+            base -= 15.0
+        return base
 
     def _pressure_suggestion(self) -> str:
         """Return ambient-aware cold pressure advice."""
@@ -502,3 +514,49 @@ class AnalysisEngine:
             if i == len(lap_times) - 1 and t > median * WARMUP_INLAP_FACTOR:
                 mask[i] = False
         return mask
+
+    def _analyze_weather(self, data: TelemetryData, report: AnalysisReport):
+        """Generate weather-specific findings and recommendations."""
+        if self._is_wet():
+            report.add_issue(Severity.WARNING, Category.GENERAL,
+                "Wet Conditions Detected",
+                "Session is running in rain/wet conditions. Tire behaviour changes significantly.",
+                "Lower tire pressures by 1-2 psi. Reduce camber slightly. "
+                "Increase traction control if available. Brake earlier and lighter.")
+            report.add_issue(Severity.INFO, Category.TIRES,
+                "Wet Tire Temperature Note",
+                "Tires stay cooler in the wet — overheat thresholds have been lowered.",
+                "Expect lower overall grip. Focus on smooth inputs to manage aquaplaning.")
+
+        # Day/night temperature note
+        air_temp = self._session_info.get('air_temp_c')
+        track_temp = self._session_info.get('track_temp_c')
+        if air_temp is not None and track_temp is not None:
+            delta = track_temp - air_temp
+            if delta < 2.0 and air_temp < 20:
+                report.add_issue(Severity.INFO, Category.TIRES,
+                    "Cool Track / Night Conditions",
+                    f"Track temp ({track_temp:.0f}°C) is close to air temp ({air_temp:.0f}°C) — "
+                    "suggests evening/night or overcast conditions.",
+                    "Raise cold pressures by 0.5-1.0 psi. Tires will take longer to reach window.")
+
+    def _analyze_wind(self, data: TelemetryData, report: AnalysisReport):
+        """Generate wind-related findings when significant wind is present."""
+        wind_speed = self._session_info.get('wind_speed_ms')
+        wind_dir = self._session_info.get('wind_direction_deg')
+        if wind_speed is None or wind_speed < 3.0:
+            return
+
+        desc = f"Wind: {wind_speed:.1f} m/s"
+        if wind_dir is not None:
+            compass = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
+            idx = int((wind_dir + 22.5) % 360 / 45)
+            desc += f" from {compass[idx]} ({wind_dir:.0f}°)"
+
+        severity = Severity.WARNING if wind_speed > 8.0 else Severity.INFO
+        report.add_issue(severity, Category.AERO,
+            "Significant Wind",
+            f"{desc}. This affects straight-line speed and aero balance.",
+            "Expect speed variation on straights depending on direction. "
+            "Add rear wing if experiencing high-speed instability. "
+            "Headwind on long straights costs more time than tailwind gains.")

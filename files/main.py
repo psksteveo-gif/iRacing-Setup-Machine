@@ -54,179 +54,42 @@ from core.advanced_analysis   import (SectorAnalyzer, SectorAnalysisReport,
                                        HistoryTracker,
                                        FuelStrategyAnalyzer, FuelStrategyReport)
 from core.driving_style       import DrivingStyleAnalyzer, DriverStyleReport
+from core.corner_analysis     import CornerAnalyzer, CornerAnalysisReport, LapDeltaAnalyzer
+from core.consistency_score   import compute_consistency, ConsistencyBreakdown
+from core.tire_wear_prediction import predict_tire_wear, TireWearPrediction
+from core.track_zones         import classify_zones
 from core.setup_parser        import SetupParser, SetupExporter, SetupDiffer, ParsedSetup, create_demo_setup
 from core.ai_advisor          import get_ai_recommendations_sync, get_ai_recommendations_stream
 from data.templates.track_templates import get_setup_template, get_track_info, list_tracks
+from core.lap_overlay         import extract_lap_trace, compare_laps
+from core.brake_analysis      import analyze_braking, BrakeAnalysisReport
+from core.session_aggregator  import aggregate_sessions, AggregationReport
+from core.stint_strategy      import calculate_strategy, StrategyReport
+from core.file_watcher        import FileWatcher
+from core.setup_impact        import predict_impact, get_available_parameters, ImpactReport
+from core.racing_line         import reconstruct_racing_line, speed_colormap
+from core.gg_diagram          import analyze_gg_per_corner, GGReport
+from core.share_export        import build_share_summary, export_json, export_clipboard_text
 
 # ── Theme ─────────────────────────────────────────────────────────────────────
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
-DARK="#1a1a2e"; PANEL="#16213e"; CARD="#0f3460"
-ACCENT="#e94560"; BLUE="#00b4d8"; TEXT="#eaeaea"
-DIM="#8a8fa3"; GREEN="#2ecc71"; YELLOW="#f39c12"
-RED="#e74c3c"; PURPLE="#9b59b6"
-SEV_COLOR={Severity.CRITICAL:RED,Severity.WARNING:YELLOW,Severity.INFO:BLUE}
+
+from ui.theme import (DARK, PANEL, CARD, ACCENT, BLUE, TEXT, DIM, GREEN, YELLOW,
+                      RED, PURPLE, SEV_COLOR, lbl, card_frame, sec_lbl, stat_blk,
+                      _Tooltip, EmbedChart, IssueCard)
+from ui.tab_telemetry import TelemetryTabMixin
+from ui.tab_corners import CornersTabMixin
+from ui.tab_stint import StintTabMixin
+from core.config import (get_api_key as _get_api_key, set_api_key as _set_api_key,
+                          load_cfg, save_cfg)
+
 MAX_SESSIONS = 20  # LRU eviction when exceeded
-CONFIG_FILE=os.path.expanduser("~/.iracing_setup_advisor.json")
-_KEYRING_SERVICE = "iracing_setup_advisor"
-_KEYRING_USER = "anthropic_api_key"
 
-def _get_api_key() -> str:
-    """Retrieve API key from OS credential store, falling back to config file."""
-    try:
-        import keyring
-        key = keyring.get_password(_KEYRING_SERVICE, _KEYRING_USER)
-        if key:
-            return key
-    except Exception:
-        pass
-    # Fallback: read from legacy config (for migration)
-    cfg = load_cfg()
-    return cfg.get("api_key", "")
-
-def _set_api_key(key: str):
-    """Store API key in OS credential store. Never stores in plaintext."""
-    try:
-        import keyring
-        if key:
-            keyring.set_password(_KEYRING_SERVICE, _KEYRING_USER, key)
-        else:
-            try:
-                keyring.delete_password(_KEYRING_SERVICE, _KEYRING_USER)
-            except Exception:
-                pass
-    except ImportError:
-        logger.warning("keyring package not available — API key will NOT be saved.")
-        messagebox.showwarning("Security Warning",
-            "The 'keyring' package is not installed.\n"
-            "Your API key will only be used for this session and NOT saved.\n\n"
-            "Install it with: pip install keyring")
-    except Exception as e:
-        logger.warning("Failed to store API key in keyring: %s", e)
-
-def load_cfg():
-    try:
-        if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, "r") as f:
-                cfg = json.load(f)
-            # Migrate plaintext API key to keyring if present
-            if cfg.get("api_key"):
-                try:
-                    import keyring
-                    keyring.set_password(_KEYRING_SERVICE, _KEYRING_USER, cfg["api_key"])
-                    cfg.pop("api_key", None)
-                    save_cfg(cfg)
-                except Exception:
-                    pass
-            else:
-                cfg.pop("api_key", None)
-            return cfg
-    except (json.JSONDecodeError, IOError, OSError) as e:
-        logger.warning("Could not load config: %s", e)
-    return {"last_dir":""}
-
-def save_cfg(c):
-    try:
-        # Never persist API key to JSON — it goes in keyring only
-        to_save = {k: v for k, v in c.items() if k != "api_key"}
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(to_save, f)
-    except (IOError, OSError) as e:
-        logger.warning("Could not save config: %s", e)
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def lbl(parent,text,size=11,bold=False,color=TEXT,**kw):
-    return ctk.CTkLabel(parent,text=text,
-        font=ctk.CTkFont(size=size,weight="bold" if bold else "normal"),
-        text_color=color,**kw)
-
-def card_frame(parent,**kw):
-    return ctk.CTkFrame(parent,fg_color=CARD,corner_radius=8,**kw)
-
-def sec_lbl(parent,text):
-    lbl(parent,text,12,bold=True,color=BLUE).pack(anchor='w',pady=(10,2))
-
-def stat_blk(parent,label_text,val,color=TEXT,tooltip=None):
-    f=ctk.CTkFrame(parent,fg_color="transparent"); f.pack(side='left',padx=10)
-    l=lbl(f,label_text,9,color=DIM); l.pack()
-    v=lbl(f,val,13,bold=True,color=color); v.pack()
-    if tooltip:
-        _Tooltip(f, tooltip)
-    return f
-
-class _Tooltip:
-    """Simple hover tooltip for any widget."""
-    def __init__(self, widget, text):
-        self.widget = widget
-        self.text = text
-        self.tw = None
-        widget.bind("<Enter>", self._show)
-        widget.bind("<Leave>", self._hide)
-    def _show(self, event=None):
-        x = self.widget.winfo_rootx() + 20
-        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
-        self.tw = tw = ctk.CTkToplevel(self.widget)
-        tw.wm_overrideredirect(True)
-        tw.configure(fg_color="#2a3050")
-        lbl(tw, self.text, 9, color=TEXT).pack(padx=8, pady=4)
-        tw.update_idletasks()
-        # Clamp to screen bounds
-        sw = tw.winfo_screenwidth()
-        sh = tw.winfo_screenheight()
-        tw_w = tw.winfo_reqwidth()
-        tw_h = tw.winfo_reqheight()
-        if x + tw_w > sw:
-            x = sw - tw_w - 4
-        if y + tw_h > sh:
-            y = self.widget.winfo_rooty() - tw_h - 4
-        tw.wm_geometry(f"+{x}+{y}")
-    def _hide(self, event=None):
-        if self.tw:
-            self.tw.destroy()
-            self.tw = None
-
-class EmbedChart(ctk.CTkFrame):
-    def __init__(self,parent,figsize=(9,3),**kw):
-        super().__init__(parent,fg_color=PANEL,**kw)
-        self.fig=Figure(figsize=figsize,facecolor=PANEL)
-        self.canvas=FigureCanvasTkAgg(self.fig,master=self)
-        self.canvas.get_tk_widget().pack(fill='both',expand=True)
-    def clear(self): self.fig.clear()
-    def draw(self): self.canvas.draw()
-    def destroy(self):
-        plt.close(self.fig)
-        super().destroy()
-    def std_ax(self,title="",xlabel="Track %"):
-        ax=self.fig.add_subplot(111,facecolor='#0d1b2a')
-        ax.set_title(title,color=TEXT,fontsize=11,pad=6)
-        ax.tick_params(colors=DIM,labelsize=8)
-        for sp in ax.spines.values(): sp.set_color('#2a3050')
-        ax.spines['top'].set_visible(False); ax.spines['right'].set_visible(False)
-        ax.set_xlabel(xlabel,color=DIM,fontsize=9)
-        ax.grid(True,alpha=0.1,color='#3a4a6a')
-        return ax
-
-class IssueCard(ctk.CTkFrame):
-    def __init__(self,parent,issue,**kw):
-        super().__init__(parent,fg_color="#1e2845",corner_radius=6,**kw)
-        c=SEV_COLOR[issue.severity]
-        icon={"critical":"🔴","warning":"🟡","info":"🔵"}[issue.severity.value]
-        hdr=ctk.CTkFrame(self,fg_color="transparent",cursor="hand2"); hdr.pack(fill='x',padx=8,pady=5)
-        lbl(hdr,f"{icon}  {issue.title}",12,bold=True,color=c,anchor='w').pack(side='left',fill='x',expand=True)
-        ctk.CTkLabel(hdr,text=issue.category.value,font=ctk.CTkFont(size=9),
-            text_color=DIM,fg_color="#2a3050",corner_radius=4).pack(side='right',padx=4)
-        self._d=ctk.CTkFrame(self,fg_color="transparent")
-        lbl(self._d,issue.description,11,color=DIM,wraplength=520,justify='left',anchor='w').pack(fill='x',padx=8,pady=(0,3))
-        lbl(self._d,f"💡 {issue.recommendation}",11,color=BLUE,wraplength=520,justify='left',anchor='w').pack(fill='x',padx=8,pady=(0,6))
-        self._open=False
-        for w in [hdr]+list(hdr.winfo_children()): w.bind("<Button-1>",self._toggle)
-    def _toggle(self,_=None):
-        self._open=not self._open
-        (self._d.pack(fill='x') if self._open else self._d.pack_forget())
+# ── Helpers (imported from ui.theme) ──────────────────────────────────────────
 
 # ══════════════════════════════════════════════════════════════════════════════
-class App(ctk.CTk):
+class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title(f"{APP_NAME}  v{VERSION}")
@@ -269,6 +132,7 @@ class App(ctk.CTk):
         self._loading = False
         self._batch_queue: list[str] = []
         self._batch_total = 0
+        self._file_watcher: FileWatcher | None = None
         self._build()
         self._bind_shortcuts()
         # Restore last active tab/chart
@@ -286,6 +150,8 @@ class App(ctk.CTk):
             if not messagebox.askyesno("Confirm Exit",
                     "A telemetry file is still loading.\nExit anyway?"):
                 return
+        if self._file_watcher and self._file_watcher.is_running:
+            self._file_watcher.stop()
         try:
             self.cfg['geometry'] = self.geometry()
             self.cfg['last_tab'] = self.tv.get()
@@ -303,6 +169,16 @@ class App(ctk.CTk):
         self.bind_all('<Control-p>', lambda e: self._export_pdf())
         self.bind_all('<Control-q>', lambda e: self._on_close())
         self.bind_all('<Control-b>', lambda e: self._batch_load())
+        self.bind_all('<Control-s>', lambda e: self._share_export())
+        # Tab navigation: Ctrl+1 through Ctrl+9 for first 9 tabs
+        tabs = ["Dashboard","Telemetry","Issues","Driver","Sectors","Corners",
+                "Stint & Tires","Lap Times","Setup Files"]
+        for i, tab in enumerate(tabs):
+            self.bind_all(f'<Control-Key-{i+1}>', lambda e, t=tab: self.tv.set(t))
+        # F5 = reload/refresh current tab
+        self.bind_all('<F5>', lambda e: self._refresh())
+        # Ctrl+W = toggle file watcher
+        self.bind_all('<Control-w>', lambda e: self._toggle_file_watcher())
 
     # ── LAYOUT ────────────────────────────────────────────────────────────────
     def _build(self):
@@ -317,6 +193,8 @@ class App(ctk.CTk):
         self._load_btns = []
         for t,cmd,bg in [("⚙ Settings",self._settings,"transparent"),
                           ("❓ About",self._about,"transparent"),
+                          ("👁 Watch",self._toggle_file_watcher,"transparent"),
+                          ("📤 Share",self._share_export,CARD),
                           ("Load Demo",self._load_demo,CARD),
                           ("📂 Load IBT",self._load_ibt,ACCENT)]:
             btn=ctk.CTkButton(hdr,text=t,width=110,height=30,fg_color=bg,
@@ -401,14 +279,29 @@ class App(ctk.CTk):
             segmented_button_selected_hover_color="#c0392b",
             segmented_button_unselected_hover_color="#2a3050")
         self.tv.pack(fill='both',expand=True,padx=6,pady=6)
-        tabs=["Dashboard","Telemetry","Issues","Driver","Sectors",
-              "Stint & Tires","Lap Times","Setup Files","AI Advisor","Templates","History","Compare"]
+        tabs=["Dashboard","Telemetry","Issues","Driver","Sectors","Corners",
+              "Stint & Tires","Lap Times","Brake Trace","Strategy","Trends",
+              "Impact","Setup Files","AI Advisor","Templates","History","Compare"]
         for t in tabs: self.tv.add(t)
         self.tv.configure(command=self._on_tab_change)
-        self._t_dashboard(); self._t_telemetry(); self._t_issues()
-        self._t_driver(); self._t_sectors(); self._t_stint()
-        self._t_laptimes(); self._t_setup(); self._t_ai()
-        self._t_templates(); self._t_history(); self._t_compare()
+        # Lazy tab loading: only build Dashboard + Telemetry on startup.
+        # Other tabs are built on first visit.
+        self._built_tabs: set[str] = set()
+        self._tab_builders = {
+            "Dashboard": self._t_dashboard, "Telemetry": self._t_telemetry,
+            "Issues": self._t_issues, "Driver": self._t_driver,
+            "Sectors": self._t_sectors, "Corners": self._t_corners,
+            "Stint & Tires": self._t_stint, "Lap Times": self._t_laptimes,
+            "Brake Trace": self._t_brake_trace, "Strategy": self._t_strategy,
+            "Trends": self._t_trends, "Impact": self._t_impact,
+            "Setup Files": self._t_setup, "AI Advisor": self._t_ai,
+            "Templates": self._t_templates, "History": self._t_history,
+            "Compare": self._t_compare,
+        }
+        # Build the two most-used tabs immediately
+        for name in ("Dashboard", "Telemetry"):
+            self._tab_builders[name]()
+            self._built_tabs.add(name)
 
     # ══════════════════════════════════════════════════════════════════════════
     # DASHBOARD
@@ -447,6 +340,12 @@ class App(ctk.CTk):
         stat_blk(sr,"Best Lap",format_laptime(r.best_lap),GREEN,tooltip="Fastest valid lap time in session")
         stat_blk(sr,"Avg Lap",format_laptime(r.avg_lap),tooltip="Average of all valid (non-outlier) laps")
         stat_blk(sr,"Laps",str(d.num_laps),tooltip="Total laps completed in session")
+        # Consistency Score (headline metric)
+        cs = self._compute_consistency_score()
+        if cs:
+            sc_color = GREEN if cs.overall >= 85 else YELLOW if cs.overall >= 70 else RED
+            stat_blk(sr, "Consistency", f"{cs.overall:.0f}  {cs.grade}", sc_color,
+                     tooltip=f"Composite consistency rating: lap times ({cs.lap_time_score:.0f}), sectors ({cs.sector_score:.0f}), corners ({cs.corner_score:.0f}), brakes ({cs.brake_point_score:.0f}), speed ({cs.speed_score:.0f})")
         at=d.session_info.get('air_temp_c')
         tt=d.session_info.get('track_temp_c')
         if at: stat_blk(sr,"Air Temp",f"{at:.1f}°C",tooltip="Ambient air temperature")
@@ -480,6 +379,9 @@ class App(ctk.CTk):
         for w in self._dif.winfo_children(): w.destroy()
         lbl(self._dif,"Top Issues",13,bold=True).pack(anchor='w',pady=(4,4))
         for iss in r.issues[:3]: IssueCard(self._dif,iss).pack(fill='x',pady=2)
+        # Consistency breakdown card
+        if cs and cs.overall > 0:
+            self._draw_consistency_card(cs)
 
     def _draw_balance(self,score):
         c=self._dc; c.clear()
@@ -522,385 +424,55 @@ class App(ctk.CTk):
             ax.text(cx,cy-0.18,f"avg {t.get('avg',0):.1f}°C",ha='center',fontsize=8,color=DIM)
         c.fig.tight_layout(pad=0.3); c.draw()
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # TELEMETRY
-    # ══════════════════════════════════════════════════════════════════════════
-    CDEFS={
-        "Speed + Throttle + Brake":(['Speed','Throttle','Brake'],['Speed m/s','Throttle','Brake'],[BLUE,GREEN,RED]),
-        "Tire Temps (Front)":(['LFtempCL','LFtempCM','LFtempCR','RFtempCL','RFtempCM','RFtempCR'],
-                              ['LF-In','LF-Mid','LF-Out','RF-In','RF-Mid','RF-Out'],
-                              ['#3498db','#2980b9','#1a5276','#e74c3c','#c0392b','#922b21']),
-        "Tire Temps (Rear)":(['LRtempCL','LRtempCM','LRtempCR','RRtempCL','RRtempCM','RRtempCR'],
-                             ['LR-In','LR-Mid','LR-Out','RR-In','RR-Mid','RR-Out'],
-                             ['#1abc9c','#16a085','#0e6655','#f39c12','#d68910','#9a7d0a']),
-        "Suspension Travel":(['LFshockDefl','RFshockDefl','LRshockDefl','RRshockDefl'],['LF','RF','LR','RR'],[BLUE,RED,GREEN,YELLOW]),
-        "G-Forces":(['LatAccel','LongAccel'],['Lateral G','Long G'],[ACCENT,BLUE]),
-        "G-G Diagram (Friction Circle)":None,  # special scatter renderer
-        "Tire Pressures":(['LFpress','RFpress','LRpress','RRpress'],['LF','RF','LR','RR'],[BLUE,RED,GREEN,YELLOW]),
-        "RPM + Gear":(['RPM','Gear'],['RPM','Gear'],[BLUE,YELLOW]),
-        "Lap Overlay — Speed":None,   # per-lap overlay
-        "Lap Overlay — Throttle/Brake":None,
-        "Track Map — Speed":None,       # 2D track map colored by speed
-        "Track Map — Braking":None,      # 2D track map colored by brake
-    }
-    _OVERLAY_CHANNELS = {
-        "Lap Overlay — Speed": ('Speed', 'Speed (m/s)'),
-        "Lap Overlay — Throttle/Brake": (None, ''),  # special: two channels
-    }
+    def _compute_consistency_score(self) -> ConsistencyBreakdown | None:
+        """Compute and cache the consistency score for the current session."""
+        d, r = self.cur_data, self.cur_rpt
+        if not d or not r or not r.lap_times:
+            return None
+        return compute_consistency(
+            lap_times=r.lap_times,
+            valid_mask=r.valid_lap_mask,
+            sector_report=self.cur_sec,
+            corner_report=getattr(self, 'cur_corner_report', None),
+            style_report=self.cur_style,
+        )
 
-    def _t_telemetry(self):
-        tab=self.tv.tab("Telemetry"); tab.configure(fg_color=DARK)
-        self._ph_telem=lbl(tab,"Load a session to view telemetry charts.",14,color=DIM)
-        self._ph_telem.pack(pady=40)
-        ctrl=ctk.CTkFrame(tab,fg_color=PANEL,height=46,corner_radius=8)
-        ctrl.pack(fill='x',padx=10,pady=(8,4)); ctrl.pack_propagate(False)
-        lbl(ctrl,"Chart:",color=DIM).pack(side='left',padx=10)
-        self._tv=ctk.StringVar(value="Speed + Throttle + Brake")
-        ctk.CTkOptionMenu(ctrl,values=list(self.CDEFS.keys()),variable=self._tv,
-            fg_color=CARD,button_color=ACCENT,command=self._redraw_telem).pack(side='left',padx=8)
-        # Lap selector for overlay modes
-        lbl(ctrl,"Laps:",color=DIM).pack(side='left',padx=(16,4))
-        self._lap_checks:list[ctk.CTkCheckBox]=[]
-        self._lap_frame=ctk.CTkFrame(ctrl,fg_color="transparent")
-        self._lap_frame.pack(side='left',padx=4)
-        # Replay controls
-        replay=ctk.CTkFrame(tab,fg_color=PANEL,height=36,corner_radius=8)
-        replay.pack(fill='x',padx=10,pady=(0,2)); replay.pack_propagate(False)
-        self._rp_btn=ctk.CTkButton(replay,text="▶ Play",width=70,height=26,fg_color=CARD,
-            hover_color="#1a5a8a",command=self._toggle_replay)
-        self._rp_btn.pack(side='left',padx=8)
-        self._rp_spd=ctk.StringVar(value="1×")
-        ctk.CTkOptionMenu(replay,values=["0.5×","1×","2×","4×"],variable=self._rp_spd,
-            fg_color=CARD,button_color=ACCENT,width=60).pack(side='left',padx=4)
-        self._rp_slider=ctk.CTkSlider(replay,from_=0,to=100,number_of_steps=500,
-            fg_color=CARD,progress_color=ACCENT,button_color=BLUE,
-            command=self._seek_replay)
-        self._rp_slider.pack(side='left',fill='x',expand=True,padx=8)
-        self._rp_slider.set(0)
-        self._rp_lbl=lbl(replay,"",10,color=DIM)
-        self._rp_lbl.pack(side='right',padx=8)
-        self._rp_playing=False
-        self._rp_pos=0  # current position (0-1 fraction of lap)
-        self._rp_line=None  # matplotlib vertical line
-        self._rp_last_tick=0.0
-        self._tc=EmbedChart(tab,figsize=(10,4)); self._tc.pack(fill='both',expand=True,padx=10,pady=(4,8))
-
-    def _rebuild_lap_checks(self):
-        """Populate lap checkboxes when data changes."""
-        for w in self._lap_frame.winfo_children(): w.destroy()
-        self._lap_checks = []
-        if not self.cur_data:
-            return
-        num = min(self.cur_data.num_laps, 20)  # cap for UI space
-        for i in range(num):
-            var = ctk.BooleanVar(value=(i == 0))  # first lap checked by default
-            cb = ctk.CTkCheckBox(self._lap_frame, text=str(i+1), variable=var,
-                width=40, height=22, checkbox_width=16, checkbox_height=16,
-                font=ctk.CTkFont(size=9), command=self._redraw_telem)
-            cb.pack(side='left', padx=1)
-            cb._var = var  # keep reference
-            self._lap_checks.append(cb)
-
-    def _get_selected_laps(self) -> list[int]:
-        """Return 0-based indices of checked laps."""
-        return [i for i, cb in enumerate(self._lap_checks) if cb._var.get()]
-
-    def _redraw_telem(self,sel=None):
-        sel=sel or self._tv.get()
-        if not self.cur_data: return
-        try: self._ph_telem.pack_forget()
-        except Exception: pass
-
-        # Special: G-G Diagram scatter plot
-        if sel == "G-G Diagram (Friction Circle)":
-            self._draw_gg_diagram()
-            return
-
-        # Special: Lap overlay modes
-        if sel in self._OVERLAY_CHANNELS:
-            self._draw_lap_overlay(sel)
-            return
-
-        # Special: Track map
-        if sel.startswith("Track Map"):
-            self._draw_track_map(sel)
-            return
-
-        chs,labs,cols=self.CDEFS[sel]
-        c=self._tc; c.clear(); ax=c.std_ax(sel)
-        ld=self.cur_data.get_channel('LapDistPct')
-        x=ld*100 if ld is not None else None
-        for ch,lab,col in zip(chs,labs,cols):
-            arr=self.cur_data.get_channel(ch)
-            if arr is None: continue
-            step=max(1,len(arr)//DOWNSAMPLE_CHART)
-            xd=x[::step] if x is not None else np.arange(len(arr[::step]))
-            ax.plot(xd,arr[::step],label=lab,color=col,lw=1.2,alpha=0.9)
-        ax.legend(loc='upper right',fontsize=8,facecolor='#1e2845',edgecolor='#2a3050',labelcolor=TEXT)
-        c.fig.tight_layout(pad=1.0); c.draw()
-
-    def _draw_lap_overlay(self, sel: str):
-        """Overlay per-lap telemetry traces on the same axes."""
-        d = self.cur_data
-        if not d or d.num_laps < 1:
-            return
-        laps = self._get_selected_laps()
-        if not laps:
-            laps = list(range(min(d.num_laps, 5)))  # default: first 5
-
-        c = self._tc; c.clear()
-        palette = ['#e94560','#00b4d8','#2ecc71','#f39c12','#9b59b6',
-                   '#e74c3c','#1abc9c','#3498db','#d35400','#8e44ad',
-                   '#27ae60','#c0392b','#16a085','#2980b9','#f1c40f',
-                   '#e67e22','#2c3e50','#7f8c8d','#1a5276','#922b21']
-
-        lap_dist = d.get_channel('LapDistPct')
-
-        if sel == "Lap Overlay — Throttle/Brake":
-            ax = c.std_ax("Lap Overlay — Throttle & Brake")
-            for idx, li in enumerate(laps):
-                if li >= d.num_laps:
-                    continue
-                s, e = d.lap_boundaries[li], d.lap_boundaries[li + 1]
-                x = lap_dist[s:e] * 100 if lap_dist is not None else np.linspace(0, 100, e - s)
-                col = palette[idx % len(palette)]
-                thr = d.get_channel('Throttle')
-                brk = d.get_channel('Brake')
-                step = max(1, (e - s) // DOWNSAMPLE_LAP)
-                if thr is not None:
-                    ax.plot(x[::step], thr[s:e][::step], color=col, lw=1.2, alpha=0.8, label=f'L{li+1} Thr')
-                if brk is not None:
-                    ax.plot(x[::step], -brk[s:e][::step], color=col, lw=0.8, alpha=0.5, ls='--')
-            ax.set_ylabel("Throttle / -Brake", color=DIM, fontsize=9)
-            ax.legend(fontsize=7, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT, ncol=2, loc='upper right')
-        else:
-            ch_name, ylabel = self._OVERLAY_CHANNELS[sel]
-            ax = c.std_ax(sel)
-            arr = d.get_channel(ch_name)
-            if arr is None:
-                c.draw()
-                return
-            for idx, li in enumerate(laps):
-                if li >= d.num_laps:
-                    continue
-                s, e = d.lap_boundaries[li], d.lap_boundaries[li + 1]
-                x = lap_dist[s:e] * 100 if lap_dist is not None else np.linspace(0, 100, e - s)
-                col = palette[idx % len(palette)]
-                step = max(1, (e - s) // DOWNSAMPLE_LAP)
-                ax.plot(x[::step], arr[s:e][::step], color=col, lw=1.2, alpha=0.85, label=f'Lap {li+1}')
-            ax.set_ylabel(ylabel, color=DIM, fontsize=9)
-            ax.legend(fontsize=7, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT, ncol=2, loc='upper right')
-
-        c.fig.tight_layout(pad=1.0)
-        c.draw()
-
-    def _draw_gg_diagram(self):
-        """Render G-G scatter plot (friction circle) colored by speed."""
-        d=self.cur_data
-        lat=d.get_channel('LatAccel'); lon=d.get_channel('LongAccel')
-        speed=d.get_channel('Speed')
-        if lat is None or lon is None: return
-        c=self._tc; c.clear()
-        ax=c.fig.add_subplot(111,facecolor='#0d1b2a',aspect='equal')
-        ax.set_title("G-G Diagram (Friction Circle)",color=TEXT,fontsize=11,pad=6)
-        ax.tick_params(colors=DIM,labelsize=8)
-        for sp in ax.spines.values(): sp.set_color('#2a3050')
-        ax.grid(True,alpha=0.15,color='#3a4a6a')
-        # Downsample for performance
-        step=max(1,len(lat)//4000)
-        lx=lat[::step]; ly=lon[::step]
-        if speed is not None:
-            sv=speed[::step]*3.6  # m/s → km/h
-            sc=ax.scatter(lx,ly,c=sv,cmap='plasma',s=1.5,alpha=0.6,rasterized=True)
-            cb=c.fig.colorbar(sc,ax=ax,pad=0.02,shrink=0.8)
-            cb.set_label('Speed (km/h)',color=DIM,fontsize=8)
-            cb.ax.tick_params(colors=DIM,labelsize=7)
-        else:
-            ax.scatter(lx,ly,color=BLUE,s=1.5,alpha=0.5,rasterized=True)
-        # Draw friction circle reference
-        max_g=float(np.percentile(np.sqrt(lx**2+ly**2),99))
-        if max_g>0.1:
-            theta=np.linspace(0,2*np.pi,100)
-            ax.plot(max_g*np.cos(theta),max_g*np.sin(theta),'--',color=RED,lw=1,alpha=0.6,label=f'Max {max_g:.1f} G')
-            ax.legend(fontsize=8,facecolor='#1e2845',edgecolor='#2a3050',labelcolor=TEXT)
-        ax.set_xlabel("Lateral G",color=DIM,fontsize=9)
-        ax.set_ylabel("Longitudinal G",color=DIM,fontsize=9)
-        ax.axhline(0,color='#3a4a6a',lw=0.5); ax.axvline(0,color='#3a4a6a',lw=0.5)
-        c.fig.tight_layout(pad=1.0); c.draw()
-
-    def _draw_track_map(self, sel: str):
-        """Render a 2D track map colored by speed or braking."""
-        d = self.cur_data
-        if not d: return
-        lat = d.get_channel('Lat')
-        lon = d.get_channel('Lon')
-        speed = d.get_channel('Speed')
-        brake = d.get_channel('Brake')
-        lap_dist = d.get_channel('LapDistPct')
-
-        # Determine which lap to display (best lap)
-        if d.lap_times and len(d.lap_boundaries) >= 2:
-            best_idx = int(np.argmin(d.lap_times))
-            if best_idx + 1 < len(d.lap_boundaries):
-                s, e = d.lap_boundaries[best_idx], d.lap_boundaries[best_idx + 1]
-            else:
-                s, e = 0, min(len(lap_dist), 5000) if lap_dist is not None else 5000
-        else:
-            s, e = 0, min(len(lap_dist), 5000) if lap_dist is not None else 5000
-
-        # Try real GPS lat/lon first
-        if lat is not None and lon is not None and len(lat) > e:
-            x = lon[s:e]
-            y = lat[s:e]
-            # Reject flat GPS (all same value)
-            if np.std(x) < 1e-6 or np.std(y) < 1e-6:
-                x = y = None
-        else:
-            x = y = None
-
-        # Fallback: reconstruct from speed + lateral accel
-        track_estimated = False
-        if x is None:
-            track_estimated = True
-            spd = speed[s:e] if speed is not None else None
-            la = d.get_channel('LatAccel')
-            if spd is not None and la is not None and len(la) > e:
-                la_seg = la[s:e]
-                dt = 1.0 / max(d.tick_rate, 1)
-                heading = np.cumsum(np.where(spd > 1.0, la_seg / np.maximum(spd, 1.0), 0.0) * dt)
-                x = np.cumsum(spd * np.cos(heading) * dt)
-                y = np.cumsum(spd * np.sin(heading) * dt)
-            elif lap_dist is not None:
-                # Last resort: simple circle from LapDistPct
-                pct = lap_dist[s:e]
-                x = np.cos(pct * 2 * np.pi)
-                y = np.sin(pct * 2 * np.pi)
-
-        if x is None or y is None:
-            return
-
-        c = self._tc; c.clear()
-        ax = c.fig.add_subplot(111, facecolor='#0d1b2a', aspect='equal')
-        ax.set_title(sel, color=TEXT, fontsize=11, pad=6)
-        ax.tick_params(colors=DIM, labelsize=7)
-        for sp in ax.spines.values(): sp.set_color('#2a3050')
-        ax.set_xticks([]); ax.set_yticks([])
-        if track_estimated:
-            ax.text(0.5, 0.02, "\u26a0 Estimated track shape (no GPS data)",
-                    transform=ax.transAxes, ha='center', fontsize=8,
-                    color=YELLOW, alpha=0.8)
-
-        step = max(1, len(x) // DOWNSAMPLE_CHART)
-        xs, ys = x[::step], y[::step]
-
-        if "Braking" in sel and brake is not None and len(brake) > e:
-            cv = brake[s:e][::step]
-            cmap_name = 'Reds'
-            clabel = 'Brake Pressure'
-        elif speed is not None and len(speed) > e:
-            cv = speed[s:e][::step] * 3.6  # km/h
-            cmap_name = 'plasma'
-            clabel = 'Speed (km/h)'
-        else:
-            ax.plot(xs, ys, color=BLUE, lw=1.5, alpha=0.9)
-            c.fig.tight_layout(pad=0.5); c.draw()
-            return
-
-        sc = ax.scatter(xs, ys, c=cv, cmap=cmap_name, s=2, alpha=0.85, rasterized=True)
-        cb = c.fig.colorbar(sc, ax=ax, pad=0.02, shrink=0.8)
-        cb.set_label(clabel, color=DIM, fontsize=8)
-        cb.ax.tick_params(colors=DIM, labelsize=7)
-        c.fig.tight_layout(pad=0.5); c.draw()
-
-    def _toggle_replay(self):
-        """Start/stop lap replay animation."""
-        if self._rp_playing:
-            self._rp_playing = False
-            self._rp_btn.configure(text="▶ Play")
-            return
-        if not self.cur_data:
-            return
-        self._rp_playing = True
-        self._rp_btn.configure(text="⏸ Pause")
-        self._rp_last_tick = time.perf_counter()
-        # Redraw chart first to ensure we have axes
-        self._redraw_telem()
-        self._replay_tick()
-
-    def _replay_tick(self):
-        """Advance replay using time-based delta for frame-rate independence."""
-        if not self._rp_playing or not self.cur_data:
-            return
-        if self.tv.get() != "Telemetry":
-            self.after(100, self._replay_tick)
-            return
-        now = time.perf_counter()
-        dt = now - self._rp_last_tick
-        self._rp_last_tick = now
-        # Speed in fraction-of-session per second
-        speed_map = {"0.5×": 0.03, "1×": 0.06, "2×": 0.12, "4×": 0.24}
-        rate = speed_map.get(self._rp_spd.get(), 0.06)
-        step = rate * dt
-        self._rp_pos = min(1.0, self._rp_pos + step)
-        self._rp_slider.set(self._rp_pos * 100)
-        self._draw_replay_marker(self._rp_pos)
-        if self._rp_pos >= 1.0:
-            self._rp_playing = False
-            self._rp_btn.configure(text="▶ Play")
-            self._rp_pos = 0
-            return
-        self.after(33, self._replay_tick)  # ~30fps
-
-    def _seek_replay(self, val):
-        """Handle slider seek."""
-        self._rp_pos = float(val) / 100.0
-        if not self._rp_playing:
-            self._draw_replay_marker(self._rp_pos)
-
-    def _draw_replay_marker(self, pct):
-        """Draw a vertical marker on the current telemetry chart at position pct (0-1)."""
-        d = self.cur_data
-        if not d:
-            return
-        c = self._tc
-        if not c.fig.axes:
-            return
-        ax = c.fig.axes[0]
-        # Remove old marker line
-        if self._rp_line and self._rp_line in ax.lines:
-            self._rp_line.remove()
-            self._rp_line = None
-        # Position in track % (0-100)
-        xpos = pct * 100.0
-        ylim = ax.get_ylim()
-        self._rp_line, = ax.plot([xpos, xpos], ylim, color=YELLOW, lw=1.5, alpha=0.8, ls='--')
-        # Update readout label
-        speed = d.get_channel('Speed')
-        throttle = d.get_channel('Throttle')
-        brake = d.get_channel('Brake')
-        lap_dist = d.get_channel('LapDistPct')
-        info_parts = [f"Pos: {pct*100:.1f}%"]
-        if lap_dist is not None:
-            # Scope lookup to best lap slice to avoid cross-lap misread
-            s = e = None
-            if d.lap_times and len(d.lap_boundaries) > 1:
-                best_li = int(np.argmin(d.lap_times))
-                if best_li < len(d.lap_boundaries) - 1:
-                    s = d.lap_boundaries[best_li]
-                    e = d.lap_boundaries[best_li + 1]
-            if s is not None and e is not None:
-                seg = lap_dist[s:e]
-                idx = s + int(np.argmin(np.abs(seg - pct)))
-            else:
-                idx = int(np.argmin(np.abs(lap_dist - pct)))
-            if speed is not None and idx < len(speed):
-                info_parts.append(f"Spd: {speed[idx]*3.6:.0f}km/h")
-            if throttle is not None and idx < len(throttle):
-                info_parts.append(f"Thr: {throttle[idx]*100:.0f}%")
-            if brake is not None and idx < len(brake):
-                info_parts.append(f"Brk: {brake[idx]*100:.0f}%")
-        self._rp_lbl.configure(text="  |  ".join(info_parts))
-        c.canvas.draw_idle()
+    def _draw_consistency_card(self, cs: ConsistencyBreakdown):
+        """Draw a consistency breakdown card on the dashboard."""
+        cf = ctk.CTkFrame(self._dif, fg_color="#1e2845", corner_radius=8)
+        cf.pack(fill='x', pady=(6, 2))
+        # Header
+        sc_color = GREEN if cs.overall >= 85 else YELLOW if cs.overall >= 70 else RED
+        hdr = ctk.CTkFrame(cf, fg_color="transparent"); hdr.pack(fill='x', padx=12, pady=(8, 4))
+        lbl(hdr, f"🎯 Consistency Score: {cs.overall:.0f}/100  ({cs.grade})", 13, bold=True, color=sc_color).pack(side='left')
+        # Sub-score bars
+        bars = ctk.CTkFrame(cf, fg_color="transparent"); bars.pack(fill='x', padx=12, pady=(0, 4))
+        components = [
+            ("Lap Times", cs.lap_time_score, f"±{cs.lap_time_std_s:.3f}s std"),
+            ("Sectors", cs.sector_score, f"Worst: S{cs.worst_sector}" if cs.worst_sector else ""),
+            ("Corners", cs.corner_score, f"Worst: T{cs.worst_corner}" if cs.worst_corner else ""),
+            ("Brake Points", cs.brake_point_score, ""),
+            ("Speed", cs.speed_score, ""),
+        ]
+        for name, score, detail in components:
+            row = ctk.CTkFrame(bars, fg_color="transparent"); row.pack(fill='x', pady=1)
+            clr = GREEN if score >= 85 else YELLOW if score >= 70 else RED
+            lbl(row, f"{name}:", 9, color=DIM).pack(side='left', padx=(0, 4))
+            # Progress bar
+            pb = ctk.CTkProgressBar(row, width=120, height=10,
+                fg_color="#0d1b2a", progress_color=clr, corner_radius=4)
+            pb.pack(side='left', padx=4)
+            pb.set(score / 100)
+            lbl(row, f"{score:.0f}", 9, bold=True, color=clr).pack(side='left', padx=4)
+            if detail:
+                lbl(row, detail, 8, color=DIM).pack(side='left', padx=4)
+        # Coaching notes
+        if cs.notes:
+            nf = ctk.CTkFrame(cf, fg_color="#0d1b2a", corner_radius=6)
+            nf.pack(fill='x', padx=12, pady=(2, 8))
+            for note in cs.notes[:3]:
+                lbl(nf, f"• {note}", 9, color=TEXT, wraplength=500, justify='left', anchor='w').pack(
+                    fill='x', padx=8, pady=1)
 
     # ══════════════════════════════════════════════════════════════════════════
     # ISSUES
@@ -1043,230 +615,6 @@ class App(ctk.CTk):
         sf=ctk.CTkFrame(self._sec_det,fg_color=PANEL,corner_radius=8); sf.pack(fill='x',pady=6)
         lbl(sf,f"🏆 Theoretical Best: {format_laptime(tb)}  |  Actual Best: {format_laptime(ab)}  |  Time left: +{left:.3f}s",
             12,bold=True,color=GREEN if left<0.3 else YELLOW).pack(pady=10)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # STINT & TIRES
-    # ══════════════════════════════════════════════════════════════════════════
-    def _t_stint(self):
-        tab=self.tv.tab("Stint & Tires"); tab.configure(fg_color=DARK)
-        self._ph_stint=lbl(tab,"Load a session to see stint & tire analysis.",14,color=DIM)
-        self._ph_stint.pack(pady=40)
-        self._stsc=ctk.CTkScrollableFrame(tab,fg_color="transparent")
-        self._stsc.pack(fill='both',expand=True,padx=10,pady=8)
-        self._stpc=EmbedChart(self._stsc,figsize=(10,2.8)); self._stpc.pack(fill='x',pady=(0,4))
-        self._stdc=EmbedChart(self._stsc,figsize=(10,2.8)); self._stdc.pack(fill='x',pady=(0,4))
-        self._stdf=ctk.CTkFrame(self._stsc,fg_color="transparent"); self._stdf.pack(fill='x')
-
-    def _u_stint(self):
-        r=self.cur_stint
-        if not r: return
-        try: self._ph_stint.pack_forget()
-        except Exception: pass
-        # Pressure chart
-        c=self._stpc; c.clear(); ax=c.std_ax("Tire Pressures — Recommended Cold vs Actual Hot (PSI)",xlabel="Corner")
-        corners=['LF','RF','LR','RR']
-        cold=[r.pressure_cold_targets.get(co,0) for co in corners]
-        hot=[r.pressure_hot_actuals.get(co,0) for co in corners]
-        x=np.arange(4)
-        ax.bar(x-0.2,cold,0.35,label='Rec. Cold',color=BLUE,alpha=0.85)
-        ax.bar(x+0.2,hot,0.35,label='Actual Hot',color=RED,alpha=0.85)
-        ax.set_xticks(x); ax.set_xticklabels(corners,color=DIM)
-        ax.set_ylabel("PSI",color=DIM,fontsize=8)
-        ax.legend(fontsize=8,facecolor='#1e2845',edgecolor='#2a3050',labelcolor=TEXT)
-        c.fig.tight_layout(pad=0.8); c.draw()
-        # Temp progression
-        c2=self._stdc; c2.clear(); ax2=c2.std_ax("Tire Temp Progression by Lap",xlabel="Lap")
-        lps=None
-        for corner,col in [('LF',BLUE),('RF',RED),('LR',GREEN),('RR',YELLOW)]:
-            vals=r.tire_temp_progression.get(corner,[])
-            if vals:
-                lps=lps or list(range(1,len(vals)+1))
-                ax2.plot(lps,vals,marker='o',color=col,label=corner,lw=1.5)
-        if r.lap_times and len(r.lap_times)>=3:
-            ax2b=ax2.twinx()
-            ax2b.plot(range(1,len(r.lap_times)+1),r.lap_times,'--',color='white',alpha=0.4,lw=1,label='Lap time')
-            ax2b.set_ylabel("Lap time (s)",color=DIM,fontsize=8); ax2b.tick_params(colors=DIM)
-        ax2.legend(fontsize=8,facecolor='#1e2845',edgecolor='#2a3050',labelcolor=TEXT,loc='upper left')
-        c2.fig.tight_layout(pad=0.8); c2.draw()
-        # Detail
-        for w in self._stdf.winfo_children(): w.destroy()
-        sec_lbl(self._stdf,"🌡 Cold Pressure Recommendations (to hit hot target)")
-        pt=ctk.CTkFrame(self._stdf,fg_color=PANEL,corner_radius=8); pt.pack(fill='x',pady=4)
-        cr=ctk.CTkFrame(pt,fg_color="transparent"); cr.pack(fill='x',padx=12,pady=10)
-        for corner in ['LF','RF','LR','RR']:
-            cf=card_frame(cr); cf.pack(side='left',fill='both',expand=True,padx=4)
-            lbl(cf,corner,14,bold=True,color=BLUE).pack(pady=(8,2))
-            lbl(cf,f"Cold: {r.pressure_cold_targets.get(corner,0):.1f} PSI",12,bold=True,color=GREEN).pack()
-            lbl(cf,f"Hot:  {r.pressure_hot_actuals.get(corner,0):.1f} PSI",11).pack(pady=(0,8))
-        if r.findings:
-            sec_lbl(self._stdf,"📋 Pressure Findings")
-            for fn in r.findings:
-                ff=ctk.CTkFrame(self._stdf,fg_color="#1e2845",corner_radius=6); ff.pack(fill='x',pady=2)
-                lbl(ff,f"•  {fn}",11,color=TEXT,wraplength=820,justify='left',anchor='w').pack(padx=12,pady=6)
-        if r.deg_rate>0:
-            sec_lbl(self._stdf,"📉 Degradation")
-            dg=ctk.CTkFrame(self._stdf,fg_color=PANEL,corner_radius=8); dg.pack(fill='x',pady=4)
-            dr=ctk.CTkFrame(dg,fg_color="transparent"); dr.pack(fill='x',padx=12,pady=10)
-            stat_blk(dr,"Deg Rate",f"+{r.deg_rate:.3f}s/lap",YELLOW)
-            stat_blk(dr,"Optimal Stint",f"{r.optimal_stint_length} laps",GREEN)
-            stat_blk(dr,"Cliff Lap",str(r.cliff_lap),RED)
-        # Multi-stint comparison
-        self._draw_stint_comparison(self._stdf)
-
-    def _draw_stint_comparison(self, parent):
-        """Detect stints (pit boundaries) and compare performance across them."""
-        d = self.cur_data
-        b = self.cur_best
-        if not d or not b or not b.lap_times or len(b.lap_times) < 4:
-            return
-        lts = b.lap_times
-        # Detect stints: split where lap time > 2× median (pit lap) or large gap
-        med = np.median(lts)
-        stints: list[list[tuple[int, float]]] = []  # list of [(lap_idx, time), ...]
-        cur_stint: list[tuple[int, float]] = []
-        for i, lt in enumerate(lts):
-            if lt > med * 2.0 and cur_stint:
-                stints.append(cur_stint)
-                cur_stint = []
-            else:
-                cur_stint.append((i, lt))
-        if cur_stint:
-            stints.append(cur_stint)
-        if len(stints) < 2:
-            return  # Only one stint, nothing to compare
-
-        sec_lbl(parent, f"🔄 Multi-Stint Comparison ({len(stints)} stints)")
-        # Stats table
-        row = ctk.CTkFrame(parent, fg_color="transparent"); row.pack(fill='x', pady=4)
-        for si, stint in enumerate(stints):
-            times = [t for _, t in stint]
-            sf = card_frame(row); sf.pack(side='left', fill='both', expand=True, padx=4, pady=4)
-            lbl(sf, f"Stint {si+1}", 13, bold=True, color=BLUE).pack(pady=(8, 3))
-            lbl(sf, f"Laps: {stint[0][0]+1}–{stint[-1][0]+1} ({len(stint)})", 10, color=DIM).pack()
-            lbl(sf, f"Best: {format_laptime(min(times))}", 11, color=GREEN).pack()
-            lbl(sf, f"Avg:  {format_laptime(np.mean(times))}", 11).pack()
-            if len(times) >= 3:
-                trend = np.polyfit(range(len(times)), times, 1)[0]
-                tc = GREEN if trend < -0.02 else RED if trend > 0.02 else TEXT
-                lbl(sf, f"Trend: {trend:+.3f}s/lap", 11, color=tc).pack()
-            lbl(sf, f"Std: {np.std(times):.3f}s", 10, color=DIM).pack(pady=(0, 8))
-
-        # Overlay chart: all stints
-        ch = EmbedChart(parent, figsize=(10, 2.5)); ch.pack(fill='x', pady=4)
-        ax = ch.std_ax("Stint-by-Stint Lap Times", xlabel="Lap in Stint")
-        colors = [BLUE, RED, GREEN, YELLOW, '#ff69b4', '#00ced1']
-        for si, stint in enumerate(stints):
-            times = [t for _, t in stint]
-            col = colors[si % len(colors)]
-            ax.plot(range(1, len(times)+1), times, 'o-', color=col, lw=1.5,
-                    label=f"Stint {si+1}", alpha=0.85)
-        ax.set_ylabel("seconds", color=DIM, fontsize=8)
-        ax.legend(fontsize=8, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT)
-        ch.fig.tight_layout(pad=0.8); ch.draw()
-
-    def _u_fuel(self):
-        """Render the fuel strategy section in the Stint & Tires tab."""
-        fr = self.cur_fuel
-        if not fr or fr.fuel_per_lap_l <= 0:
-            return
-        f = self._stdf
-        sec_lbl(f, "⛽ Fuel Strategy")
-        ff = ctk.CTkFrame(f, fg_color=PANEL, corner_radius=8); ff.pack(fill='x', pady=4)
-        sr = ctk.CTkFrame(ff, fg_color="transparent"); sr.pack(fill='x', padx=12, pady=10)
-        stat_blk(sr, "Fuel/Lap", f"{fr.fuel_per_lap_l:.2f} L", BLUE)
-        stat_blk(sr, "Remaining", f"{fr.fuel_remaining_l:.1f} L", GREEN)
-        stat_blk(sr, "Laps Left", str(fr.laps_remaining), YELLOW)
-        stat_blk(sr, "Tank", f"{fr.fuel_capacity_l:.0f} L", DIM)
-        # Race planner input
-        sec_lbl(f, "🏁 Race Planner")
-        pf = ctk.CTkFrame(f, fg_color=PANEL, corner_radius=8); pf.pack(fill='x', pady=4)
-        row = ctk.CTkFrame(pf, fg_color="transparent"); row.pack(fill='x', padx=12, pady=8)
-        lbl(row, "Race Length (laps):", color=DIM).pack(side='left')
-        self._fuel_laps_var = ctk.StringVar(value="30")
-        ctk.CTkEntry(row, textvariable=self._fuel_laps_var, width=70, fg_color=CARD).pack(side='left', padx=8)
-        ctk.CTkButton(row, text="Calculate Strategy", height=28, fg_color=ACCENT,
-            hover_color="#c0392b", command=self._calc_fuel_strategy).pack(side='left', padx=8)
-        self._fuel_result = ctk.CTkFrame(pf, fg_color="transparent")
-        self._fuel_result.pack(fill='x', padx=12, pady=(0, 8))
-
-    def _calc_fuel_strategy(self):
-        if not self.cur_data:
-            return
-        try:
-            race_laps = int(self._fuel_laps_var.get())
-        except ValueError:
-            messagebox.showwarning("Invalid Input", "Enter a whole number of laps.")
-            return
-        if race_laps < 1 or race_laps > 1000:
-            messagebox.showwarning("Invalid Input", "Race length must be 1–1000 laps.")
-            return
-        fr = FuelStrategyAnalyzer().analyze(self.cur_data, race_laps=race_laps)
-        # Display results
-        for w in self._fuel_result.winfo_children():
-            w.destroy()
-        if fr.num_stops == 0 and fr.race_laps > 0:
-            lbl(self._fuel_result, "✅ No pit stop needed!", 12, bold=True, color=GREEN).pack(anchor='w', pady=4)
-        elif fr.num_stops > 0:
-            sr = ctk.CTkFrame(self._fuel_result, fg_color="transparent"); sr.pack(fill='x', pady=4)
-            stat_blk(sr, "Stops", str(fr.num_stops), ACCENT)
-            stat_blk(sr, "Total Fuel", f"{fr.total_fuel_needed_l:.1f} L", BLUE)
-            stat_blk(sr, "Finish Fuel", f"{fr.finish_fuel_l:.1f} L", GREEN)
-            for i, (pl, fl) in enumerate(zip(fr.pit_laps, fr.fuel_per_stop_l)):
-                lbl(self._fuel_result, f"  Stop {i+1}: Pit on lap {pl}, add {fl:.1f} L",
-                    11, color=YELLOW).pack(anchor='w', padx=4)
-        for fn in fr.findings:
-            lbl(self._fuel_result, f"• {fn}", 10, color=DIM, wraplength=780,
-                justify='left', anchor='w').pack(anchor='w', padx=4)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # LAP TIMES
-    # ══════════════════════════════════════════════════════════════════════════
-    def _t_laptimes(self):
-        tab=self.tv.tab("Lap Times"); tab.configure(fg_color=DARK)
-        self._ph_laptimes=lbl(tab,"Load a session to see lap time analysis.",14,color=DIM)
-        self._ph_laptimes.pack(pady=40)
-        self._ltsc=ctk.CTkScrollableFrame(tab,fg_color="transparent")
-        self._ltsc.pack(fill='both',expand=True,padx=10,pady=8)
-        self._ltc=EmbedChart(self._ltsc,figsize=(10,3.5)); self._ltc.pack(fill='x',pady=(0,8))
-        self._ltd=ctk.CTkFrame(self._ltsc,fg_color="transparent"); self._ltd.pack(fill='x')
-
-    def _u_laptimes(self):
-        r=self.cur_best
-        if not r or not r.lap_times: return
-        try: self._ph_laptimes.pack_forget()
-        except Exception: pass
-        c=self._ltc; c.clear(); ax=c.std_ax("Lap Times — Raw vs Fuel Corrected",xlabel="Lap")
-        lps=list(range(1,len(r.lap_times)+1))
-        ax.plot(lps,r.lap_times,'o-',color=BLUE,label='Raw',lw=1.5)
-        if r.fuel_corrected and len(r.fuel_corrected)==len(lps):
-            ax.plot(lps,r.fuel_corrected,'s--',color=GREEN,label='Fuel Corrected',lw=1.5,alpha=0.85)
-        ax.axhline(r.actual_best,color=RED,lw=1,ls=':',alpha=0.7,label=f'Best {format_laptime(r.actual_best)}')
-        ax.set_ylabel("seconds",color=DIM,fontsize=8)
-        ax.legend(fontsize=8,facecolor='#1e2845',edgecolor='#2a3050',labelcolor=TEXT)
-        c.fig.tight_layout(pad=0.8); c.draw()
-        for w in self._ltd.winfo_children(): w.destroy()
-        sr=ctk.CTkFrame(self._ltd,fg_color=PANEL,corner_radius=8); sr.pack(fill='x',pady=4)
-        sr2=ctk.CTkFrame(sr,fg_color="transparent"); sr2.pack(fill='x',padx=12,pady=10)
-        stat_blk(sr2,"Best (Raw)",format_laptime(r.actual_best),GREEN)
-        stat_blk(sr2,"Best (FC)",format_laptime(r.fuel_corrected_best),BLUE)
-        stat_blk(sr2,"Fuel/Lap",f"{r.fuel_per_lap_kg:.2f} kg" if r.fuel_per_lap_kg else "—")
-        tc=GREEN if r.improvement_trend<-0.05 else RED if r.improvement_trend>0.05 else TEXT
-        stat_blk(sr2,"Trend",f"{r.improvement_trend:+.3f}s/lap",tc)
-        stat_blk(sr2,"Improving?","Yes ↓" if r.laps_improving else "No",GREEN if r.laps_improving else DIM)
-        sec_lbl(self._ltd,"📋 Lap-by-Lap")
-        fc=r.fuel_corrected or r.lap_times
-        rpt_mask=self.cur_rpt.valid_lap_mask if self.cur_rpt and self.cur_rpt.valid_lap_mask else [True]*len(r.lap_times)
-        for i,(raw,fcc) in enumerate(zip(r.lap_times,fc)):
-            is_outlier=i<len(rpt_mask) and not rpt_mask[i]
-            bg="#3a2020" if is_outlier else ("#1e2845" if i%2==0 else PANEL)
-            rw=ctk.CTkFrame(self._ltd,fg_color=bg,corner_radius=4)
-            rw.pack(fill='x',pady=1)
-            delta=raw-r.actual_best
-            lbl(rw,f"Lap {i+1}",11,color=DIM).pack(side='left',padx=12,pady=4)
-            lbl(rw,format_laptime(raw),11,bold=True,color=GREEN if raw==r.actual_best else (DIM if is_outlier else TEXT)).pack(side='left',padx=8)
-            lbl(rw,f"+{delta:.3f}s" if delta>0 else "BEST",10,color=YELLOW if delta>0 else GREEN).pack(side='left',padx=8)
-            lbl(rw,f"FC: {format_laptime(fcc)}",10,color=BLUE).pack(side='left',padx=8)
-            if is_outlier: lbl(rw,"⚠ outlier",9,color=YELLOW).pack(side='left',padx=8)
 
     # ══════════════════════════════════════════════════════════════════════════
     # SETUP FILES
@@ -1463,7 +811,8 @@ class App(ctk.CTk):
                         style_report=self.cur_style,
                         stint_report=self.cur_stint,
                         session_info=self.cur_data.session_info,
-                        best_report=self.cur_best):
+                        best_report=self.cur_best,
+                        corner_report=getattr(self, 'cur_corner_report', None)):
                     if cancel.is_set():
                         return
                     self.after(0, lambda c=chunk: self._on_ai_chunk(c))
@@ -1472,6 +821,7 @@ class App(ctk.CTk):
                 if not cancel.is_set():
                     self.after(0, lambda: self._on_ai_chunk(
                         "\n\n⚠ AI request failed. Check your API key and internet connection.\n"))
+                    self.after(0, lambda: self._mark_ai_incomplete())
             if not cancel.is_set():
                 self.after(0, self._on_ai_done)
         t = threading.Thread(target=worker, daemon=True)
@@ -1480,6 +830,9 @@ class App(ctk.CTk):
             if t.is_alive():
                 cancel.set()
                 self.after(0, lambda: (
+                    self._ait.configure(state='normal'),
+                    self._ait.insert('end', '\n\n⚠ Response incomplete — request timed out after 90 seconds.'),
+                    self._ait.configure(state='disabled'),
                     self._aib.configure(state='normal', text="Get Recommendations"),
                     self._ais.configure(text="⚠ Timed out")))
         self.after(90_000, _ai_timeout)
@@ -1499,6 +852,13 @@ class App(ctk.CTk):
             idx = next((i for i,(d,_) in enumerate(self.sessions) if d is self.cur_data), None)
             if idx is not None:
                 self._ai_cache[idx] = self._ai_last_text
+
+    def _mark_ai_incomplete(self):
+        """Flag that the AI response was not fully received."""
+        self._ait.configure(state='normal')
+        self._ait.insert('end', '\n\n⚠ Response may be incomplete.')
+        self._ait.configure(state='disabled')
+        self._ais.configure(text="⚠ Incomplete")
 
     # ══════════════════════════════════════════════════════════════════════════
     # TEMPLATES
@@ -1951,6 +1311,366 @@ class App(ctk.CTk):
         threading.Thread(target=worker,daemon=True).start()
 
     # ══════════════════════════════════════════════════════════════════════════
+    # BRAKE TRACE TAB
+    # ══════════════════════════════════════════════════════════════════════════
+    def _t_brake_trace(self):
+        tab = self.tv.tab("Brake Trace"); tab.configure(fg_color=DARK)
+        self._ph_brake = lbl(tab, "Load a session to see brake trace analysis.", 14, color=DIM)
+        self._ph_brake.pack(pady=40)
+        self._brake_sc = ctk.CTkScrollableFrame(tab, fg_color="transparent")
+        self._brake_sc.pack(fill='both', expand=True, padx=10, pady=8)
+        self._brake_chart = EmbedChart(self._brake_sc, figsize=(10, 3.5))
+        self._brake_chart.pack(fill='x', pady=(0, 4))
+        self._brake_cards = ctk.CTkFrame(self._brake_sc, fg_color="transparent")
+        self._brake_cards.pack(fill='x')
+
+    def _u_brake_trace(self):
+        d = self.cur_data
+        if not d or d.num_laps < 1:
+            return
+        try: self._ph_brake.pack_forget()
+        except Exception: pass
+        report = analyze_braking(d)
+        if not report:
+            return
+        # Draw brake pressure chart for first corner
+        c = self._brake_chart; c.clear()
+        ax = c.std_ax("Brake Pressure Profiles", xlabel="Track %")
+        ax.set_ylabel("Brake", color=DIM, fontsize=8)
+        palette = [ACCENT, BLUE, GREEN, YELLOW, PURPLE, RED]
+        for i, p in enumerate(report.profiles[:6]):
+            col = palette[i % len(palette)]
+            # Draw average brake trace in zone
+            ld = d.get_channel('LapDistPct')
+            brk = d.get_channel('Brake')
+            if ld is not None and brk is not None:
+                s0 = d.lap_boundaries[0]; e0 = d.lap_boundaries[1]
+                mask = (ld[s0:e0] >= p.brake_start_pct) & (ld[s0:e0] <= p.apex_pct + 0.05)
+                if np.sum(mask) > 0:
+                    ax.plot(ld[s0:e0][mask] * 100, brk[s0:e0][mask], color=col,
+                            lw=1.5, alpha=0.8, label=f"Corner {p.corner_num}")
+        ax.legend(fontsize=7, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT)
+        c.fig.tight_layout(pad=0.8); c.draw()
+        # Profile cards
+        for w in self._brake_cards.winfo_children(): w.destroy()
+        sec_lbl(self._brake_cards, f"🛑 Brake Analysis — {len(report.profiles)} zones | "
+                f"Overall modulation: {report.overall_modulation_score:.0f}/100")
+        for p in report.profiles:
+            cf = ctk.CTkFrame(self._brake_cards, fg_color="#1e2845", corner_radius=8)
+            cf.pack(fill='x', pady=4)
+            hdr = ctk.CTkFrame(cf, fg_color="transparent"); hdr.pack(fill='x', padx=12, pady=(8, 4))
+            is_worst = p.corner_num == report.weakest_corner
+            lbl(hdr, f"{'🔴' if is_worst else '🟢'} Corner {p.corner_num}" +
+                (" ← WEAKEST" if is_worst else ""), 13, bold=True,
+                color=RED if is_worst else TEXT).pack(side='left')
+            mr = ctk.CTkFrame(cf, fg_color="transparent"); mr.pack(fill='x', padx=8, pady=4)
+            stat_blk(mr, "Initial Bite", f"{p.initial_bite:.0%}", BLUE)
+            stat_blk(mr, "Peak", f"{p.peak_pressure:.0%}", RED)
+            stat_blk(mr, "Modulation", f"{p.modulation_score:.0f}/100",
+                     GREEN if p.modulation_score > 70 else YELLOW)
+            stat_blk(mr, "Trail Brake", f"{p.trail_brake_pct:.0f}%",
+                     GREEN if p.trail_brake_pct > 30 else DIM)
+            stat_blk(mr, "Duration", f"{p.avg_brake_duration_s:.2f}s")
+            if p.coaching_note:
+                nf = ctk.CTkFrame(cf, fg_color="#0d1b2a", corner_radius=6)
+                nf.pack(fill='x', padx=12, pady=(4, 8))
+                lbl(nf, p.coaching_note, 10, color=TEXT, wraplength=800,
+                    justify='left', anchor='w').pack(fill='x', padx=8, pady=6)
+        if report.findings:
+            sec_lbl(self._brake_cards, "📋 Findings")
+            for fn in report.findings:
+                ff = ctk.CTkFrame(self._brake_cards, fg_color="#1e2845", corner_radius=6)
+                ff.pack(fill='x', pady=2)
+                lbl(ff, f"•  {fn}", 11, color=TEXT, wraplength=820,
+                    justify='left', anchor='w').pack(padx=12, pady=6)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # STRATEGY TAB
+    # ══════════════════════════════════════════════════════════════════════════
+    def _t_strategy(self):
+        tab = self.tv.tab("Strategy"); tab.configure(fg_color=DARK)
+        self._ph_strat = lbl(tab, "Enter race details to calculate pit strategy.", 14, color=DIM)
+        self._ph_strat.pack(pady=20)
+        ctrl = ctk.CTkFrame(tab, fg_color=PANEL, corner_radius=8)
+        ctrl.pack(fill='x', padx=10, pady=4)
+        lbl(ctrl, "Race Laps:", color=DIM).pack(side='left', padx=(10, 4))
+        self._strat_laps = ctk.CTkEntry(ctrl, width=60, fg_color=CARD); self._strat_laps.pack(side='left', padx=4)
+        self._strat_laps.insert(0, "30")
+        lbl(ctrl, "Base Lap (s):", color=DIM).pack(side='left', padx=(10, 4))
+        self._strat_base = ctk.CTkEntry(ctrl, width=70, fg_color=CARD); self._strat_base.pack(side='left', padx=4)
+        lbl(ctrl, "Fuel/Lap (L):", color=DIM).pack(side='left', padx=(10, 4))
+        self._strat_fpl = ctk.CTkEntry(ctrl, width=60, fg_color=CARD); self._strat_fpl.pack(side='left', padx=4)
+        lbl(ctrl, "Tank (L):", color=DIM).pack(side='left', padx=(10, 4))
+        self._strat_tank = ctk.CTkEntry(ctrl, width=60, fg_color=CARD); self._strat_tank.pack(side='left', padx=4)
+        ctk.CTkButton(ctrl, text="Calculate", width=100, fg_color=ACCENT,
+                       hover_color="#c0392b", command=self._calc_strategy).pack(side='left', padx=8)
+        self._strat_sc = ctk.CTkScrollableFrame(tab, fg_color="transparent")
+        self._strat_sc.pack(fill='both', expand=True, padx=10, pady=4)
+        self._strat_chart = EmbedChart(self._strat_sc, figsize=(10, 3))
+        self._strat_chart.pack(fill='x', pady=(0, 4))
+        self._strat_cards = ctk.CTkFrame(self._strat_sc, fg_color="transparent")
+        self._strat_cards.pack(fill='x')
+
+    def _calc_strategy(self):
+        try:
+            race_laps = int(self._strat_laps.get())
+            base_text = self._strat_base.get().strip()
+            fpl_text = self._strat_fpl.get().strip()
+            tank_text = self._strat_tank.get().strip()
+        except ValueError:
+            messagebox.showwarning("Invalid Input", "Enter valid numbers.")
+            return
+        # Auto-fill from session if fields empty
+        base = float(base_text) if base_text else (self.cur_rpt.best_lap if self.cur_rpt else 90.0)
+        if not fpl_text and self.cur_fuel:
+            fpl = self.cur_fuel.fuel_per_lap_l
+        else:
+            fpl = float(fpl_text) if fpl_text else 3.5
+        if not tank_text and self.cur_data:
+            tank = self.cur_data.session_info.get('fuel_capacity_l', 120)
+        else:
+            tank = float(tank_text) if tank_text else 120
+        deg = 0.03
+        cliff = 30
+        if self.cur_stint and self.cur_stint.deg_rate > 0:
+            deg = self.cur_stint.deg_rate
+            cliff = self.cur_stint.cliff_lap
+        report = calculate_strategy(race_laps, fpl, tank, base, deg, cliff)
+        self._render_strategy(report)
+
+    def _render_strategy(self, report: StrategyReport):
+        try: self._ph_strat.pack_forget()
+        except Exception: pass
+        # Chart: lap time prediction across stints
+        c = self._strat_chart; c.clear()
+        ax = c.std_ax("Predicted Lap Times by Stint", xlabel="Lap")
+        stint_colors = [BLUE, GREEN, YELLOW, PURPLE, RED, ACCENT]
+        for si, stint in enumerate(report.stints):
+            col = stint_colors[si % len(stint_colors)]
+            laps = list(range(stint.start_lap, stint.end_lap + 1))
+            avg = [stint.expected_avg_lap] * len(laps)
+            ax.fill_between(laps, [stint.expected_avg_lap - 0.2] * len(laps),
+                            [stint.expected_avg_lap + 0.2] * len(laps), color=col, alpha=0.2)
+            ax.plot(laps, avg, color=col, lw=2, label=f"Stint {si+1}")
+        for stop in report.pit_stops:
+            ax.axvline(stop.lap, color=RED, ls='--', lw=1, alpha=0.6)
+        ax.set_ylabel("Lap time (s)", color=DIM, fontsize=8)
+        ax.legend(fontsize=7, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT)
+        c.fig.tight_layout(pad=0.8); c.draw()
+        # Summary cards
+        for w in self._strat_cards.winfo_children(): w.destroy()
+        sf = ctk.CTkFrame(self._strat_cards, fg_color=PANEL, corner_radius=8); sf.pack(fill='x', pady=4)
+        sr = ctk.CTkFrame(sf, fg_color="transparent"); sr.pack(fill='x', padx=12, pady=10)
+        stat_blk(sr, "Stops", str(report.num_stops), ACCENT)
+        stat_blk(sr, "Race Time", f"{report.race_time_min:.1f} min", BLUE)
+        stat_blk(sr, "Total Fuel", f"{report.total_fuel_needed_l:.0f} L", YELLOW)
+        stat_blk(sr, "Stints", str(len(report.stints)), GREEN)
+        for si, stint in enumerate(report.stints):
+            sf2 = ctk.CTkFrame(self._strat_cards, fg_color="#1e2845", corner_radius=8); sf2.pack(fill='x', pady=2)
+            mr = ctk.CTkFrame(sf2, fg_color="transparent"); mr.pack(fill='x', padx=8, pady=6)
+            lbl(mr, f"Stint {si+1}: Laps {stint.start_lap}–{stint.end_lap}", 12,
+                bold=True, color=stint_colors[si % len(stint_colors)]).pack(side='left', padx=8)
+            stat_blk(mr, "Laps", str(stint.num_laps))
+            stat_blk(mr, "Fuel Start", f"{stint.fuel_start_l:.0f}L", BLUE)
+            stat_blk(mr, "Avg Lap", f"{stint.expected_avg_lap:.2f}s", GREEN)
+        if report.findings:
+            sec_lbl(self._strat_cards, "📋 Strategy Notes")
+            for fn in report.findings:
+                ff = ctk.CTkFrame(self._strat_cards, fg_color="#1e2845", corner_radius=6); ff.pack(fill='x', pady=2)
+                lbl(ff, f"•  {fn}", 11, color=TEXT, wraplength=820,
+                    justify='left', anchor='w').pack(padx=12, pady=6)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # TRENDS TAB (Multi-Session Aggregation)
+    # ══════════════════════════════════════════════════════════════════════════
+    def _t_trends(self):
+        tab = self.tv.tab("Trends"); tab.configure(fg_color=DARK)
+        self._ph_trends = lbl(tab, "Load at least 2 sessions to see trends.", 14, color=DIM)
+        self._ph_trends.pack(pady=40)
+        self._trends_sc = ctk.CTkScrollableFrame(tab, fg_color="transparent")
+        self._trends_sc.pack(fill='both', expand=True, padx=10, pady=8)
+        self._trends_chart = EmbedChart(self._trends_sc, figsize=(10, 3.5))
+        self._trends_chart.pack(fill='x', pady=(0, 4))
+        self._trends_cards = ctk.CTkFrame(self._trends_sc, fg_color="transparent")
+        self._trends_cards.pack(fill='x')
+
+    def _u_trends(self):
+        if len(self.sessions) < 2:
+            return
+        try: self._ph_trends.pack_forget()
+        except Exception: pass
+        report = aggregate_sessions(self.sessions)
+        if not report:
+            return
+        # Best lap trend chart
+        c = self._trends_chart; c.clear()
+        ax = c.std_ax("Session Trends", xlabel="Session #")
+        x = list(range(1, report.num_sessions + 1))
+        ax.plot(x, report.best_lap_trend, 'o-', color=GREEN, lw=2, label='Best Lap')
+        ax.plot(x, report.avg_lap_trend, 's--', color=BLUE, lw=1.5, alpha=0.7, label='Avg Lap')
+        ax.set_ylabel("Lap time (s)", color=DIM, fontsize=8)
+        ax2 = ax.twinx()
+        ax2.bar(x, report.consistency_trend, alpha=0.15, color=YELLOW, label='Consistency %')
+        ax2.set_ylabel("Consistency (lower = better)", color=DIM, fontsize=8)
+        ax2.tick_params(colors=DIM)
+        ax.legend(fontsize=7, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT, loc='upper left')
+        c.fig.tight_layout(pad=0.8); c.draw()
+        # Summary
+        for w in self._trends_cards.winfo_children(): w.destroy()
+        sf = ctk.CTkFrame(self._trends_cards, fg_color=PANEL, corner_radius=8); sf.pack(fill='x', pady=4)
+        sr = ctk.CTkFrame(sf, fg_color="transparent"); sr.pack(fill='x', padx=12, pady=10)
+        stat_blk(sr, "Sessions", str(report.num_sessions), BLUE)
+        imp_col = GREEN if report.improving else RED
+        stat_blk(sr, "Improvement", f"{report.total_improvement:+.3f}s", imp_col)
+        stat_blk(sr, "Per Session", f"{report.improvement_per_session:+.3f}s", imp_col)
+        best_s = min(report.summaries, key=lambda s: s.best_lap)
+        stat_blk(sr, "Best Ever", f"{best_s.best_lap:.3f}s", GREEN)
+        for s in report.summaries:
+            sf2 = ctk.CTkFrame(self._trends_cards, fg_color="#1e2845", corner_radius=8); sf2.pack(fill='x', pady=2)
+            mr = ctk.CTkFrame(sf2, fg_color="transparent"); mr.pack(fill='x', padx=8, pady=6)
+            lbl(mr, f"S{s.index+1}: {s.car_name[:20]} @ {s.track_name[:20]}", 11,
+                bold=True).pack(side='left', padx=8)
+            stat_blk(mr, "Best", f"{s.best_lap:.3f}s", GREEN)
+            stat_blk(mr, "Avg", f"{s.avg_lap:.3f}s")
+            stat_blk(mr, "Laps", str(s.num_laps))
+        if report.findings:
+            sec_lbl(self._trends_cards, "📋 Trend Insights")
+            for fn in report.findings:
+                ff = ctk.CTkFrame(self._trends_cards, fg_color="#1e2845", corner_radius=6); ff.pack(fill='x', pady=2)
+                lbl(ff, f"•  {fn}", 11, color=TEXT, wraplength=820,
+                    justify='left', anchor='w').pack(padx=12, pady=6)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # IMPACT TAB (Setup Change Impact Predictor)
+    # ══════════════════════════════════════════════════════════════════════════
+    def _t_impact(self):
+        tab = self.tv.tab("Impact"); tab.configure(fg_color=DARK)
+        lbl(tab, "Setup Change Impact Predictor", 15, bold=True, color=ACCENT).pack(anchor='w', padx=12, pady=(8, 2))
+        lbl(tab, "Predict effect of setup changes on lap time, balance, and tire wear.", 11,
+            color=DIM).pack(anchor='w', padx=12, pady=(0, 8))
+        # Input controls
+        ctrl = ctk.CTkFrame(tab, fg_color=PANEL, corner_radius=8); ctrl.pack(fill='x', padx=10, pady=4)
+        self._impact_rows: list[tuple] = []
+        params = get_available_parameters()
+        for i in range(3):  # 3 change slots
+            row = ctk.CTkFrame(ctrl, fg_color="transparent"); row.pack(fill='x', padx=8, pady=3)
+            pvar = ctk.StringVar(value=params[i] if i < len(params) else params[0])
+            ctk.CTkOptionMenu(row, values=params, variable=pvar, fg_color=CARD,
+                              button_color=ACCENT, width=160).pack(side='left', padx=4)
+            lbl(row, "Delta:", color=DIM).pack(side='left', padx=(8, 4))
+            dentry = ctk.CTkEntry(row, width=60, fg_color=CARD); dentry.pack(side='left', padx=4)
+            dentry.insert(0, "1" if i == 0 else "0")
+            self._impact_rows.append((pvar, dentry))
+        ctk.CTkButton(ctrl, text="Predict Impact", width=130, fg_color=ACCENT,
+                       hover_color="#c0392b", command=self._run_impact).pack(padx=8, pady=8)
+        self._impact_sc = ctk.CTkScrollableFrame(tab, fg_color="transparent")
+        self._impact_sc.pack(fill='both', expand=True, padx=10, pady=4)
+        self._impact_cards = ctk.CTkFrame(self._impact_sc, fg_color="transparent")
+        self._impact_cards.pack(fill='x')
+
+    def _run_impact(self):
+        changes = []
+        for pvar, dentry in self._impact_rows:
+            try:
+                delta = float(dentry.get())
+            except ValueError:
+                continue
+            if delta != 0:
+                changes.append({'parameter': pvar.get(), 'delta': delta})
+        if not changes:
+            messagebox.showwarning("No Changes", "Enter at least one non-zero delta.")
+            return
+        report = predict_impact(changes)
+        for w in self._impact_cards.winfo_children(): w.destroy()
+        # Summary
+        sf = ctk.CTkFrame(self._impact_cards, fg_color=PANEL, corner_radius=8); sf.pack(fill='x', pady=4)
+        sr = ctk.CTkFrame(sf, fg_color="transparent"); sr.pack(fill='x', padx=12, pady=10)
+        net_col = GREEN if report.net_lap_time_delta_s < 0 else RED if report.net_lap_time_delta_s > 0 else DIM
+        stat_blk(sr, "Net Lap Delta", f"{report.net_lap_time_delta_s:+.3f}s", net_col)
+        stat_blk(sr, "Balance", report.net_balance_shift.title(), YELLOW)
+        lbl(sf, report.summary, 11, color=TEXT, wraplength=800).pack(padx=12, pady=(0, 8))
+        # Per-change cards
+        for p in report.predictions:
+            cf = ctk.CTkFrame(self._impact_cards, fg_color="#1e2845", corner_radius=8); cf.pack(fill='x', pady=3)
+            hdr = ctk.CTkFrame(cf, fg_color="transparent"); hdr.pack(fill='x', padx=12, pady=(8, 4))
+            lbl(hdr, p.change_description, 13, bold=True).pack(side='left')
+            lbl(hdr, f"Confidence: {p.confidence:.0%}", 10, color=DIM).pack(side='right')
+            mr = ctk.CTkFrame(cf, fg_color="transparent"); mr.pack(fill='x', padx=8, pady=4)
+            lt_col = GREEN if p.lap_time_delta_s < 0 else RED
+            stat_blk(mr, "Lap Time", f"{p.lap_time_delta_s:+.3f}s", lt_col)
+            stat_blk(mr, "Straight", f"{p.straight_speed_delta_kmh:+.1f} km/h", BLUE)
+            stat_blk(mr, "Corner", f"{p.corner_speed_delta_kmh:+.1f} km/h", YELLOW)
+            stat_blk(mr, "Balance", p.balance_shift.title(), PURPLE)
+            stat_blk(mr, "Tire Wear", p.tire_wear_impact.title())
+            nf = ctk.CTkFrame(cf, fg_color="#0d1b2a", corner_radius=6); nf.pack(fill='x', padx=12, pady=(4, 8))
+            lbl(nf, p.explanation, 10, color=TEXT, wraplength=800,
+                justify='left', anchor='w').pack(fill='x', padx=8, pady=6)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # FILE WATCHER
+    # ══════════════════════════════════════════════════════════════════════════
+    def _toggle_file_watcher(self):
+        """Toggle auto-detect file watcher on/off."""
+        if self._file_watcher and self._file_watcher.is_running:
+            self._file_watcher.stop()
+            self._file_watcher = None
+            self._status_lbl.configure(text="👁 File watcher stopped")
+            self.after(3000, lambda: self._status_lbl.configure(text=""))
+        else:
+            self._file_watcher = FileWatcher(
+                on_new_telemetry=lambda p: self.after(0, lambda: self._process(p)),
+                on_new_setup=lambda p: self.after(0, lambda: self._auto_load_setup(p)),
+            )
+            self._file_watcher.start()
+            self._status_lbl.configure(text="👁 Watching for new files…")
+
+    def _auto_load_setup(self, path: str):
+        """Auto-load a detected setup file."""
+        try:
+            self.cur_setup = SetupParser().parse_file(path)
+            self._render_setup(self.cur_setup)
+            self.tv.set("Setup Files")
+        except Exception as ex:
+            logger.warning("Auto-load setup failed: %s", ex)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHARE EXPORT
+    # ══════════════════════════════════════════════════════════════════════════
+    def _share_export(self):
+        """One-click share: export session summary as JSON or copy to clipboard."""
+        if not self.cur_data or not self.cur_rpt:
+            messagebox.showwarning("No Session", "Load a session first.")
+            return
+        cs = self._compute_consistency_score()
+        summary = build_share_summary(
+            self.cur_data, self.cur_rpt,
+            consistency=cs, sector_report=self.cur_sec,
+            stint_report=self.cur_stint, setup=self.cur_setup,
+            app_version=VERSION,
+        )
+        choice = messagebox.askyesnocancel(
+            "Share Export",
+            "Export session summary:\n\n"
+            "Yes = Save as JSON file\n"
+            "No = Copy text to clipboard\n"
+            "Cancel = Cancel",
+        )
+        if choice is True:
+            path = filedialog.asksaveasfilename(
+                title="Export JSON", defaultextension=".json",
+                filetypes=[("JSON", "*.json")],
+                initialfile=f"share_{self.cur_data.car_name}_{datetime.now():%Y%m%d_%H%M}.json",
+            )
+            if path:
+                export_json(summary, path)
+                messagebox.showinfo("Exported", f"Saved to:\n{path}")
+        elif choice is False:
+            text = export_clipboard_text(summary)
+            self.clipboard_clear()
+            self.clipboard_append(text)
+            messagebox.showinfo("Copied", "Session summary copied to clipboard!")
+
+    # ══════════════════════════════════════════════════════════════════════════
     # SESSION ORCHESTRATION
     # ══════════════════════════════════════════════════════════════════════════
     def _load_ibt(self):
@@ -2024,7 +1744,12 @@ class App(ctk.CTk):
         self._end_loading()
         # LRU eviction: drop oldest session when over limit
         while len(self.sessions) >= MAX_SESSIONS:
-            self.sessions.pop(0)
+            evicted_data, evicted_rpt = self.sessions.pop(0)
+            logger.info("Evicted session: %s @ %s (limit: %d)",
+                        evicted_data.car_name, evicted_data.track_name, MAX_SESSIONS)
+            self._status_lbl.configure(
+                text=f"⚠ Dropped oldest session: {evicted_data.car_name} — {evicted_data.track_name}")
+            self.after(5000, lambda: self._status_lbl.configure(text=""))
             self._analysis_cache = {k-1: v for k, v in self._analysis_cache.items() if k > 0}
             self._ai_cache = {k-1: v for k, v in self._ai_cache.items() if k > 0}
             cards = [w for w in self._sf.winfo_children() if isinstance(w, ctk.CTkFrame)]
@@ -2096,11 +1821,18 @@ class App(ctk.CTk):
     def _refresh(self):
         self._rebuild_lap_checks()
         self._stale_tabs = {"Dashboard","Telemetry","Issues","Driver",
-                            "Sectors","Stint & Tires","Lap Times"}
+                            "Sectors","Corners","Stint & Tires","Lap Times",
+                            "Brake Trace","Trends","Impact"}
         self._refresh_active_tab()
 
     def _refresh_active_tab(self):
         tab = self.tv.get()
+        # Ensure tab is built before updating
+        if tab not in self._built_tabs:
+            builder = self._tab_builders.get(tab)
+            if builder:
+                builder()
+                self._built_tabs.add(tab)
         self._stale_tabs.discard(tab)
         _updaters = {
             "Dashboard": self._u_dashboard,
@@ -2108,8 +1840,11 @@ class App(ctk.CTk):
             "Issues": self._pop_issues,
             "Driver": self._u_driver,
             "Sectors": self._draw_sectors,
+            "Corners": self._u_corners,
             "Stint & Tires": lambda: (self._u_stint(), self._u_fuel()),
             "Lap Times": self._u_laptimes,
+            "Brake Trace": self._u_brake_trace,
+            "Trends": self._u_trends,
         }
         updater = _updaters.get(tab)
         if updater:
@@ -2117,10 +1852,18 @@ class App(ctk.CTk):
 
     def _on_tab_change(self):
         tab = self.tv.get()
+        # Lazy build: construct tab UI on first visit
+        if tab not in self._built_tabs:
+            builder = self._tab_builders.get(tab)
+            if builder:
+                builder()
+                self._built_tabs.add(tab)
         if hasattr(self, '_stale_tabs') and tab in self._stale_tabs:
             self._refresh_active_tab()
 
     def _u_cmp_menus(self):
+        if not hasattr(self, '_cam'):
+            return
         vals=[f"#{i+1} {d.car_name} — {format_laptime(r.best_lap)}" for i,(d,r) in enumerate(self.sessions)]
         if vals:
             self._cam.configure(values=vals); self._ca.set(vals[0])

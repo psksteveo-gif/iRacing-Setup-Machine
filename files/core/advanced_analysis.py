@@ -298,8 +298,8 @@ class StintAnalyzer:
                 report.pressure_hot_actuals[corner] = hot
 
                 target_hot = targets[corner] + temp_adj
-                # cold = hot_target - rise
-                cold = target_hot - rise - temp_adj
+                # cold = hot_target - rise  (temp_adj already in target_hot)
+                cold = target_hot - rise
                 report.pressure_cold_targets[corner] = round(cold, 1)
             else:
                 target_hot = targets[corner]

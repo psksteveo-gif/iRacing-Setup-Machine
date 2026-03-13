@@ -138,3 +138,57 @@ class TestConsistencyOutlierFiltering:
         report = AnalysisEngine().analyze(data)
         consistency_issues = [i for i in report.issues if 'Consistency' in i.title or 'consistency' in i.title.lower()]
         assert len(consistency_issues) == 0
+
+
+# ── Weather & Wind analysis ─────────────────────────────────────────
+
+class TestWeatherAnalysis:
+    def test_wet_conditions_generate_warning(self):
+        from core.ibt_parser import load_demo_data
+        data = load_demo_data()
+        data.session_info['weather_type'] = 'Rain'
+        report = AnalysisEngine().analyze(data)
+        wet_issues = [i for i in report.issues if 'Wet' in i.title or 'wet' in i.description.lower()]
+        assert len(wet_issues) >= 1
+
+    def test_dry_conditions_no_wet_warning(self):
+        from core.ibt_parser import load_demo_data
+        data = load_demo_data()
+        data.session_info['weather_type'] = 'Sunny'
+        report = AnalysisEngine().analyze(data)
+        wet_warnings = [i for i in report.issues if 'Wet Conditions' in i.title]
+        assert len(wet_warnings) == 0
+
+    def test_wet_lowers_overheat_threshold(self):
+        engine = AnalysisEngine()
+        engine._session_info = {'air_temp_c': 25.0, 'weather_type': 'Sunny'}
+        dry_thresh = engine._tire_overheat_threshold()
+        engine._session_info = {'air_temp_c': 25.0, 'weather_type': 'Rain'}
+        wet_thresh = engine._tire_overheat_threshold()
+        assert wet_thresh < dry_thresh
+
+    def test_wind_generates_info(self):
+        from core.ibt_parser import load_demo_data
+        data = load_demo_data()
+        data.session_info['wind_speed_ms'] = 5.0
+        data.session_info['wind_direction_deg'] = 180.0
+        report = AnalysisEngine().analyze(data)
+        wind_issues = [i for i in report.issues if 'Wind' in i.title]
+        assert len(wind_issues) >= 1
+
+    def test_light_wind_no_issue(self):
+        from core.ibt_parser import load_demo_data
+        data = load_demo_data()
+        data.session_info['wind_speed_ms'] = 1.0
+        report = AnalysisEngine().analyze(data)
+        wind_issues = [i for i in report.issues if 'Wind' in i.title]
+        assert len(wind_issues) == 0
+
+    def test_cool_track_night_advisory(self):
+        from core.ibt_parser import load_demo_data
+        data = load_demo_data()
+        data.session_info['air_temp_c'] = 15.0
+        data.session_info['track_temp_c'] = 16.0
+        report = AnalysisEngine().analyze(data)
+        night_issues = [i for i in report.issues if 'Cool' in i.title or 'Night' in i.title]
+        assert len(night_issues) >= 1
