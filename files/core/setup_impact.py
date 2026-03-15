@@ -252,3 +252,51 @@ def _explain(param: str, delta: float, lt: float, straight: float,
 def get_available_parameters() -> List[str]:
     """Return list of adjustable parameters."""
     return list(_EFFECT_MODELS.keys())
+
+
+def compute_sensitivity_matrix():
+    """
+    Build a sensitivity matrix for all parameters and metrics.
+
+    For each parameter, shows the effect of a +1 unit change across 6 metrics.
+    Intended for heatmap visualization in the Impact tab.
+
+    Returns
+    -------
+    param_labels : List[str]   — row labels (parameter names)
+    metric_labels : List[str]  — column labels
+    matrix : np.ndarray        — shape (n_params, n_metrics), raw values
+    norm_matrix : np.ndarray   — column-normalized to [-1, 1] for coloring
+    """
+    params = list(_EFFECT_MODELS.keys())
+    metrics = ['Lap Time\n(s / +1)', 'Corner\nSpeed', 'Straight\nSpeed',
+               'Balance\nEffect', 'Tire\nWear', 'Confidence']
+
+    _WEAR = {'increased': 1.0, 'minimal': 0.0, 'decreased': -1.0}
+    _BAL  = {'oversteer': 1.0, 'neutral':  0.0, 'understeer': -1.0}
+
+    n_p, n_m = len(params), len(metrics)
+    matrix = np.zeros((n_p, n_m))
+
+    for i, p in enumerate(params):
+        m = _EFFECT_MODELS[p]
+        matrix[i, 0] = m['lap_time_per_click']    # positive = slower
+        matrix[i, 1] = m['corner_speed']
+        matrix[i, 2] = m['straight_speed']
+        matrix[i, 3] = _BAL.get(m['balance'], 0.0)
+        matrix[i, 4] = _WEAR.get(m['tire_wear'], 0.0)
+        matrix[i, 5] = m['confidence']
+
+    # Normalize each column to [-1, 1] for consistent colormap scaling
+    norm = matrix.copy()
+    for j in range(n_m):
+        col = norm[:, j]
+        mx = np.max(np.abs(col))
+        if mx > 1e-9:
+            norm[:, j] = col / mx
+
+    # Invert lap-time column so redder = worse (more costly)
+    norm[:, 0] = -norm[:, 0]
+
+    param_labels = [p.replace('_', ' ').title() for p in params]
+    return param_labels, metrics, matrix, norm

@@ -8,6 +8,7 @@ from enum import Enum
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Any
 from core.ibt_parser import TelemetryData  # type: ignore[import-unresolved]
+from core.car_classifier import classify_car, CarClass, PRESSURE_TARGETS, PRESSURE_RISE
 
 # ── Analysis thresholds (tunable) ─────────────────────────────────────────
 TIRE_OVERHEAT_BASE_C = 100       # avg tire temp above this → warning (at 25°C air)
@@ -96,6 +97,10 @@ class AnalysisReport:
     # Outlier filtering
     valid_lap_mask: List[bool] = field(default_factory=list)  # True = valid, False = outlier
     outlier_count: int = 0
+    # Per-lap balance timeline (one score per lap, + oversteer / - understeer)
+    balance_timeline: List[float] = field(default_factory=list)
+    # Detected car class
+    car_class: str = "default"
 
     def add_issue(self, severity: Severity, category: Category,
                   title: str, description: str, recommendation: str):
@@ -127,6 +132,8 @@ class AnalysisEngine:
         report = AnalysisReport()
         report.lap_times = list(data.lap_times)
         self._session_info = data.session_info or {}
+        self._car_class = classify_car(data.car_name)
+        report.car_class = self._car_class.value
 
         if data.num_laps > 0:
             # Outlier detection: exclude warmup, in/out laps, and incident laps
@@ -150,6 +157,7 @@ class AnalysisEngine:
         self._analyze_shifts(data, report)
         self._analyze_weather(data, report)
         self._analyze_wind(data, report)
+        report.balance_timeline = self._compute_lap_balance_timeline(data)
 
         return report
 
@@ -228,16 +236,68 @@ class AnalysisEngine:
                 f"Air temp is {self._session_info.get('air_temp_c', 0):.0f}°C.",
                 pressure_hint)
 
-        # Pressure analysis
+        # Pressure analysis — car-class-aware targets
+        cold_targets = PRESSURE_TARGETS.get(self._car_class, PRESSURE_TARGETS[CarClass.DEFAULT])
+        rise = PRESSURE_RISE.get(self._car_class, PRESSURE_RISE[CarClass.DEFAULT])
+        tolerance = 1.5  # psi band around expected hot pressure
         for corner in corners:
             press = data.get_channel(f'{corner}press')
             if press is not None:
-                avg_press = float(np.mean(press[-len(press)//4:]))  # last quarter
-                if avg_press > PRESSURE_HIGH_PSI:
+                avg_press = float(np.mean(press[-len(press)//4:]))  # last quarter (hot)
+                target_hot = cold_targets.get(corner, 32.0) + rise
+                if avg_press > target_hot + tolerance:
+                    delta = avg_press - target_hot
                     report.add_issue(Severity.INFO, Category.TIRES,
                         f"{corner} Pressure High",
-                        f"{corner} hot pressure averaging {avg_press:.1f} psi.",
-                        "Lower cold pressure by 0.5 psi.")
+                        f"{corner} hot pressure {avg_press:.1f} psi "
+                        f"(target ~{target_hot:.1f} psi for {self._car_class.value.upper()}, "
+                        f"+{delta:.1f} psi over).",
+                        f"Lower cold pressure by ~{delta:.1f} psi.")
+                elif avg_press < target_hot - tolerance:
+                    delta = target_hot - avg_press
+                    report.add_issue(Severity.INFO, Category.TIRES,
+                        f"{corner} Pressure Low",
+                        f"{corner} hot pressure {avg_press:.1f} psi "
+                        f"(target ~{target_hot:.1f} psi for {self._car_class.value.upper()}, "
+                        f"{delta:.1f} psi under).",
+                        f"Raise cold pressure by ~{delta:.1f} psi.")
+
+    def _compute_lap_balance_timeline(self, data: TelemetryData) -> List[float]:
+        """
+        Compute a balance score for each lap.
+        Returns a list with one float per lap:  -1 = strong understeer, +1 = strong oversteer.
+        """
+        lat = data.get_channel('LatAccel')
+        steering = data.get_channel('SteeringWheelAngle')
+        if lat is None or steering is None or data.num_laps == 0:
+            return []
+
+        scores: List[float] = []
+        for i in range(data.num_laps):
+            if i + 1 >= len(data.lap_boundaries):
+                break
+            s = data.lap_boundaries[i]
+            e = data.lap_boundaries[i + 1]
+            lat_sl = lat[s:e]
+            steer_sl = steering[s:e]
+            if len(lat_sl) < 60:
+                scores.append(0.0)
+                continue
+            corner_mask = np.abs(steer_sl) > STEERING_CORNER_THRESHOLD
+            if not np.any(corner_mask):
+                scores.append(0.0)
+                continue
+            avg_steer = float(np.mean(np.abs(steer_sl[corner_mask])))
+            avg_lat = float(np.mean(np.abs(lat_sl[corner_mask])))
+            ratio = avg_lat / max(avg_steer, 0.01)
+            if ratio < BALANCE_UNDERSTEER_RATIO:
+                score = max(-1.0, -(BALANCE_UNDERSTEER_RATIO - ratio) / BALANCE_UNDERSTEER_RATIO)
+            elif ratio > BALANCE_OVERSTEER_RATIO:
+                score = min(1.0, (ratio - BALANCE_OVERSTEER_RATIO) / BALANCE_OVERSTEER_RATIO)
+            else:
+                score = 0.0
+            scores.append(round(score, 3))
+        return scores
 
     def _analyze_brakes(self, data: TelemetryData, report: AnalysisReport):
         brake = data.get_channel('Brake')

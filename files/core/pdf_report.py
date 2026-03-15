@@ -35,6 +35,7 @@ from core.ibt_parser import TelemetryData
 from core.analysis_engine import AnalysisReport, Severity, format_laptime
 from core.advanced_analysis import SectorAnalysisReport, BestLapReport, TireDegReport
 from core.driving_style import DriverStyleReport
+from core.consistency_score import ConsistencyBreakdown
 
 
 # ── Colors ────────────────────────────────────────────────────────────────────
@@ -225,6 +226,116 @@ def _make_laptime_chart(report: AnalysisReport, best_report: BestLapReport) -> O
         fig.clear()
 
 
+def _make_balance_chart(report: AnalysisReport) -> Optional[RLImage]:
+    """Four balance gauges: Overall, Entry, Mid, Exit."""
+    try:
+        fig = Figure(figsize=(6.5, 1.5), facecolor='white')
+        phases = [
+            ("Overall",   report.balance_score),
+            ("Entry",     report.balance_entry),
+            ("Mid-Corner",report.balance_mid),
+            ("Exit",      report.balance_exit),
+        ]
+        for idx, (name, val) in enumerate(phases):
+            ax = fig.add_subplot(1, 4, idx + 1)
+            ax.set_facecolor('#f8f9fa'); ax.axis('off')
+            grad = np.linspace(-1, 1, 200).reshape(1, -1)
+            ax.imshow(grad, aspect='auto', cmap='RdYlGn_r',
+                      extent=(-1, 1, -0.2, 0.2), vmin=-1, vmax=1)
+            ax.axvline(val, color='black', lw=2.5, zorder=5)
+            ax.set_xlim(-1.5, 1.5); ax.set_ylim(-0.6, 0.6)
+            verdict = "US" if val < -0.15 else "OS" if val > 0.15 else "OK"
+            v_color = '#c0392b' if verdict == 'US' else '#27ae60' if verdict == 'OS' else '#2980b9'
+            ax.text(0, 0.42, verdict, ha='center', fontsize=9, fontweight='bold', color=v_color)
+            ax.text(-1.2, -0.45, "US", fontsize=7, color='#27ae60')
+            ax.text(0.9, -0.45, "OS", fontsize=7, color='#c0392b')
+            ax.set_title(name, fontsize=8, pad=2)
+        fig.suptitle("Balance  (US = Understeer / OS = Oversteer)", fontsize=8, y=0.04)
+        fig.tight_layout(pad=0.3)
+        buf = BytesIO(); fig.savefig(buf, format='png', dpi=130); buf.seek(0)
+        return RLImage(buf, width=5.8*inch, height=1.3*inch)
+    except Exception:
+        logger.warning("Failed to generate balance chart", exc_info=True)
+        return None
+    finally:
+        try: fig.clear()
+        except Exception: pass
+
+
+def _make_tire_heatmap_chart(tire_summary: dict) -> Optional[RLImage]:
+    """4-corner tire temp heatmap (inner / mid / outer per corner)."""
+    if not tire_summary:
+        return None
+    try:
+        import matplotlib.cm as _cm
+        fig = Figure(figsize=(5.5, 1.9), facecolor='white')
+        ax = fig.add_subplot(111)
+        ax.set_facecolor('white'); ax.axis('off')
+        ax.set_title("Tire Temperature Map (°C) — Inner / Mid / Outer", fontsize=9, pad=3)
+        cmap = _cm.RdYlGn_r
+        # layout: [LF  RF]  top row;  [LR  RR]  bottom row
+        positions = {'LF': (0, 1.3), 'RF': (2.1, 1.3),
+                     'LR': (0, 0.0), 'RR': (2.1, 0.0)}
+        zones = ['inner', 'mid', 'outer']
+        for corner, (cx, cy) in positions.items():
+            temps = tire_summary.get(corner, {})
+            for zi, zone in enumerate(zones):
+                temp = temps.get(zone, 75.0)
+                norm_v = max(0.0, min(1.0, (temp - 65.0) / 50.0))
+                color = cmap(norm_v)
+                rect = mpatches.Rectangle((cx + zi * 0.46, cy), 0.42, 0.95,
+                                          facecolor=color, edgecolor='white', lw=1.2)
+                ax.add_patch(rect)
+                ax.text(cx + zi * 0.46 + 0.21, cy + 0.475, f"{temp:.0f}",
+                        ha='center', va='center', fontsize=7,
+                        color='white', fontweight='bold')
+            ax.text(cx + 0.63, cy + 0.475, corner, ha='left', va='center',
+                    fontsize=9, fontweight='bold', color='#1a1a2e')
+            avg = temps.get('avg', 0.0)
+            ax.text(cx + 0.63, cy + 0.05, f"avg {avg:.1f}°", ha='left', va='bottom',
+                    fontsize=7, color='#555555')
+        ax.set_xlim(-0.2, 4.2); ax.set_ylim(-0.3, 2.7)
+        fig.tight_layout(pad=0.3)
+        buf = BytesIO(); fig.savefig(buf, format='png', dpi=130); buf.seek(0)
+        return RLImage(buf, width=5.0*inch, height=1.7*inch)
+    except Exception:
+        logger.warning("Failed to generate tire heatmap", exc_info=True)
+        return None
+    finally:
+        try: fig.clear()
+        except Exception: pass
+
+
+def _make_balance_timeline_chart(balance_timeline: list) -> Optional[RLImage]:
+    """Per-lap balance bar chart."""
+    if len(balance_timeline) < 2:
+        return None
+    try:
+        fig = Figure(figsize=(6.5, 1.5), facecolor='white')
+        ax = fig.add_subplot(111)
+        ax.set_facecolor('#f8f9fa')
+        laps = list(range(1, len(balance_timeline) + 1))
+        colors = ['#c0392b' if v < -0.05 else '#27ae60' if v > 0.05 else '#2980b9'
+                  for v in balance_timeline]
+        ax.bar(laps, balance_timeline, color=colors, alpha=0.82, width=0.65)
+        ax.axhline(0, color='#555', lw=0.8, ls='--')
+        ax.axhspan(-0.05, 0.05, color='#aaaaee', alpha=0.15)
+        ax.set_xlim(0.3, len(laps) + 0.7); ax.set_ylim(-1.1, 1.1)
+        ax.set_xlabel("Lap", fontsize=8); ax.tick_params(labelsize=7)
+        ax.set_ylabel("← US  |  OS →", fontsize=7)
+        ax.set_title("Balance Timeline — per lap", fontsize=9)
+        ax.grid(True, axis='y', alpha=0.3)
+        fig.tight_layout(pad=0.5)
+        buf = BytesIO(); fig.savefig(buf, format='png', dpi=120); buf.seek(0)
+        return RLImage(buf, width=5.8*inch, height=1.3*inch)
+    except Exception:
+        logger.warning("Failed to generate balance timeline chart", exc_info=True)
+        return None
+    finally:
+        try: fig.clear()
+        except Exception: pass
+
+
 def _make_sector_chart(sector_report: SectorAnalysisReport) -> Optional[RLImage]:
     if not sector_report.sectors:
         return None
@@ -268,6 +379,9 @@ def generate_pdf_report(
     tire_deg: Optional[TireDegReport] = None,
     driver_report: Optional[DriverStyleReport] = None,
     ai_text: str = "",
+    consistency: Optional[ConsistencyBreakdown] = None,
+    ml_result=None,
+    session_note: str = "",
 ) -> str:
     """Generate a complete PDF session report. Returns output_path."""
 
@@ -284,13 +398,17 @@ def generate_pdf_report(
     bal = report.balance_score
     bal_str = ("Understeer" if bal < -0.2 else "Oversteer" if bal > 0.2 else "Neutral")
 
+    con_str = (f"{consistency.overall:.0f}/100 ({consistency.grade})"
+               if consistency else "—")
+    car_class_str = report.car_class.upper().replace('_', ' ') if report.car_class != 'default' else ''
+
     summary_data = [
-        ['Best Lap', 'Avg Lap', 'Laps', 'Balance', 'Issues Found'],
-        [best_str, avg_str, str(data.num_laps),
+        ['Best Lap', 'Avg Lap', 'Laps', 'Consistency', 'Balance', 'Issues Found'],
+        [best_str, avg_str, str(data.num_laps), con_str,
          bal_str,
          f"{report.critical_count} Crit / {report.warning_count} Warn / {report.info_count} Info"],
     ]
-    st = Table(summary_data, colWidths=[1.2*inch, 1.2*inch, 0.8*inch, 1.2*inch, 2.6*inch])
+    st = Table(summary_data, colWidths=[1.1*inch, 1.1*inch, 0.7*inch, 1.4*inch, 1.1*inch, 2.6*inch])
     st.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), ACCENT),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
@@ -304,7 +422,34 @@ def generate_pdf_report(
         ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
     ]))
     story.append(st)
-    story.append(Spacer(1, 10))
+    story.append(Spacer(1, 6))
+
+    # Car class badge
+    if car_class_str:
+        story.append(Paragraph(
+            f"Car Class: <b>{car_class_str}</b>",
+            ParagraphStyle('CC', parent=custom['Small'],
+                           textColor=colors.HexColor('#6c3483'),
+                           fontName='Helvetica-Bold')))
+        story.append(Spacer(1, 4))
+
+    # ── Session Note (AI-generated) ───────────────────────────────────
+    if session_note:
+        story.append(Paragraph("Session Note", custom['SubHead']))
+        story.append(Paragraph(session_note, custom['Verdict']))
+        story.append(Spacer(1, 6))
+
+    # ── ML Prediction ─────────────────────────────────────────────────
+    if ml_result is not None:
+        pred_str = format_laptime(ml_result.predicted_lap_s)
+        delta = ml_result.delta_vs_actual
+        delta_str = (f"{delta:+.3f}s — {ml_result.insight}" if abs(delta) > 0.01
+                     else "Near theoretical pace for these conditions.")
+        story.append(Paragraph(
+            f"🤖 ML Predicted Pace: <b>{pred_str}</b>  |  {delta_str}  "
+            f"(confidence {ml_result.confidence:.0%}, n={ml_result.n_sessions} sessions)",
+            custom['Small']))
+        story.append(Spacer(1, 6))
 
     # ── Lap Times ─────────────────────────────────────────────────────
     story.append(Paragraph("Lap Times", custom['SectionHead']))
@@ -350,12 +495,30 @@ def generate_pdf_report(
         if chart:
             story.append(chart)
 
-    # ── Tire Temperatures ─────────────────────────────────────────────
+    # ── Balance Analysis ──────────────────────────────────────────────
     story.append(Spacer(1, 10))
+    story.append(Paragraph("Balance Analysis", custom['SectionHead']))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=ACCENT))
+    story.append(Spacer(1, 6))
+    bal_chart = _make_balance_chart(report)
+    if bal_chart:
+        story.append(bal_chart)
+        story.append(Spacer(1, 4))
+    if report.balance_timeline:
+        bal_timeline = _make_balance_timeline_chart(report.balance_timeline)
+        if bal_timeline:
+            story.append(bal_timeline)
+            story.append(Spacer(1, 4))
+
+    # ── Tire Temperatures ─────────────────────────────────────────────
+    story.append(Spacer(1, 6))
     story.append(Paragraph("Tire Temperatures", custom['SectionHead']))
     story.append(HRFlowable(width="100%", thickness=0.5, color=ACCENT))
     story.append(Spacer(1, 6))
-
+    heatmap = _make_tire_heatmap_chart(report.tire_summary)
+    if heatmap:
+        story.append(heatmap)
+        story.append(Spacer(1, 4))
     tire_tbl = _tire_table(report.tire_summary, styles, custom)
     if tire_tbl:
         story.append(tire_tbl)

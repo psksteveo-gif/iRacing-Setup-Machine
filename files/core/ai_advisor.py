@@ -242,6 +242,159 @@ def get_ai_recommendations_stream(report: AnalysisReport, car_name: str,
                + _rule_based_recommendations(report, car_name, track_name))
 
 
+def generate_session_note_stream(
+        report,
+        car_name: str,
+        track_name: str,
+        api_key: str,
+        sector_report=None,
+        style_report=None,
+        session_info: dict | None = None) -> Generator[str, None, None]:
+    """
+    Auto-generate a concise 3-sentence session diary entry.
+    Streams the response. Intended for automatic post-load notes.
+    """
+    if not api_key or api_key.strip() == "":
+        return
+
+    # Use a separate rate limit token — don't consume the main one
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key, timeout=20.0)
+    except ImportError:
+        return
+
+    car_name = _sanitize(car_name, 120)
+    track_name = _sanitize(track_name, 120)
+    si = session_info or {}
+
+    issues_line = ""
+    if report and report.issues:
+        issues_line = "Key issues: " + "; ".join(i.title for i in report.issues[:3])
+
+    sector_line = ""
+    if sector_report and getattr(sector_report, 'time_left_on_table', 0) > 0:
+        sector_line = f"Time left on table: +{sector_report.time_left_on_table:.3f}s."
+
+    style_line = ""
+    if style_report:
+        style_line = f"Driving style: {style_report.style_profile}. {style_report.balance_verdict}."
+
+    best_lap = _sanitize(str(round(report.best_lap, 3)) if report else "?", 20)
+
+    prompt = f"""Summarise this iRacing session as a driver diary entry in exactly 3 concise sentences. Sound like a driver writing their own notes after a session — factual, specific, no fluff.
+
+Car: {car_name}  Track: {track_name}  Best lap: {best_lap}s
+{issues_line}
+{sector_line}
+{style_line}
+
+Write 3 sentences max. No bullet points. No intro phrase like "In this session..."."""
+
+    try:
+        with client.messages.stream(
+            model="claude-sonnet-4-20250514",
+            max_tokens=200,
+            messages=[{"role": "user", "content": prompt}],
+        ) as stream:
+            for text in stream.text_stream:
+                yield text
+    except Exception:
+        return
+
+
+def ask_setup_question_stream(
+        question: str,
+        report: AnalysisReport,
+        car_name: str,
+        track_name: str,
+        api_key: str,
+        setup_data: dict | None = None,
+        sector_report=None,
+        session_info: dict | None = None) -> Generator[str, None, None]:
+    """
+    Answer a specific natural-language question about the current setup or telemetry.
+    Streams the response in real time.
+
+    Intended for targeted queries like "What if I soften the front ARB 2 clicks?"
+    or "Why is the car understeering at Turn 3 exit?".
+    """
+    if not api_key or api_key.strip() == "":
+        yield "API key required to answer setup questions. Set it in Settings (⚙)."
+        return
+
+    if not _check_rate_limit():
+        yield "Please wait a few seconds between AI requests."
+        return
+
+    car_name = _sanitize(car_name, 120)
+    track_name = _sanitize(track_name, 120)
+    question_clean = _sanitize(question.strip(), 600)
+    if not question_clean:
+        yield "Please enter a question."
+        return
+
+    si = session_info or {}
+
+    # Compact context summary
+    balance_line = f"Balance: {report.balance_score:+.2f} (-1=US, +1=OS)" if report else ""
+    issues_summary = ""
+    if report and report.issues:
+        top = report.issues[:4]
+        issues_summary = "Top issues: " + "; ".join(f"{i.title}" for i in top)
+
+    setup_text = ""
+    if setup_data:
+        lines = [f"  {_sanitize(str(k), 60)}: {_sanitize(str(v), 80)}"
+                 for k, v in list(setup_data.items())[:50]]
+        setup_text = "Current setup:\n" + "\n".join(lines)
+
+    sector_text = ""
+    if sector_report and sector_report.sectors:
+        worst = getattr(sector_report, 'worst_sector', None)
+        tbl = getattr(sector_report, 'time_left_on_table', 0.0)
+        if worst is not None:
+            sector_text = f"Worst sector: S{worst + 1}; time left on table: +{tbl:.3f}s"
+
+    conditions_text = ""
+    if si.get('air_temp_c') is not None or si.get('track_temp_c') is not None:
+        parts = []
+        if si.get('air_temp_c') is not None:
+            parts.append(f"Air {si['air_temp_c']:.1f}°C")
+        if si.get('track_temp_c') is not None:
+            parts.append(f"Track {si['track_temp_c']:.1f}°C")
+        conditions_text = ", ".join(parts)
+
+    prompt = f"""You are an expert iRacing setup engineer. Answer the driver's specific question concisely (2–5 sentences).
+
+Car: {car_name}
+Track: {track_name}
+{balance_line}
+{issues_summary}
+{sector_text}
+{conditions_text}
+{setup_text}
+
+Question: {question_clean}
+
+Answer directly and specifically. If the question concerns a setup parameter change, explain the expected effect on car balance, tire behaviour, and lap time. Reference current values where relevant. If the question is about driver technique, distinguish setup vs driver cause."""
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key, timeout=30.0)
+        with client.messages.stream(
+            model="claude-sonnet-4-20250514",
+            max_tokens=400,
+            messages=[{"role": "user", "content": prompt}],
+        ) as stream:
+            for text in stream.text_stream:
+                yield text
+    except ImportError:
+        yield "Anthropic package not installed. Run: pip install anthropic"
+    except Exception:
+        yield "AI request failed. Check your API key and internet connection."
+
+
 def _rule_based_recommendations(report: AnalysisReport, car_name: str, track_name: str) -> str:
     """Generate rule-based recommendations without AI API."""
     lines = [f"Setup Recommendations for {car_name} at {track_name}", "=" * 50, ""]

@@ -3,16 +3,19 @@
 import time
 import numpy as np
 import customtkinter as ctk
+import matplotlib.cm as cm
+from matplotlib.colors import Normalize
 from matplotlib.lines import Line2D
 
 from ui.theme import (DARK, PANEL, CARD, ACCENT, BLUE, TEXT, DIM, GREEN, YELLOW,
                       RED, PURPLE, lbl, EmbedChart)
-from core.analysis_engine import DOWNSAMPLE_CHART, DOWNSAMPLE_LAP
+from core.analysis_engine import DOWNSAMPLE_CHART, DOWNSAMPLE_LAP, format_laptime
 from core.lap_overlay import extract_lap_trace, compare_laps
 from core.corner_analysis import LapDeltaAnalyzer
 from core.racing_line import reconstruct_racing_line, speed_colormap
 from core.gg_diagram import analyze_gg_per_corner
 from core.track_zones import classify_zones
+from core.reference_lap import compute_reference_delta
 
 
 class TelemetryTabMixin:
@@ -33,10 +36,13 @@ class TelemetryTabMixin:
         "RPM + Gear": (['RPM', 'Gear'], ['RPM', 'Gear'], [BLUE, YELLOW]),
         "Lap Overlay — Speed": None,
         "Lap Overlay — Throttle/Brake": None,
+        "Multi-Lap Overlay — Speed + Pedals": None,
         "Track Map — Speed": None,
         "Track Map — Braking": None,
         "Track Map — Throttle/Brake Zones": None,
         "Reference Lap Delta": None,
+        "Reference Lap — External Delta": None,
+        "Track Map — Events Heatmap": None,
         "Racing Line — Speed": None,
         "G-G Per Corner": None,
     }
@@ -55,6 +61,10 @@ class TelemetryTabMixin:
         self._tv = ctk.StringVar(value="Speed + Throttle + Brake")
         ctk.CTkOptionMenu(ctrl, values=list(self.CDEFS.keys()), variable=self._tv,
             fg_color=CARD, button_color=ACCENT, command=self._redraw_telem).pack(side='left', padx=8)
+        ctk.CTkButton(ctrl, text="Load Ref…", width=80, height=28, fg_color=CARD,
+            hover_color="#1a5a8a", command=self._load_ref_ibt).pack(side='left', padx=(8, 2))
+        self._ref_lbl = lbl(ctrl, "No reference loaded", 9, color=DIM)
+        self._ref_lbl.pack(side='left', padx=(2, 10))
         lbl(ctrl, "Laps:", color=DIM).pack(side='left', padx=(16, 4))
         self._lap_checks: list[ctk.CTkCheckBox] = []
         self._lap_frame = ctk.CTkFrame(ctrl, fg_color="transparent")
@@ -78,6 +88,30 @@ class TelemetryTabMixin:
         self._rp_pos = 0
         self._rp_line = None
         self._rp_last_tick = 0.0
+        # Cursor info bar
+        cbar = ctk.CTkFrame(tab, fg_color='#0d1420', height=22, corner_radius=0)
+        cbar.pack(fill='x', padx=10); cbar.pack_propagate(False)
+        self._cursor_lbl = lbl(cbar,
+            "Hover chart to inspect values — click to lock  •  ←/→ to step when locked",
+            9, color=DIM)
+        self._cursor_lbl.pack(side='left', padx=10)
+        # Cursor state
+        self._cursor_cid_motion: int | None = None
+        self._cursor_cid_click:  int | None = None
+        self._cursor_vline = None
+        self._cursor_locked = False
+        self._cursor_x_arr: np.ndarray | None = None
+        self._cursor_ch_arrs: list | None = None
+        self._cursor_sample_idx: int = 0
+        # Arrow-key stepping (active when Telemetry tab is open and cursor locked)
+        self.bind_all('<Left>',  lambda e: self._cursor_step(-1)
+                      if self.tv.get() == "Telemetry" and self._cursor_locked else None)
+        self.bind_all('<Right>', lambda e: self._cursor_step(1)
+                      if self.tv.get() == "Telemetry" and self._cursor_locked else None)
+        self.bind_all('<Shift-Left>',  lambda e: self._cursor_step(-10)
+                      if self.tv.get() == "Telemetry" and self._cursor_locked else None)
+        self.bind_all('<Shift-Right>', lambda e: self._cursor_step(10)
+                      if self.tv.get() == "Telemetry" and self._cursor_locked else None)
         self._tc = EmbedChart(tab, figsize=(10, 4)); self._tc.pack(fill='both', expand=True, padx=10, pady=(4, 8))
 
     def _rebuild_lap_checks(self):
@@ -101,6 +135,7 @@ class TelemetryTabMixin:
     def _redraw_telem(self, sel=None):
         sel = sel or self._tv.get()
         if not self.cur_data: return
+        self._detach_cursor()
         try: self._ph_telem.pack_forget()
         except Exception: pass
         if sel == "G-G Diagram (Friction Circle)":
@@ -111,67 +146,108 @@ class TelemetryTabMixin:
             self._draw_track_map(sel); return
         if sel == "Reference Lap Delta":
             self._draw_lap_delta(); return
+        if sel == "Reference Lap — External Delta":
+            self._draw_ref_lap_external_delta(); return
+        if sel == "Track Map — Events Heatmap":
+            self._draw_track_map(sel); return
         if sel == "Racing Line — Speed":
             self._draw_racing_line(); return
         if sel == "G-G Per Corner":
             self._draw_gg_per_corner(); return
+        if sel == "Multi-Lap Overlay — Speed + Pedals":
+            self._draw_multi_lap_overlay(); return
         chs, labs, cols = self.CDEFS[sel]
         c = self._tc; c.clear(); ax = c.std_ax(sel)
-        ld = self.cur_data.get_channel('LapDistPct')
+        d = self.cur_data
+        ld = d.get_channel('LapDistPct')
         x = ld * 100 if ld is not None else None
         for ch, lab, col in zip(chs, labs, cols):
-            arr = self.cur_data.get_channel(ch)
+            arr = d.get_channel(ch)
             if arr is None: continue
             step = max(1, len(arr) // DOWNSAMPLE_CHART)
             xd = x[::step] if x is not None else np.arange(len(arr[::step]))
             ax.plot(xd, arr[::step], label=lab, color=col, lw=1.2, alpha=0.9)
         ax.legend(loc='upper right', fontsize=8, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT)
         c.fig.tight_layout(pad=1.0); c.draw()
+        # Attach interactive cursor using best-lap slice
+        if ld is not None and d.lap_times and len(d.lap_boundaries) > 1:
+            best_li = int(np.argmin(d.lap_times))
+            if best_li + 1 < len(d.lap_boundaries):
+                s_c, e_c = d.lap_boundaries[best_li], d.lap_boundaries[best_li + 1]
+                seg_ld = ld[s_c:e_c] * 100
+                ch_arrs = [(lab, arr[s_c:e_c])
+                           for ch, lab in zip(chs, labs)
+                           for arr in [d.get_channel(ch)]
+                           if arr is not None and len(arr) > e_c]
+                self._attach_cursor(ax, seg_ld, ch_arrs)
 
     def _draw_lap_overlay(self, sel: str):
         d = self.cur_data
         if not d or d.num_laps < 1: return
-        laps = self._get_selected_laps()
-        if not laps:
-            laps = list(range(min(d.num_laps, 5)))
+        rpt = self.cur_rpt
+        valid_mask = rpt.valid_lap_mask if rpt else [True] * d.num_laps
+        # Default: all valid laps; use checkbox selection only when ≥2 are ticked
+        selected = self._get_selected_laps()
+        valid_laps = [i for i, v in enumerate(valid_mask)
+                      if v and i + 1 < len(d.lap_boundaries)]
+        laps = (selected if len(selected) >= 2 else valid_laps) or list(range(min(d.num_laps, 10)))
+        laps = [li for li in laps if li + 1 < len(d.lap_boundaries)]
+        if not laps: return
+
+        # Delta-based color: best lap = green, slowest = red
+        best_time = min(d.lap_times[li] for li in laps)
+        deltas = [d.lap_times[li] - best_time for li in laps]
+        max_delta = max(deltas) if max(deltas) > 0 else 0.5
+        norm = Normalize(vmin=0, vmax=max_delta)
+        cmap_fn = cm.RdYlGn_r
+
         c = self._tc; c.clear()
-        palette = ['#e94560', '#00b4d8', '#2ecc71', '#f39c12', '#9b59b6',
-                   '#e74c3c', '#1abc9c', '#3498db', '#d35400', '#8e44ad',
-                   '#27ae60', '#c0392b', '#16a085', '#2980b9', '#f1c40f',
-                   '#e67e22', '#2c3e50', '#7f8c8d', '#1a5276', '#922b21']
         lap_dist = d.get_channel('LapDistPct')
+
         if sel == "Lap Overlay — Throttle/Brake":
             ax = c.std_ax("Lap Overlay — Throttle & Brake")
-            for idx, li in enumerate(laps):
-                if li >= d.num_laps: continue
+            thr = d.get_channel('Throttle')
+            brk = d.get_channel('Brake')
+            for li, delta in zip(laps, deltas):
                 s, e = d.lap_boundaries[li], d.lap_boundaries[li + 1]
                 x = lap_dist[s:e] * 100 if lap_dist is not None else np.linspace(0, 100, e - s)
-                col = palette[idx % len(palette)]
-                thr = d.get_channel('Throttle')
-                brk = d.get_channel('Brake')
+                col = cmap_fn(norm(delta))
                 step = max(1, (e - s) // DOWNSAMPLE_LAP)
+                dstr = f"+{delta:.3f}" if delta > 0.001 else "BEST"
+                label = f"L{li+1}  {format_laptime(d.lap_times[li])}  ({dstr})"
                 if thr is not None:
-                    ax.plot(x[::step], thr[s:e][::step], color=col, lw=1.2, alpha=0.8, label=f'L{li + 1} Thr')
+                    ax.plot(x[::step], thr[s:e][::step], color=col, lw=1.2, alpha=0.85, label=label)
                 if brk is not None:
                     ax.plot(x[::step], -brk[s:e][::step], color=col, lw=0.8, alpha=0.5, ls='--')
-            ax.set_ylabel("Throttle / -Brake", color=DIM, fontsize=9)
-            ax.legend(fontsize=7, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT, ncol=2, loc='upper right')
+            ax.set_ylabel("Throttle / −Brake", color=DIM, fontsize=9)
+            ax.legend(fontsize=7, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT,
+                      ncol=min(len(laps), 5), loc='upper right')
+            c.fig.tight_layout(pad=1.0); c.draw()
         else:
             ch_name, ylabel = self._OVERLAY_CHANNELS[sel]
             ax = c.std_ax(sel)
             arr = d.get_channel(ch_name)
             if arr is None:
                 c.draw(); return
-            for idx, li in enumerate(laps):
-                if li >= d.num_laps: continue
+            for li, delta in zip(laps, deltas):
                 s, e = d.lap_boundaries[li], d.lap_boundaries[li + 1]
                 x = lap_dist[s:e] * 100 if lap_dist is not None else np.linspace(0, 100, e - s)
-                col = palette[idx % len(palette)]
+                col = cmap_fn(norm(delta))
                 step = max(1, (e - s) // DOWNSAMPLE_LAP)
-                ax.plot(x[::step], arr[s:e][::step], color=col, lw=1.2, alpha=0.85, label=f'Lap {li + 1}')
+                dstr = f"+{delta:.3f}" if delta > 0.001 else "BEST"
+                label = f"Lap {li+1}  {format_laptime(d.lap_times[li])}  ({dstr})"
+                ax.plot(x[::step], arr[s:e][::step], color=col, lw=1.3, alpha=0.85, label=label)
             ax.set_ylabel(ylabel, color=DIM, fontsize=9)
-            ax.legend(fontsize=7, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT, ncol=2, loc='upper right')
-        c.fig.tight_layout(pad=1.0); c.draw()
+            ax.legend(fontsize=7, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT,
+                      ncol=min(len(laps), 5), loc='upper right')
+            c.fig.tight_layout(pad=1.0); c.draw()
+            # Attach cursor on the best lap
+            if lap_dist is not None and laps:
+                best_li = laps[int(np.argmin([d.lap_times[li] for li in laps]))]
+                s_c, e_c = d.lap_boundaries[best_li], d.lap_boundaries[best_li + 1]
+                seg_ld = lap_dist[s_c:e_c] * 100
+                self._attach_cursor(ax, seg_ld,
+                                    [(f"L{best_li+1}(best)", arr[s_c:e_c])])
 
     def _draw_lap_delta(self):
         d = self.cur_data
@@ -334,6 +410,8 @@ class TelemetryTabMixin:
         xs, ys = x[::step], y[::step]
         if "Zones" in sel:
             self._draw_track_map_zones(sel, ax, c, xs, ys, s, e, step, track_estimated); return
+        if "Events" in sel:
+            self._draw_track_map_events(ax, c, xs, ys, x, y, s, e, step, track_estimated); return
         if "Braking" in sel and brake is not None and len(brake) > e:
             cv = brake[s:e][::step]; cmap_name = 'Reds'; clabel = 'Brake Pressure'
         elif speed is not None and len(speed) > e:
@@ -407,6 +485,277 @@ class TelemetryTabMixin:
             self._rp_btn.configure(text="▶ Play")
             self._rp_pos = 0; return
         self.after(33, self._replay_tick)
+
+    def _draw_track_map_events(self, ax, c, xs, ys, x_full, y_full, s, e, step, track_estimated):
+        """Overlay driver events (oversteer, understeer, late brake…) as colored halos on the track map."""
+        # Draw base track in dim grey
+        ax.scatter(xs, ys, c='#2a3a4a', s=2, alpha=0.6, rasterized=True, zorder=1)
+        style = getattr(self, 'cur_style', None)
+        if style is None or not style.events:
+            ax.set_title("Track Map — Events Heatmap (no events detected)", color=TEXT, fontsize=11, pad=6)
+            c.fig.tight_layout(pad=0.5); c.draw(); return
+
+        # Colour map: event_type → (colour, label)
+        TYPE_COLORS = {
+            'snap_oversteer':   ('#e74c3c', 'Oversteer'),
+            'understeer':       ('#f39c12', 'Understeer'),
+            'late_brake':       ('#3498db', 'Late Brake'),
+            'early_throttle':   ('#2ecc71', 'Early Throttle'),
+        }
+        DEFAULT_COLOR = '#9b59b6'
+
+        # Build a LapDistPct → (x, y) lookup from the downsampled track arrays
+        d = self.cur_data
+        lap_dist_full = d.get_channel('LapDistPct')
+        if lap_dist_full is None:
+            c.fig.tight_layout(pad=0.5); c.draw(); return
+
+        dist_seg = lap_dist_full[s:e][::step]
+        n_track = min(len(xs), len(ys), len(dist_seg))
+        dist_seg = dist_seg[:n_track]
+        xs_t, ys_t = xs[:n_track], ys[:n_track]
+
+        # Group events by type for a single legend entry each
+        from collections import defaultdict
+        groups = defaultdict(list)  # type_key -> list of (event_x, event_y, severity)
+        for ev in style.events:
+            # Find nearest track XY for this lap dist position
+            idx = int(np.argmin(np.abs(dist_seg - ev.lap_dist_pct)))
+            col_key = ev.event_type if ev.event_type in TYPE_COLORS else '__other__'
+            groups[col_key].append((xs_t[idx], ys_t[idx], ev.severity))
+
+        plotted_labels = set()
+        legend_handles = []
+        for key, pts in groups.items():
+            color, label = TYPE_COLORS.get(key, (DEFAULT_COLOR, 'Other'))
+            evx = np.array([p[0] for p in pts])
+            evy = np.array([p[1] for p in pts])
+            sizes = np.array([40 + 80 * p[2] for p in pts])
+            sc = ax.scatter(evx, evy, c=color, s=sizes, alpha=0.75,
+                            edgecolors='white', linewidths=0.3, zorder=4,
+                            rasterized=True)
+            if label not in plotted_labels:
+                from matplotlib.lines import Line2D
+                legend_handles.append(
+                    Line2D([0], [0], marker='o', color='w', markerfacecolor=color,
+                           markersize=8, label=f'{label} ({len(pts)})'))
+                plotted_labels.add(label)
+
+        if legend_handles:
+            ax.legend(handles=legend_handles, fontsize=7, facecolor='#1e2845',
+                      edgecolor='#2a3050', labelcolor=TEXT, loc='upper right')
+
+        total = sum(len(v) for v in groups.values())
+        ax.set_title(f"Track Map — Events Heatmap  ({total} events)", color=TEXT, fontsize=11, pad=6)
+        c.fig.tight_layout(pad=0.5); c.draw()
+
+    def _draw_ref_lap_external_delta(self):
+        """Compare the current session best lap against an externally loaded reference IBT."""
+        d = self.cur_data
+        ref = getattr(self, '_ref_data', None)
+        if d is None:
+            return
+        if ref is None:
+            c = self._tc; c.clear()
+            ax = c.std_ax("Reference Lap — External Delta")
+            ax.text(0.5, 0.5, "No reference lap loaded.\nUse 'Load Ref…' to select a reference IBT file.",
+                    transform=ax.transAxes, ha='center', va='center', fontsize=12, color=DIM)
+            c.fig.tight_layout(pad=1.0); c.draw(); return
+
+        result = compute_reference_delta(d, ref)
+        if result is None:
+            c = self._tc; c.clear()
+            ax = c.std_ax("Reference Lap — External Delta")
+            ax.text(0.5, 0.5, "Could not compute delta.\nCheck both sessions have LapDistPct and SessionTime channels.",
+                    transform=ax.transAxes, ha='center', va='center', fontsize=11, color=DIM)
+            c.fig.tight_layout(pad=1.0); c.draw(); return
+
+        from core.analysis_engine import format_laptime
+        c = self._tc; c.clear()
+        title = (f"vs Reference: {result.ref_name[:60]}"
+                 f"   Δ total: {result.total_delta:+.3f}s"
+                 f"  (Ref: {format_laptime(result.ref_best)}  |  Current: {format_laptime(result.cur_best)})")
+        ax = c.std_ax(title, xlabel="Track %")
+        ax.set_ylabel("Time Delta (s) — positive = slower than ref", color=DIM, fontsize=9)
+        ax.axhline(0, color=GREEN, lw=1.0, alpha=0.7, ls='--')
+
+        dist_pct = result.dist_pct * 100
+        delta = result.delta_s
+        ax.plot(dist_pct, delta, color=ACCENT, lw=1.8, alpha=0.9, label='Current vs Ref')
+        ax.fill_between(dist_pct, delta, 0, where=delta < 0, alpha=0.18, color=GREEN,
+                        label='Faster than ref')
+        ax.fill_between(dist_pct, delta, 0, where=delta > 0, alpha=0.18, color=RED,
+                        label='Slower than ref')
+        ax.legend(fontsize=7, facecolor='#1e2845', edgecolor='#2a3050',
+                  labelcolor=TEXT, loc='upper right')
+        c.fig.tight_layout(pad=1.0); c.draw()
+
+    # ── Multi-Lap Overlay (all valid laps, 3-panel) ───────────────────────────
+
+    def _draw_multi_lap_overlay(self):
+        """Show Speed, Throttle and Brake for all valid laps, delta-colored."""
+        d = self.cur_data
+        if not d or d.num_laps < 1: return
+        rpt = self.cur_rpt
+        valid_mask = rpt.valid_lap_mask if rpt else [True] * d.num_laps
+        valid_laps = [i for i, v in enumerate(valid_mask)
+                      if v and i + 1 < len(d.lap_boundaries)]
+        if not valid_laps:
+            valid_laps = list(range(min(d.num_laps, 10)))
+
+        best_time = min(d.lap_times[li] for li in valid_laps)
+        deltas   = [d.lap_times[li] - best_time for li in valid_laps]
+        max_delta = max(deltas) if max(deltas) > 0 else 0.5
+        norm_fn   = Normalize(vmin=0, vmax=max_delta)
+        cmap_fn   = cm.RdYlGn_r
+
+        lap_dist = d.get_channel('LapDistPct')
+        channels = []
+        for ch_name, ylabel in [('Speed', 'Speed (m/s)'),
+                                 ('Throttle', 'Throttle'),
+                                 ('Brake', 'Brake')]:
+            arr = d.get_channel(ch_name)
+            if arr is not None:
+                channels.append((ch_name, arr, ylabel))
+        if not channels:
+            c = self._tc; c.clear(); c.std_ax("No channel data").text(
+                0.5, 0.5, "No data", transform=c.fig.axes[0].transAxes,
+                ha='center', color=DIM); c.draw(); return
+
+        c = self._tc; c.clear()
+        n = len(channels)
+        axes = []
+        for pi, (ch_name, arr, ylabel) in enumerate(channels):
+            share = axes[0] if pi > 0 else None
+            kwargs = dict(facecolor='#0d1b2a', sharex=share) if share else dict(facecolor='#0d1b2a')
+            ax = c.fig.add_subplot(n, 1, pi + 1, **kwargs)
+            axes.append(ax)
+            ax.set_ylabel(ylabel, color=DIM, fontsize=8)
+            ax.tick_params(colors=DIM, labelsize=7)
+            for sp in ax.spines.values(): sp.set_color('#2a3050')
+            ax.grid(True, alpha=0.08, color='#3a4a6a')
+            if pi < n - 1:
+                import matplotlib.pyplot as _plt
+                _plt.setp(ax.get_xticklabels(), visible=False)
+
+            for li, delta in zip(valid_laps, deltas):
+                s, e = d.lap_boundaries[li], d.lap_boundaries[li + 1]
+                x = lap_dist[s:e] * 100 if lap_dist is not None else np.linspace(0, 100, e - s)
+                step = max(1, (e - s) // DOWNSAMPLE_LAP)
+                col = cmap_fn(norm_fn(delta))
+                dstr = f"+{delta:.3f}" if delta > 0.001 else "BEST"
+                lbl_text = (f"L{li+1}  {format_laptime(d.lap_times[li])}  ({dstr})"
+                            if pi == 0 else None)
+                ax.plot(x[::step], arr[s:e][::step], color=col, lw=1.2, alpha=0.85,
+                        label=lbl_text)
+
+            if pi == 0:
+                ax.set_title("Multi-Lap Overlay — Speed + Throttle + Brake  "
+                             "(green = fast, red = slow)", color=TEXT, fontsize=10, pad=4)
+                ax.legend(fontsize=6, facecolor='#1e2845', edgecolor='#2a3050',
+                          labelcolor=TEXT, ncol=min(len(valid_laps), 8), loc='upper right')
+
+        axes[-1].set_xlabel("Track %", color=DIM, fontsize=8)
+        c.fig.tight_layout(pad=0.5, h_pad=0.2); c.draw()
+
+        # Cursor on speed panel (top) using best lap
+        if lap_dist is not None and valid_laps:
+            best_li = valid_laps[int(np.argmin([d.lap_times[li] for li in valid_laps]))]
+            s_c, e_c = d.lap_boundaries[best_li], d.lap_boundaries[best_li + 1]
+            seg_ld = lap_dist[s_c:e_c] * 100
+            ch_arrs = [(ch, arr[s_c:e_c]) for ch, arr, _ in channels
+                       if len(arr) > e_c]
+            self._attach_cursor(axes[0], seg_ld, ch_arrs)
+
+    # ── Interactive Cursor ────────────────────────────────────────────────────
+
+    def _attach_cursor(self, ax, x_arr: np.ndarray, ch_arrs: list):
+        """
+        Attach a hover crosshair to ax.
+        x_arr   : 1-D array of x positions (track %, 0–100) for the reference lap.
+        ch_arrs : list of (label, array) — arrays already sliced to the same lap.
+        """
+        self._detach_cursor()
+        self._cursor_x_arr    = x_arr
+        self._cursor_ch_arrs  = ch_arrs
+        self._cursor_sample_idx = 0
+
+        vline = ax.axvline(x=-999, color='#ffffff', lw=0.9, alpha=0.6, ls=':', zorder=10)
+        self._cursor_vline = vline
+
+        def _label(idx: int) -> str:
+            x_pct = float(x_arr[idx]) if len(x_arr) > 0 else 0.0
+            parts = [f"📍 {x_pct:.1f}%"]
+            for lab, arr in ch_arrs:
+                if arr is not None and idx < len(arr):
+                    parts.append(f"{lab}: {arr[idx]:.3f}")
+            if self._cursor_locked:
+                parts.append("🔒 locked  (←/→ to step,  click to unlock)")
+            return "  |  ".join(parts)
+
+        def on_motion(event):
+            if event.inaxes is None or self._cursor_locked or event.xdata is None:
+                return
+            x = float(np.clip(event.xdata, float(x_arr[0]), float(x_arr[-1])))
+            idx = int(np.argmin(np.abs(x_arr - x)))
+            self._cursor_sample_idx = idx
+            vline.set_xdata([x, x])
+            self._cursor_lbl.configure(text=_label(idx))
+            self._tc.canvas.draw_idle()
+
+        def on_click(event):
+            if event.inaxes is None or event.button != 1 or event.xdata is None:
+                return
+            self._cursor_locked = not self._cursor_locked
+            x = float(np.clip(event.xdata, float(x_arr[0]), float(x_arr[-1])))
+            idx = int(np.argmin(np.abs(x_arr - x)))
+            self._cursor_sample_idx = idx
+            vline.set_xdata([x, x])
+            self._cursor_lbl.configure(text=_label(idx))
+            self._tc.canvas.draw_idle()
+
+        self._cursor_cid_motion = self._tc.canvas.mpl_connect('motion_notify_event', on_motion)
+        self._cursor_cid_click  = self._tc.canvas.mpl_connect('button_press_event',  on_click)
+
+    def _detach_cursor(self):
+        """Disconnect cursor event handlers and reset state."""
+        for attr in ('_cursor_cid_motion', '_cursor_cid_click'):
+            cid = getattr(self, attr, None)
+            if cid is not None:
+                try:
+                    self._tc.canvas.mpl_disconnect(cid)
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+        self._cursor_vline      = None
+        self._cursor_locked     = False
+        self._cursor_x_arr      = None
+        self._cursor_ch_arrs    = None
+        self._cursor_sample_idx = 0
+        try:
+            self._cursor_lbl.configure(
+                text="Hover chart to inspect values — click to lock  •  ←/→ to step when locked")
+        except Exception:
+            pass
+
+    def _cursor_step(self, direction: int):
+        """Move the locked cursor by `direction` samples (±1 or ±10)."""
+        x_arr = self._cursor_x_arr
+        if x_arr is None or not self._cursor_locked:
+            return
+        n = len(x_arr)
+        new_idx = int(np.clip(self._cursor_sample_idx + direction, 0, n - 1))
+        self._cursor_sample_idx = new_idx
+        x = float(x_arr[new_idx])
+        if self._cursor_vline is not None:
+            self._cursor_vline.set_xdata([x, x])
+        parts = [f"📍 {x:.1f}% 🔒 locked  (←/→ to step,  click to unlock)"]
+        if self._cursor_ch_arrs:
+            for lab, arr in self._cursor_ch_arrs:
+                if arr is not None and new_idx < len(arr):
+                    parts.append(f"{lab}: {arr[new_idx]:.3f}")
+        self._cursor_lbl.configure(text="  |  ".join(parts))
+        self._tc.canvas.draw_idle()
 
     def _seek_replay(self, val):
         self._rp_pos = float(val) / 100.0

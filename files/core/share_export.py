@@ -164,6 +164,88 @@ def export_clipboard_text(summary: ShareSummary) -> str:
     return "\n".join(lines)
 
 
+def send_discord_webhook(summary: ShareSummary, webhook_url: str) -> None:
+    """
+    Post a session summary as a Discord embed via an incoming webhook URL.
+
+    Parameters
+    ----------
+    summary     : ShareSummary built by build_share_summary()
+    webhook_url : Discord webhook URL (stored in app config)
+
+    Raises RuntimeError on HTTP error or network failure.
+    """
+    import json as _json
+    import urllib.request as _req
+    import urllib.error as _err
+
+    # Embed colour: green = good, amber = ok, red = poor consistency
+    color = (0x2ecc71 if summary.consistency_score >= 80
+             else 0xf39c12 if summary.consistency_score >= 60
+             else 0xe74c3c)
+
+    fields = [
+        {"name": "Best Lap",    "value": _fmt(summary.best_lap),  "inline": True},
+        {"name": "Avg Lap",     "value": _fmt(summary.avg_lap),   "inline": True},
+        {"name": "Consistency", "value": f"{summary.consistency_score:.0f}/100 ({summary.consistency_grade})", "inline": True},
+        {"name": "Laps",        "value": str(summary.num_laps),   "inline": True},
+    ]
+
+    if summary.sector_times:
+        sector_str = "  |  ".join(
+            f"S{i + 1}: {_fmt(t)}" for i, t in enumerate(summary.sector_times)
+        )
+        if summary.theoretical_best > 0:
+            sector_str += f"\nTheoretical best: {_fmt(summary.theoretical_best)}"
+        fields.append({"name": "Sectors", "value": sector_str, "inline": False})
+
+    if summary.fuel_info.get("fuel_per_lap_l"):
+        fields.append({
+            "name": "Fuel / Lap",
+            "value": f"{summary.fuel_info['fuel_per_lap_l']:.2f} L",
+            "inline": True,
+        })
+
+    if summary.issues:
+        fields.append({
+            "name": "Top Issues",
+            "value": "\n".join(f"• {iss}" for iss in summary.issues[:3]),
+            "inline": False,
+        })
+
+    cond_parts = []
+    if "air_temp_c" in summary.conditions:
+        cond_parts.append(f"Air {summary.conditions['air_temp_c']:.1f}°C")
+    if "track_temp_c" in summary.conditions:
+        cond_parts.append(f"Track {summary.conditions['track_temp_c']:.1f}°C")
+    if cond_parts:
+        fields.append({"name": "Conditions", "value": "  |  ".join(cond_parts), "inline": False})
+
+    embed = {
+        "title": (f"🏎  {summary.car_name.replace('_', ' ').title()} "
+                  f"@ {summary.track_name}"),
+        "color": color,
+        "fields": fields,
+        "footer": {"text": f"iRacing Setup Machine  •  {summary.export_time}"},
+    }
+
+    payload = _json.dumps({"embeds": [embed]}).encode("utf-8")
+    request = _req.Request(
+        webhook_url.strip(),
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with _req.urlopen(request, timeout=10) as resp:
+            if resp.status not in (200, 204):
+                raise RuntimeError(f"Discord responded with HTTP {resp.status}")
+    except _err.HTTPError as exc:
+        raise RuntimeError(f"Discord webhook HTTP error: {exc.code} {exc.reason}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"Discord webhook failed: {exc}") from exc
+
+
 def _fmt(seconds: float) -> str:
     """Format lap time as M:SS.mmm."""
     if seconds <= 0:
