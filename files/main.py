@@ -61,7 +61,9 @@ from core.track_zones         import classify_zones
 from core.setup_parser        import (SetupParser, SetupExporter, SetupDiffer, ParsedSetup,
                                        create_demo_setup, parsed_setup_from_ibt)
 from core.ai_advisor          import (get_ai_recommendations_sync, get_ai_recommendations_stream,
-                                       ask_setup_question_stream, generate_session_note_stream)
+                                       ask_setup_question_stream, generate_session_note_stream,
+                                       get_setup_recommendation_stream,
+                                       _MODEL_HAIKU, _MODEL_SONNET)
 from core.live_telemetry      import LiveTelemetryMonitor, LiveSample
 from core.reference_lap       import compute_reference_delta
 from data.templates.track_templates import get_setup_template, get_track_info, list_tracks
@@ -873,7 +875,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         """Top-level window: pick base .sto + show garage adjustment checklist."""
         win = ctk.CTkToplevel(self)
         win.title("Recommend Setup to iRacing")
-        win.geometry("960x680")
+        win.geometry("960x820")
         win.configure(fg_color=DARK)
         win.grab_set()
         win.lift()
@@ -990,6 +992,77 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                           command=lambda: (win.destroy(),
                                           self.tv.set("Setup Optimizer"))
                           ).pack()
+
+        # ── Claude Analysis Panel ─────────────────────────────────────────────
+        ai_frame = ctk.CTkFrame(win, fg_color=PANEL, corner_radius=8)
+        ai_frame.pack(fill='x', padx=12, pady=(0, 6))
+
+        ai_hdr = ctk.CTkFrame(ai_frame, fg_color='transparent')
+        ai_hdr.pack(fill='x', padx=12, pady=(8, 4))
+        lbl(ai_hdr, "🤖  Claude's Analysis", 12, bold=True, color=ACCENT).pack(side='left')
+
+        ai_model = self.cfg.get('ai_model', 'haiku')
+        model_id = _MODEL_SONNET if ai_model == 'sonnet' else _MODEL_HAIKU
+        model_label = "Sonnet" if ai_model == 'sonnet' else "Haiku"
+        lbl(ai_hdr, f"Model: {model_label}  •  Change in Settings (⚙)",
+            10, color=DIM).pack(side='right')
+
+        ai_text = ctk.CTkTextbox(ai_frame, height=120, fg_color='#111827',
+                                  font=ctk.CTkFont(size=11), wrap='word',
+                                  state='normal')
+        ai_text.pack(fill='x', padx=12, pady=(0, 4))
+        _key = _get_api_key().strip()
+        _placeholder = ("Click 'Ask Claude' to get an AI analysis of these recommendations.\n"
+                        "Requires API key in Settings (⚙)." if not _key
+                        else "Click 'Ask Claude' to get an AI analysis of these recommendations.")
+        ai_text.insert('1.0', _placeholder)
+        ai_text.configure(state='disabled')
+
+        ai_btn_row = ctk.CTkFrame(ai_frame, fg_color='transparent')
+        ai_btn_row.pack(fill='x', padx=12, pady=(0, 8))
+        ai_ask_btn = ctk.CTkButton(ai_btn_row, text="✨ Ask Claude", width=140, height=30,
+                                    fg_color=BLUE, hover_color='#1a5a8a')
+        ai_ask_btn.pack(side='left')
+        ai_status = lbl(ai_btn_row, "", 10, color=DIM)
+        ai_status.pack(side='left', padx=10)
+
+        def _ask_claude():
+            key = _get_api_key().strip()
+            if not key:
+                messagebox.showwarning("API Key Needed",
+                    "Set your Anthropic API key in Settings (⚙) first.", parent=win)
+                return
+            ai_ask_btn.configure(state='disabled', text="Analyzing…")
+            ai_status.configure(text="⏳ Streaming from Claude…")
+            ai_text.configure(state='normal')
+            ai_text.delete('1.0', 'end')
+            ai_text.configure(state='disabled')
+
+            def stream_worker():
+                gen = get_setup_recommendation_stream(
+                    report=self.cur_rpt,
+                    car_name=car_name,
+                    track_name=track_name,
+                    api_key=key,
+                    setup=self.cur_setup,
+                    opt_result=opt_result,
+                    model=model_id,
+                )
+                for chunk in gen:
+                    def append(c=chunk):
+                        ai_text.configure(state='normal')
+                        ai_text.insert('end', c)
+                        ai_text.configure(state='disabled')
+                        ai_text.see('end')
+                    win.after(0, append)
+                def done():
+                    ai_ask_btn.configure(state='normal', text="✨ Ask Claude")
+                    ai_status.configure(text="✅ Done")
+                win.after(0, done)
+
+            threading.Thread(target=stream_worker, daemon=True).start()
+
+        ai_ask_btn.configure(command=_ask_claude)
 
         # ── Footer ────────────────────────────────────────────────────────────
         footer = ctk.CTkFrame(win, fg_color=PANEL, height=62, corner_radius=0)
@@ -1655,6 +1728,16 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             hover_color="#1a5a8a",command=lambda:(win.destroy(),self._export_pdf())).pack(side='left',padx=8)
         ctk.CTkButton(pr,text="📊 Export CSV",height=30,fg_color=CARD,
             hover_color="#1a5a8a",command=lambda:(win.destroy(),self._export_csv())).pack(side='left',padx=8)
+        # AI Model selector
+        mrow = ctk.CTkFrame(win, fg_color="transparent"); mrow.pack(fill='x', padx=24, pady=4)
+        lbl(mrow, "AI Model:", color=DIM, width=150).pack(side='left')
+        model_var = ctk.StringVar(value=self.cfg.get('ai_model', 'haiku'))
+        ctk.CTkRadioButton(mrow, text="Haiku  (fast, ~$0.005/call)",
+            variable=model_var, value='haiku',
+            fg_color=ACCENT).pack(side='left', padx=(0, 16))
+        ctk.CTkRadioButton(mrow, text="Sonnet  (thorough, ~$0.02/call)",
+            variable=model_var, value='sonnet',
+            fg_color=ACCENT).pack(side='left')
         # Toggles
         trow = ctk.CTkFrame(win, fg_color="transparent"); trow.pack(fill='x', padx=24, pady=6)
         auto_notes_var = ctk.BooleanVar(value=bool(self.cfg.get('auto_notes', True)))
@@ -1677,6 +1760,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         def save():
             _set_api_key(e.get().strip())
             self.cfg['auto_notes'] = auto_notes_var.get()
+            self.cfg['ai_model'] = model_var.get()
             save_cfg(self.cfg)
             win.destroy()
         ctk.CTkButton(br,text="Save",fg_color=ACCENT,command=save,width=120).pack(side='right',padx=4)

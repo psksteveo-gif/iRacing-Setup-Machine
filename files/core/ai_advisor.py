@@ -155,6 +155,128 @@ For EACH corner with issues, provide a specific setup change recommendation that
 Provide 3-5 specific setup changes with expected impact, prioritizing the worst corners. Reference actual current values when available. Distinguish between driver technique issues (brake point, throttle timing) and car setup issues (balance, springs, ARB, aero). Be concise and practical."""
 
 
+_MODEL_HAIKU  = "claude-haiku-4-5-20251001"
+_MODEL_SONNET = "claude-sonnet-4-6"
+
+
+def get_setup_recommendation_stream(
+        report,
+        car_name: str,
+        track_name: str,
+        api_key: str,
+        setup=None,
+        opt_result=None,
+        model: str = _MODEL_HAIKU) -> Generator[str, None, None]:
+    """
+    Stream a focused Claude analysis for the Recommend to iRacing dialog.
+
+    Validates and enriches the optimizer's suggested changes with physics
+    reasoning, warns about risks, and adds track-specific context.
+
+    Parameters
+    ----------
+    report      : AnalysisReport  — telemetry analysis
+    car_name    : str
+    track_name  : str
+    api_key     : str
+    setup       : ParsedSetup | None — IBT-extracted setup (flat dict)
+    opt_result  : OptimizationResult | None — optimizer output
+    model       : str — Claude model ID ('haiku' or 'sonnet')
+    """
+    if not api_key or not api_key.strip():
+        yield "Set your Anthropic API key in Settings (⚙) to get Claude's analysis."
+        return
+
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key, timeout=60.0)
+    except ImportError:
+        yield "Install the anthropic package: pip install anthropic"
+        return
+
+    car_name   = _sanitize(car_name, 120)
+    track_name = _sanitize(track_name, 120)
+
+    # --- Build context blocks ---
+    bal = report.balance_score if report else 0.0
+    bal_desc = (
+        f"{bal:+.2f} — "
+        + ("significant oversteer" if bal > 0.3
+           else "mild oversteer" if bal > 0.05
+           else "neutral" if abs(bal) <= 0.05
+           else "mild understeer" if bal > -0.3
+           else "significant understeer")
+    )
+
+    phase_text = ""
+    if report and (report.balance_entry or report.balance_mid or report.balance_exit):
+        phase_text = (
+            f"\nCorner phase balance (+=OS, -=US):\n"
+            f"  Entry:  {report.balance_entry:+.2f}\n"
+            f"  Mid:    {report.balance_mid:+.2f}\n"
+            f"  Exit:   {report.balance_exit:+.2f}"
+        )
+
+    tire_text = ""
+    if report and report.tire_summary:
+        tire_text = "\nTire temperatures:\n"
+        for corner, temps in report.tire_summary.items():
+            tire_text += (f"  {corner}: inner={temps['inner']:.0f}°C "
+                          f"mid={temps['mid']:.0f}°C outer={temps['outer']:.0f}°C "
+                          f"avg={temps['avg']:.0f}°C\n")
+
+    issues_text = ""
+    if report and report.issues:
+        issues_text = "\nDetected issues:\n"
+        for iss in report.issues[:6]:
+            issues_text += f"  [{iss.severity.value.upper()}] {iss.title}: {iss.description}\n"
+
+    setup_text = ""
+    if setup and hasattr(setup, 'flat') and setup.flat:
+        pairs = [f"  {_sanitize(k, 60)}: {_sanitize(str(v), 80)}"
+                 for k, v in list(setup.flat.items())[:40]]
+        setup_text = "\nCurrent setup (from IBT):\n" + "\n".join(pairs)
+
+    changes_text = ""
+    if opt_result and opt_result.changes:
+        changes_text = "\nOptimizer recommended changes:\n"
+        for ch in opt_result.changes:
+            param = ch.get('parameter', '').replace('_', ' ')
+            delta = ch.get('delta', 0)
+            sign = '+' if delta > 0 else ''
+            changes_text += f"  {param}: {sign}{delta:g}\n"
+
+    best_lap = f"{report.best_lap:.3f}s" if report and report.best_lap else "unknown"
+
+    prompt = f"""You are an expert iRacing setup engineer. A driver has loaded their telemetry and the app's optimizer has suggested setup changes. Your job is to:
+1. Validate the optimizer's recommendations — explain WHY each change makes sense (or flag if risky)
+2. Add context specific to this car and track
+3. Note any setup concerns the optimizer may have missed (e.g. tire temp imbalances suggesting camber issue)
+4. Give a 1-sentence priority tip: the single most impactful change to make first
+
+Car: {car_name}
+Track: {track_name}
+Best lap: {best_lap}
+Balance score: {bal_desc}
+{phase_text}
+{tire_text}
+{issues_text}
+{setup_text}
+{changes_text}
+Keep your response under 250 words. Use short paragraphs, no bullet soup. Speak directly to the driver."""
+
+    try:
+        with client.messages.stream(
+            model=model,
+            max_tokens=400,
+            messages=[{"role": "user", "content": prompt}],
+        ) as stream:
+            for text in stream.text_stream:
+                yield text
+    except Exception as e:
+        yield f"AI request failed: {e}\nCheck your API key and internet connection."
+
+
 def get_ai_recommendations_sync(report: AnalysisReport, car_name: str,
                                  track_name: str, api_key: str,
                                  setup_data: dict | None = None,
@@ -183,7 +305,7 @@ def get_ai_recommendations_sync(report: AnalysisReport, car_name: str,
                                session_info=session_info, corner_report=corner_report)
 
         message = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model=_MODEL_SONNET,
             max_tokens=1024,
             messages=[{"role": "user", "content": prompt}]
         )
@@ -227,7 +349,7 @@ def get_ai_recommendations_stream(report: AnalysisReport, car_name: str,
                                session_info=session_info, corner_report=corner_report)
 
         with client.messages.stream(
-            model="claude-sonnet-4-20250514",
+            model=_MODEL_SONNET,
             max_tokens=1024,
             messages=[{"role": "user", "content": prompt}],
         ) as stream:
@@ -293,7 +415,7 @@ Write 3 sentences max. No bullet points. No intro phrase like "In this session..
 
     try:
         with client.messages.stream(
-            model="claude-sonnet-4-20250514",
+            model=_MODEL_SONNET,
             max_tokens=200,
             messages=[{"role": "user", "content": prompt}],
         ) as stream:
@@ -383,7 +505,7 @@ Answer directly and specifically. If the question concerns a setup parameter cha
         import anthropic
         client = anthropic.Anthropic(api_key=api_key, timeout=30.0)
         with client.messages.stream(
-            model="claude-sonnet-4-20250514",
+            model=_MODEL_SONNET,
             max_tokens=400,
             messages=[{"role": "user", "content": prompt}],
         ) as stream:
