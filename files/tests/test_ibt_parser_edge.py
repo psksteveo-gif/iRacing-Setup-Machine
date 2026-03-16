@@ -42,34 +42,38 @@ class TestMalformedIBT:
 
     def test_negative_var_count_raises(self, tmp_path):
         """Negative num_vars in header should be rejected."""
+        # iRacing SDK irsdk_header layout:
+        #   0: ver, 4: status, 8: tickRate, 12: sessionInfoUpdate,
+        #  16: sessionInfoLen, 20: sessionInfoOffset, 24: numVars, 28: varHeaderOffset,
+        #  32: numBuf, 36: bufLen
         header = bytearray(200)
         struct.pack_into('i', header, 0, 1)     # version
         struct.pack_into('i', header, 8, 60)    # tick_rate
-        struct.pack_into('i', header, 12, 0)    # session_info_offset
         struct.pack_into('i', header, 16, 0)    # session_info_len
-        struct.pack_into('i', header, 20, -5)   # num_vars (negative)
-        struct.pack_into('i', header, 24, 112)  # var_header_offset
-        struct.pack_into('i', header, 28, 1)    # num_buf
-        struct.pack_into('i', header, 32, 4)    # buf_len
+        struct.pack_into('i', header, 20, 0)    # session_info_offset (valid: 0 bytes at offset 0)
+        struct.pack_into('i', header, 24, -5)   # num_vars (negative — invalid)
+        struct.pack_into('i', header, 28, 112)  # var_header_offset
+        struct.pack_into('i', header, 32, 1)    # num_buf
+        struct.pack_into('i', header, 36, 4)    # buf_len
         f = tmp_path / "neg_vars.ibt"
         f.write_bytes(bytes(header))
-        with pytest.raises(ValueError, match="Suspicious"):
+        with pytest.raises(ValueError, match="out of range"):
             IBTParser(str(f)).parse()
 
     def test_excessive_var_count_raises(self, tmp_path):
-        """num_vars > 10000 should be rejected as suspicious."""
+        """num_vars > 5000 should be rejected as out of range."""
         header = bytearray(200)
         struct.pack_into('i', header, 0, 1)
         struct.pack_into('i', header, 8, 60)
-        struct.pack_into('i', header, 12, 0)
-        struct.pack_into('i', header, 16, 0)
-        struct.pack_into('i', header, 20, 50000)  # too many
-        struct.pack_into('i', header, 24, 112)
-        struct.pack_into('i', header, 28, 1)
-        struct.pack_into('i', header, 32, 4)
+        struct.pack_into('i', header, 16, 0)    # session_info_len
+        struct.pack_into('i', header, 20, 0)    # session_info_offset (valid)
+        struct.pack_into('i', header, 24, 50000)  # num_vars (too many — invalid)
+        struct.pack_into('i', header, 28, 112)
+        struct.pack_into('i', header, 32, 1)
+        struct.pack_into('i', header, 36, 4)
         f = tmp_path / "many_vars.ibt"
         f.write_bytes(bytes(header))
-        with pytest.raises(ValueError, match="Suspicious"):
+        with pytest.raises(ValueError, match="out of range"):
             IBTParser(str(f)).parse()
 
     def test_truncated_var_headers(self, tmp_path):

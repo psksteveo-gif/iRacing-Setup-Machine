@@ -311,6 +311,135 @@ def create_demo_setup(car: str = "ferrari_296_gt3", track: str = "Sebring") -> P
     return setup
 
 
+# ── Label helpers ─────────────────────────────────────────────────────────────
+
+# CamelCase → human label overrides for known iRacing parameter names
+_LABEL_MAP = {
+    'ArbSetting':        'ARB Setting',
+    'AbsSetting':        'ABS Setting',
+    'TcSetting':         'TC Setting',
+    'ToeIn':             'Toe-in',
+    'SpringPerchOffset': 'Spring Perch Offset',
+    'RideHeight':        'Ride Height',
+    'CornerWeight':      'Corner Weight',
+    'StartingPressure':  'Starting Pressure',
+    'LastHotPressure':   'Last Hot Pressure',
+    'TreadRemaining':    'Tread Remaining',
+    'LastTempsOMI':      'Last Temps O-M-I',
+    'LastTempsIMO':      'Last Temps I-M-O',
+    'BrakePressureBias': 'Brake Pressure Bias',
+    'CrossWeight':       'Cross Weight',
+    'ThrottleSetting':   'Throttle Setting',
+    'DisplayPage':       'Display Page',
+    'TcMode':            'TC Mode',
+    'FrontBrakePadMu':   'Brake Pad Mu',   # section prefix already says Front
+    'RearBrakePadMu':    'Brake Pad Mu',   # section prefix already says Rear
+    'FuelLevel':         'Fuel Level',
+    'FuelLowWarning':    'Fuel Low Warning',
+    'FrontWeight':       'Weight',
+    'WingAngle':         'Wing Angle',
+    'TireType':          'Tire Type',
+    'Camber':            'Camber',
+    'UpdateCount':       None,   # skip this key
+}
+
+_SECTION_PREFIX = {
+    'Front':      'Front',
+    'LeftFront':  'LF',
+    'RightFront': 'RF',
+    'LeftRear':   'LR',
+    'RightRear':  'RR',
+    'InCarDials': '',
+    'Rear':       'Rear',
+}
+
+_SECTION_LABEL = {
+    'Front':      'Front',
+    'LeftFront':  'Left Front',
+    'RightFront': 'Right Front',
+    'LeftRear':   'Left Rear',
+    'RightRear':  'Right Rear',
+    'InCarDials': 'In-Car Dials',
+    'Rear':       'Rear',
+}
+
+
+def _ibt_key_label(camel: str, prefix: str) -> Optional[str]:
+    """Convert a CamelCase IBT key + prefix to a display label, or None to skip."""
+    label = _LABEL_MAP.get(camel)
+    if label is None and camel in _LABEL_MAP:
+        return None   # explicit skip
+    if label is None:
+        # Generic CamelCase → spaced title
+        label = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', camel)
+    if prefix:
+        return f"{prefix} {label}"
+    return label
+
+
+def parsed_setup_from_ibt(car_setup: dict,
+                           car_name: str = '',
+                           track_name: str = '') -> 'ParsedSetup':
+    """
+    Convert an IBT CarSetup dict (from ibt_parser session_info['car_setup'])
+    into a ParsedSetup with sections matching the iRacing garage layout.
+    """
+    setup = ParsedSetup(
+        car=car_name,
+        track=track_name,
+        filename='(loaded from IBT telemetry)',
+        parsed_at=datetime.now().isoformat(),
+    )
+
+    # ── Tires ──────────────────────────────────────────────────────────────
+    tires = car_setup.get('Tires', {})
+    if tires:
+        tire_params: Dict[str, str] = {}
+        # Tire type first
+        tt = tires.get('TireType', {})
+        if isinstance(tt, dict) and tt.get('TireType'):
+            tire_params['Tire Type'] = str(tt['TireType'])
+        elif isinstance(tt, str):
+            tire_params['Tire Type'] = tt
+        # Per-corner data
+        for corner_key, prefix in [('LeftFront','LF'), ('RightFront','RF'),
+                                    ('LeftRear','LR'), ('RightRear','RR')]:
+            corner = tires.get(corner_key, {})
+            if not isinstance(corner, dict):
+                continue
+            for k, v in corner.items():
+                lbl = _LABEL_MAP.get(k) or re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', k)
+                if lbl:
+                    tire_params[f"{prefix} {lbl}"] = str(v)
+        if tire_params:
+            sec = SetupSection('Tires', tire_params)
+            setup.sections.append(sec)
+            setup.flat.update(tire_params)
+
+    # ── Chassis ────────────────────────────────────────────────────────────
+    chassis = car_setup.get('Chassis', {})
+    if isinstance(chassis, dict):
+        section_order = ['Front', 'LeftFront', 'RightFront',
+                         'InCarDials', 'LeftRear', 'RightRear', 'Rear']
+        for sec_key in section_order:
+            sec_data = chassis.get(sec_key, {})
+            if not isinstance(sec_data, dict) or not sec_data:
+                continue
+            prefix = _SECTION_PREFIX.get(sec_key, sec_key)
+            params: Dict[str, str] = {}
+            for k, v in sec_data.items():
+                label = _ibt_key_label(k, prefix)
+                if label:
+                    params[label] = str(v)
+            if params:
+                sec_label = _SECTION_LABEL.get(sec_key, sec_key)
+                sec = SetupSection(sec_label, params)
+                setup.sections.append(sec)
+                setup.flat.update(params)
+
+    return setup
+
+
 if __name__ == "__main__":
     setup = create_demo_setup()
     print(f"Car: {setup.car}")

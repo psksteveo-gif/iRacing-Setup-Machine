@@ -58,7 +58,8 @@ from core.corner_analysis     import CornerAnalyzer, CornerAnalysisReport, LapDe
 from core.consistency_score   import compute_consistency, ConsistencyBreakdown
 from core.tire_wear_prediction import predict_tire_wear, TireWearPrediction
 from core.track_zones         import classify_zones
-from core.setup_parser        import SetupParser, SetupExporter, SetupDiffer, ParsedSetup, create_demo_setup
+from core.setup_parser        import (SetupParser, SetupExporter, SetupDiffer, ParsedSetup,
+                                       create_demo_setup, parsed_setup_from_ibt)
 from core.ai_advisor          import (get_ai_recommendations_sync, get_ai_recommendations_stream,
                                        ask_setup_question_stream, generate_session_note_stream)
 from core.live_telemetry      import LiveTelemetryMonitor, LiveSample
@@ -81,6 +82,8 @@ from core.motec_export        import export_motec_csv
 from core.ml_predictor        import LapTimePredictor, SessionFeatures
 from core.ibt_cache           import load_cached, save_cached, evict_old_entries
 from core.car_classifier      import classify_car
+from core.setup_recommend     import (find_sto_files, score_sto_matches, copy_base_setup,
+                                       get_car_setups_dir, build_checklist, StoMatch)
 
 # ── Theme ─────────────────────────────────────────────────────────────────────
 ctk.set_appearance_mode("dark")
@@ -146,6 +149,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self._live_win = None  # ctk.CTkToplevel for live dashboard
         self._ml_predictor = LapTimePredictor()
         self._ml_features: list[SessionFeatures] = []
+        self._last_opt_result: OptimizationResult | None = None
         self._session_notes: dict[int, str] = {}  # session-index → auto-generated note
         self._batch_queue: list[str] = []
         self._batch_total = 0
@@ -381,8 +385,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                      tooltip=f"Composite consistency rating: lap times ({cs.lap_time_score:.0f}), sectors ({cs.sector_score:.0f}), corners ({cs.corner_score:.0f}), brakes ({cs.brake_point_score:.0f}), speed ({cs.speed_score:.0f})")
         at=d.session_info.get('air_temp_c')
         tt=d.session_info.get('track_temp_c')
-        if at: stat_blk(sr,"Air Temp",f"{at:.1f}°C",tooltip="Ambient air temperature")
-        if tt: stat_blk(sr,"Track Temp",f"{tt:.1f}°C",YELLOW,tooltip="Track surface temperature")
+        if at: stat_blk(sr,"Air Temp",f"{at:.1f}°C / {at*9/5+32:.1f}°F",tooltip="Ambient air temperature")
+        if tt: stat_blk(sr,"Track Temp",f"{tt:.1f}°C / {tt*9/5+32:.1f}°F",YELLOW,tooltip="Track surface temperature")
         ws=d.session_info.get('wind_speed_ms')
         if ws: stat_blk(sr,"Wind",f"{ws:.1f} m/s",tooltip="Wind speed")
         lbl(self._di,f"🔴 {r.critical_count} Critical  🟡 {r.warning_count} Warning  🔵 {r.info_count} Info",12,color=DIM).pack(anchor='w',padx=12,pady=(0,2))
@@ -523,7 +527,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
 
     def _draw_tires(self,ts):
         c=self._dth; c.clear(); ax=c.fig.add_subplot(111,facecolor=PANEL)
-        ax.set_title("Tire Temps (°C)",color=TEXT,fontsize=11); ax.set_xlim(0,4); ax.set_ylim(0,3); ax.axis('off')
+        ax.set_title("Tire Temps (°C / °F)",color=TEXT,fontsize=11); ax.set_xlim(0,4); ax.set_ylim(0,3); ax.axis('off')
         pos={'LF':(0.5,2.2),'RF':(2.5,2.2),'LR':(0.5,0.2),'RR':(2.5,0.2)}
         for corner,(cx,cy) in pos.items():
             t=ts.get(corner,{})
@@ -535,7 +539,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 ax.add_patch(rect)
                 ax.text(cx+i*0.28-0.28,cy+0.25,f"{tv:.0f}",ha='center',va='center',fontsize=7,color='white',fontweight='bold')
             ax.text(cx,cy+0.72,corner,ha='center',fontsize=11,color=TEXT,fontweight='bold')
-            ax.text(cx,cy-0.18,f"avg {t.get('avg',0):.1f}°C",ha='center',fontsize=8,color=DIM)
+            avg_c=t.get('avg',0); avg_f=avg_c*9/5+32
+            ax.text(cx,cy-0.18,f"avg {avg_c:.1f}°C / {avg_f:.1f}°F",ha='center',fontsize=7,color=DIM)
         c.fig.tight_layout(pad=0.3); c.draw()
 
     def _compute_consistency_score(self) -> ConsistencyBreakdown | None:
@@ -739,7 +744,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         tb.pack(fill='x',padx=10,pady=(8,4)); tb.pack_propagate(False)
         for t,cmd,bg in [("📂 Load Setup (.htm)",self._load_setup,ACCENT),
                           ("💾 Export Setup",self._export_setup,CARD),
-                          ("🏁 Save to iRacing",self._save_to_iracing,CARD),
+                          ("🏁 Recommend to iRacing",self._recommend_to_iracing,CARD),
                           ("🔄 Demo Setup",self._demo_setup,CARD),
                           ("📊 Compare Setups",self._cmp_setups,CARD)]:
             ctk.CTkButton(tb,text=t,height=32,fg_color=bg,
@@ -786,41 +791,255 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 return candidate
         return None
 
-    def _save_to_iracing(self):
-        if not self.cur_setup:
-            messagebox.showwarning("No Setup", "Load a setup first.")
+    def _recommend_to_iracing(self):
+        """Open the Recommend to iRacing dialog, auto-running the optimizer if needed."""
+        if not self.cur_rpt:
+            messagebox.showwarning("No Telemetry",
+                "Load an IBT telemetry file first.\n\n"
+                "The app will extract your setup and analyze your driving\n"
+                "to generate a personalized recommendation.")
             return
+
         setups_dir = self._find_iracing_setups_dir()
         if not setups_dir:
             messagebox.showerror("iRacing Not Found",
-                "Could not find iRacing setups folder.\n\n"
-                "Expected at:\n  Documents/iRacing/setups/\n\n"
-                "Use 'Export Setup' to save to a custom location.")
+                "Could not find the iRacing setups folder.\n\n"
+                "Expected at:\n  Documents/iRacing/setups/")
             return
-        # Determine car subfolder from the setup's car name
-        car = (self.cur_setup.car or '').strip()
-        if not car and self.cur_data:
-            car = self.cur_data.car_name or ''
-        # Sanitize into a safe folder name (keep alphanumeric, underscores, hyphens, spaces)
-        car_folder = re.sub(r'[^\w\s\-]', '', car).strip() or 'unknown_car'
-        target_dir = os.path.join(setups_dir, car_folder)
-        os.makedirs(target_dir, exist_ok=True)
-        default_name = f"setup_{datetime.now():%Y%m%d_%H%M}.htm"
-        path = filedialog.asksaveasfilename(
-            title="Save Setup to iRacing", defaultextension=".htm",
-            initialdir=target_dir,
-            filetypes=[("iRacing Setup", "*.htm")],
-            initialfile=default_name)
-        if not path:
-            return
-        try:
-            SetupExporter().export_htm(self.cur_setup, path)
-            messagebox.showinfo("Saved to iRacing",
-                f"Setup saved!\n\n{path}\n\n"
-                "It will appear in the iRacing garage\nunder this car's setup list.")
-        except Exception:
-            logger.exception("Failed to save setup to iRacing")
-            messagebox.showerror("Error", "Failed to save setup file.")
+
+        car_name = (self.cur_data.car_name or '') if self.cur_data else ''
+        track_name = (self.cur_data.track_name or '') if self.cur_data else ''
+        if not car_name and self.cur_setup:
+            car_name = self.cur_setup.car or ''
+
+        session_type = 'race'
+        if self.cur_data and self.cur_data.session_info:
+            st = self.cur_data.session_info.get('session_type', '').lower()
+            if 'qual' in st:
+                session_type = 'qualify'
+            elif 'endur' in st:
+                session_type = 'endurance'
+
+        matches = find_sto_files(setups_dir, car_name)
+        matches = score_sto_matches(matches, car_name, track_name, session_type)
+
+        # If optimizer hasn't run yet for this session, run it now automatically
+        if self._last_opt_result is None:
+            self._run_optimizer_for_recommend(matches, car_name, track_name, setups_dir)
+        else:
+            self._show_recommend_dialog(matches, self._last_opt_result,
+                                        car_name, track_name, setups_dir)
+
+    def _run_optimizer_for_recommend(self, matches, car_name, track_name, setups_dir):
+        """Run optimizer in background then open recommend dialog."""
+        # Build a quick loading dialog
+        loading = ctk.CTkToplevel(self)
+        loading.title("Optimizing Setup…")
+        loading.geometry("340x120")
+        loading.configure(fg_color=DARK)
+        loading.grab_set()
+        loading.lift()
+        lbl(loading, "Analyzing your telemetry and optimizing setup…",
+            12, color=TEXT, wraplength=300, justify='center').pack(pady=(24, 8))
+        bar = ctk.CTkProgressBar(loading, mode='indeterminate', width=260)
+        bar.pack(); bar.start()
+
+        balance = self.cur_rpt.balance_score if self.cur_rpt else 0.0
+        issues  = [f.title for f in self.cur_rpt.issues] if self.cur_rpt else []
+
+        def worker():
+            from core.setup_optimizer import optimize_setup, OptimizationTarget
+            result = optimize_setup(
+                current_balance=balance,
+                current_issues=issues,
+                target=OptimizationTarget(mode='balance_and_time'),
+                n_generations=60,
+                pop_size=80,
+            )
+            self.after(0, lambda: _done(result))
+
+        def _done(result):
+            self._last_opt_result = result
+            try:
+                bar.stop(); loading.destroy()
+            except Exception:
+                pass
+            self._show_recommend_dialog(matches, result, car_name, track_name, setups_dir)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_recommend_dialog(self, matches: list, opt_result, car_name: str,
+                                track_name: str, setups_dir: str):
+        """Top-level window: pick base .sto + show garage adjustment checklist."""
+        win = ctk.CTkToplevel(self)
+        win.title("Recommend Setup to iRacing")
+        win.geometry("960x680")
+        win.configure(fg_color=DARK)
+        win.grab_set()
+        win.lift()
+
+        # ── Header ────────────────────────────────────────────────────────────
+        hdr = ctk.CTkFrame(win, fg_color=PANEL, height=52, corner_radius=0)
+        hdr.pack(fill='x')
+        hdr.pack_propagate(False)
+        lbl(hdr, "🏁  Recommend Setup to iRacing", 14, bold=True).pack(
+            side='left', padx=16, pady=14)
+        lbl(hdr, f"{car_name}  |  {track_name}", 11, color=DIM).pack(
+            side='right', padx=16)
+
+        # ── Content ───────────────────────────────────────────────────────────
+        content = ctk.CTkFrame(win, fg_color='transparent')
+        content.pack(fill='both', expand=True, padx=12, pady=8)
+
+        # Left column: base setup picker
+        left = ctk.CTkFrame(content, fg_color=PANEL, corner_radius=8, width=380)
+        left.pack(side='left', fill='both', padx=(0, 6))
+        left.pack_propagate(False)
+
+        lbl(left, "Step 1 — Choose a Base Setup", 12, bold=True,
+            color=ACCENT).pack(anchor='w', padx=12, pady=(12, 2))
+        lbl(left,
+            "This .sto file will be copied to your setups folder.\n"
+            "Load it in iRacing then apply the Step 2 changes.",
+            10, color=DIM, wraplength=340, justify='left').pack(
+            anchor='w', padx=12, pady=(0, 8))
+
+        sel_var = ctk.StringVar(value=matches[0].path if matches else '')
+
+        sto_scroll = ctk.CTkScrollableFrame(left, fg_color='transparent')
+        sto_scroll.pack(fill='both', expand=True, padx=8, pady=(0, 8))
+
+        best_score = matches[0].score if matches else 0
+        for m in matches[:25]:
+            badge = '  ★ best match' if m.score == best_score else ''
+            stype = m.session_type.upper()
+            wet   = '  WET' if m.is_wet else ''
+            sub   = f"[{stype}{wet}]{badge}"
+            rb = ctk.CTkRadioButton(
+                sto_scroll, text=m.filename,
+                variable=sel_var, value=m.path,
+                fg_color=ACCENT, text_color=TEXT,
+                font=ctk.CTkFont(size=10))
+            rb.pack(anchor='w', pady=(4, 0), padx=4)
+            lbl(sto_scroll, sub, 9, color=GREEN if badge else DIM).pack(
+                anchor='w', padx=24, pady=(0, 4))
+
+        # Right column: adjustment checklist
+        right = ctk.CTkFrame(content, fg_color=PANEL, corner_radius=8)
+        right.pack(side='left', fill='both', expand=True, padx=(6, 0))
+
+        lbl(right, "Step 2 — Apply These Garage Adjustments", 12, bold=True,
+            color=ACCENT).pack(anchor='w', padx=12, pady=(12, 2))
+
+        chk_vars = []
+        impact_preds = {}
+        if opt_result and opt_result.impact:
+            impact_preds = {p.parameter: p for p in opt_result.impact.predictions}
+        items = build_checklist(opt_result.changes, self.cur_setup,
+                                impact_predictions=impact_preds) if opt_result else []
+
+        if items:
+            lbl(right,
+                f"After loading the base setup, make these {len(items)} changes in "
+                "the iRacing garage, then save as your own setup.",
+                10, color=DIM, wraplength=520, justify='left').pack(
+                anchor='w', padx=12, pady=(0, 8))
+
+            chk_scroll = ctk.CTkScrollableFrame(right, fg_color='transparent')
+            chk_scroll.pack(fill='both', expand=True, padx=8, pady=(0, 8))
+
+            for item in items:
+                var = ctk.BooleanVar(value=False)
+                chk_vars.append((var, item))
+
+                cf = ctk.CTkFrame(chk_scroll, fg_color='#1e2845', corner_radius=6)
+                cf.pack(fill='x', pady=3)
+
+                row = ctk.CTkFrame(cf, fg_color='transparent')
+                row.pack(fill='x', padx=8, pady=(7, 2))
+
+                ctk.CTkCheckBox(row, text='', variable=var, width=24,
+                                fg_color=GREEN, checkmark_color=DARK,
+                                border_color=DIM).pack(side='left')
+                lbl(row, item.label, 12, bold=True).pack(side='left', padx=(6, 0))
+                val_col = GREEN if item.delta > 0 else RED
+                lbl(row, item.display, 12, bold=True, color=val_col).pack(
+                    side='right', padx=8)
+
+                # Show current → recommended if IBT setup was loaded
+                if item.current_value and item.recommended_value:
+                    arrow_row = ctk.CTkFrame(cf, fg_color='transparent')
+                    arrow_row.pack(fill='x', padx=36, pady=(0, 2))
+                    lbl(arrow_row, item.current_value, 11,
+                        color=DIM).pack(side='left')
+                    lbl(arrow_row, '  →  ', 11, color=DIM).pack(side='left')
+                    lbl(arrow_row, item.recommended_value, 11, bold=True,
+                        color=val_col).pack(side='left')
+
+                lbl(cf, item.hint, 10, color=DIM).pack(
+                    anchor='w', padx=36, pady=(0, 7))
+        else:
+            mid = ctk.CTkFrame(right, fg_color='transparent')
+            mid.pack(expand=True)
+            lbl(mid,
+                "Run the Setup Optimizer first to get\n"
+                "specific garage adjustment recommendations.",
+                13, color=DIM, justify='center').pack(pady=20)
+            ctk.CTkButton(mid, text="Open Optimizer Tab", width=180, height=34,
+                          fg_color=CARD,
+                          command=lambda: (win.destroy(),
+                                          self.tv.set("Setup Optimizer"))
+                          ).pack()
+
+        # ── Footer ────────────────────────────────────────────────────────────
+        footer = ctk.CTkFrame(win, fg_color=PANEL, height=62, corner_radius=0)
+        footer.pack(fill='x', side='bottom')
+        footer.pack_propagate(False)
+
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+        name_var = ctk.StringVar(value=f"AI_Recommended_{timestamp}.sto")
+
+        lbl(footer, "Save as:", 11).pack(side='left', padx=(14, 4), pady=18)
+        ctk.CTkEntry(footer, textvariable=name_var, width=300, height=32,
+                     font=ctk.CTkFont(size=11)).pack(side='left', pady=18)
+
+        def do_copy():
+            src = sel_var.get()
+            name = name_var.get().strip() or f"AI_Recommended_{timestamp}.sto"
+            if not name.endswith('.sto'):
+                name += '.sto'
+            if not src or not os.path.isfile(src):
+                messagebox.showerror("No File Selected",
+                                     "Select a base setup file.", parent=win)
+                return
+            # Copy to the car-level setups dir (one below setups_dir)
+            dest_dir = get_car_setups_dir(src, setups_dir)
+            try:
+                dest = copy_base_setup(src, dest_dir, name)
+                checklist_lines = '\n'.join(
+                    f"  {'✓' if v.get() else '○'}  {item.label}: {item.display}"
+                    for v, item in chk_vars
+                ) or "  (Run the Setup Optimizer for specific recommendations)"
+                messagebox.showinfo(
+                    "Setup Copied!",
+                    f"Base setup copied to:\n{dest}\n\n"
+                    "─── In iRacing ───\n"
+                    "1. Go to Garage → Load Car Setup\n"
+                    f"2. Select  '{name}'\n"
+                    "3. Apply these garage changes:\n"
+                    f"{checklist_lines}\n"
+                    "4. Save as your own setup name",
+                    parent=win)
+            except Exception as e:
+                logger.exception("Failed to copy .sto base setup")
+                messagebox.showerror("Copy Failed", str(e), parent=win)
+
+        ctk.CTkButton(footer, text="Cancel", width=80, height=36,
+                      fg_color=CARD, hover_color='#1a5a8a',
+                      command=win.destroy).pack(side='right', padx=(0, 12), pady=13)
+        ctk.CTkButton(footer, text="🏁  Copy to iRacing", width=170, height=36,
+                      fg_color=ACCENT, hover_color='#c0392b',
+                      command=do_copy).pack(side='right', padx=(0, 8), pady=13)
 
     def _cmp_setups(self):
         if not self.cur_setup: messagebox.showwarning("Need Setup A","Load a primary setup first."); return
@@ -2084,6 +2303,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _show_optimizer_result(self, result: OptimizationResult, orig_balance: float):
+        self._last_opt_result = result
         self._opt_btn.configure(state='normal', text="Run Optimizer")
         self._opt_status.configure(text="✅ Done")
         for w in self._opt_cards.winfo_children(): w.destroy()
@@ -2255,7 +2475,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         # Tire temps grid
         tg_outer = ctk.CTkFrame(win, fg_color=PANEL, corner_radius=8)
         tg_outer.pack(fill='x', padx=10, pady=4)
-        lbl(tg_outer, "Tire Temperatures (°C)", 10, bold=True, color=DIM).pack(anchor='w', padx=10, pady=(6, 2))
+        lbl(tg_outer, "Tire Temperatures (°C / °F)", 10, bold=True, color=DIM).pack(anchor='w', padx=10, pady=(6, 2))
         tg = ctk.CTkFrame(tg_outer, fg_color="transparent")
         tg.pack(padx=10, pady=(0, 8))
         win._tire_lbls = {}
@@ -2265,7 +2485,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             f.grid(row=row, column=col, padx=6, pady=4)
             f.grid_propagate(False)
             lbl(f, corner, 10, bold=True, color=DIM).pack(pady=(4, 0))
-            t_lbl = lbl(f, "--°C", 16, bold=True, color=TEXT)
+            t_lbl = lbl(f, "--°C\n--°F", 13, bold=True, color=TEXT)
             t_lbl.pack()
             win._tire_lbls[corner] = t_lbl
 
@@ -2324,7 +2544,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             avg_t = (temps.get('inner', 0) + temps.get('mid', 0) + temps.get('outer', 0)) / 3
             if avg_t > 0:
                 col = RED if avg_t > 105 else YELLOW if avg_t > 95 else GREEN if avg_t > 70 else BLUE
-                t_lbl.configure(text=f"{avg_t:.0f}°C", text_color=col)
+                t_lbl.configure(text=f"{avg_t:.0f}°C\n{avg_t*9/5+32:.0f}°F", text_color=col)
 
     # ══════════════════════════════════════════════════════════════════════════
     # REFERENCE LAP LOADING
@@ -2663,6 +2883,16 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self.cur_sec=sec; self.cur_best=best
         self.cur_stint=stint; self.cur_style=style
         self.cur_fuel=fuel
+        self._last_opt_result = None   # invalidate optimizer result for new session
+        # Auto-load setup from IBT session info if CarSetup is embedded
+        car_setup = data.session_info.get('car_setup')
+        if car_setup:
+            try:
+                self.cur_setup = parsed_setup_from_ibt(
+                    car_setup, data.car_name, data.track_name)
+                self._render_setup(self.cur_setup)
+            except Exception as e:
+                logger.warning("Could not extract setup from IBT: %s", e)
         self._add_sess_card(data,rpt)
         self._refresh(); self._u_cmp_menus()
         # Feed ML predictor with new session features

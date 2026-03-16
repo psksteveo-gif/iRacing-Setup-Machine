@@ -335,6 +335,14 @@ class IBTParser:
                     info['session_laps'] = val
                 elif key == 'sessiontime':
                     info['session_time_limit'] = val
+        # Extract CarSetup block
+        try:
+            car_setup = self._extract_car_setup(text)
+            if car_setup:
+                info['car_setup'] = car_setup
+        except Exception as e:
+            logger.debug("CarSetup extraction skipped: %s", e)
+
         # Resolve player car name from collected drivers
         if 'car_name' not in info and _drivers:
             # Priority: DriverCarIdx match → first non-pace non-AI → first non-pace
@@ -350,6 +358,40 @@ class IBTParser:
             if candidate:
                 info['car_name'] = candidate['screen_name'] or candidate['path'] or 'Unknown Car'
         return info
+
+
+    def _extract_car_setup(self, text: str) -> Optional[Dict[str, Any]]:
+        """
+        Extract the CarSetup section from iRacing session YAML.
+        Returns a nested dict or None if not found.
+        """
+        # Locate the CarSetup top-level key
+        start = text.find('\nCarSetup:')
+        if start == -1:
+            if text.startswith('CarSetup:'):
+                start = -1   # offset correction below
+            else:
+                return None
+        start = start + 1 if start >= 0 else 0  # skip leading \n
+
+        # Collect lines belonging to CarSetup (until next zero-indented key)
+        lines = text[start:].splitlines()
+        block = [lines[0]]
+        for line in lines[1:]:
+            if line and not line[0].isspace() and ':' in line:
+                break
+            block.append(line)
+
+        # Parse the block with PyYAML (values stay as strings due to units)
+        import yaml
+        try:
+            parsed = yaml.safe_load('\n'.join(block))
+        except yaml.YAMLError:
+            parsed = None
+
+        if isinstance(parsed, dict):
+            return parsed.get('CarSetup')
+        return None
 
 
 def load_demo_data() -> TelemetryData:

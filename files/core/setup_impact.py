@@ -138,7 +138,9 @@ _EFFECT_MODELS: Dict[str, Dict] = {
 }
 
 
-def predict_impact(changes: List[Dict[str, float]]) -> ImpactReport:
+def predict_impact(changes: List[Dict[str, float]],
+                   current_balance: float = 0.0,
+                   issues: Optional[List[str]] = None) -> ImpactReport:
     """
     Predict impact of setup changes.
 
@@ -146,9 +148,14 @@ def predict_impact(changes: List[Dict[str, float]]) -> ImpactReport:
     ----------
     changes : list of dicts with keys: 'parameter', 'delta'
         e.g. [{'parameter': 'rear_wing', 'delta': 1}, {'parameter': 'tire_pressure', 'delta': 0.5}]
+    current_balance : float
+        Balance score from telemetry (+ve = oversteer, -ve = understeer)
+    issues : list of str
+        Detected issues from telemetry analysis
 
     Returns ImpactReport with predictions for each change.
     """
+    issues = issues or []
     predictions: List[ImpactPrediction] = []
 
     for change in changes:
@@ -180,7 +187,8 @@ def predict_impact(changes: List[Dict[str, float]]) -> ImpactReport:
             wear = "decreased" if wear == "increased" else "increased"
 
         desc = f"{'+'if delta>0 else ''}{delta:g} {param.replace('_',' ')}"
-        explanation = _explain(param, delta, lt_delta, straight, corner, balance)
+        explanation = _explain(param, delta, lt_delta, straight, corner, balance,
+                               current_balance=current_balance, issues=issues)
 
         predictions.append(ImpactPrediction(
             change_description=desc,
@@ -222,31 +230,271 @@ def predict_impact(changes: List[Dict[str, float]]) -> ImpactReport:
 
 
 def _explain(param: str, delta: float, lt: float, straight: float,
-             corner: float, balance: str) -> str:
-    name = param.replace('_', ' ').title()
-    parts = []
-    if "wing" in param:
-        if delta > 0:
-            parts.append(f"Adding {name} increases downforce.")
-            parts.append(f"Expect ~{abs(straight):.1f} km/h less top speed but ~{abs(corner):.1f} km/h more corner speed.")
-        else:
-            parts.append(f"Reducing {name} decreases downforce.")
-            parts.append(f"Expect ~{abs(straight):.1f} km/h more top speed but ~{abs(corner):.1f} km/h less corner speed.")
-    elif "spring" in param or "arb" in param:
-        stiffer = delta > 0
-        parts.append(f"{'Stiffening' if stiffer else 'Softening'} the {name}.")
-        parts.append(f"Balance shifts toward {balance}.")
-    elif "pressure" in param:
-        parts.append(f"{'Increasing' if delta > 0 else 'Decreasing'} {name} by {abs(delta):.1f} PSI.")
-        parts.append("Higher pressure reduces contact patch but improves response.")
-    elif "bias" in param:
-        parts.append(f"Shifting brake bias {'forward' if delta > 0 else 'rearward'} by {abs(delta):.1f}%.")
-    elif "tc" in param or "abs" in param:
-        parts.append(f"{'Increasing' if delta > 0 else 'Decreasing'} {name} — less driver control, more safety.")
-    else:
-        parts.append(f"Adjusting {name} by {delta:+g}.")
+             corner: float, balance: str,
+             current_balance: float = 0.0,
+             issues: Optional[List[str]] = None) -> str:
+    """
+    Generate a detailed, contextual explanation for a setup change.
+    Includes the problem being addressed, the physics mechanism,
+    what the driver will feel, and the expected performance impact.
+    """
+    issues = issues or []
+    inc = delta > 0
+    mag = abs(delta)
+    unit_str = f"{mag:g} click{'s' if mag != 1 else ''}"
 
-    return " ".join(parts)
+    # Describe current balance situation for context
+    if abs(current_balance) < 0.05:
+        bal_ctx = "your balance is currently close to neutral"
+    elif current_balance > 0:
+        severity = "significant" if current_balance > 0.3 else "mild"
+        bal_ctx = f"your telemetry shows {severity} oversteer (balance: {current_balance:+.2f})"
+    else:
+        severity = "significant" if current_balance < -0.3 else "mild"
+        bal_ctx = f"your telemetry shows {severity} understeer (balance: {current_balance:+.2f})"
+
+    lt_gain = -lt  # negative lt_delta = faster
+    lt_str = (f"estimated {lt_gain:.3f}s faster" if lt_gain > 0
+              else f"estimated {abs(lt_gain):.3f}s slower") if abs(lt) > 0.001 else ""
+
+    if param == "front_arb":
+        if inc:
+            return (
+                f"WHY: {bal_ctx.capitalize()}. Stiffening the front ARB by {unit_str} "
+                f"increases the load transfer rate to the outside front tyre in corners, "
+                f"raising front grip relative to the rear. "
+                f"EFFECT: Reduces oversteer on corner entry and mid-corner. "
+                f"You should feel the front bite harder and the rear sit more securely. "
+                f"Expect ~{abs(corner):.1f} km/h more corner speed. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+        else:
+            return (
+                f"WHY: {bal_ctx.capitalize()}. Softening the front ARB by {unit_str} "
+                f"reduces front lateral stiffness, allowing the front tyres more time to "
+                f"load up in corners and improving turn-in response. "
+                f"EFFECT: Reduces understeer — the car will rotate more readily. "
+                f"Be cautious: too soft can cause instability on kerbs or over bumps. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+
+    if param == "rear_arb":
+        if inc:
+            return (
+                f"WHY: {bal_ctx.capitalize()}. Stiffening the rear ARB by {unit_str} "
+                f"couples the rear wheels more tightly, reducing rear roll and increasing "
+                f"rear lateral stiffness. "
+                f"EFFECT: More high-speed stability but increases rear oversteer tendency "
+                f"on corner entry. Only increase if you feel the rear is too loose at speed. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+        else:
+            return (
+                f"WHY: {bal_ctx.capitalize()}. Softening the rear ARB by {unit_str} "
+                f"lets the rear wheels move more independently, improving rear traction "
+                f"especially on corner exit and over uneven surfaces. "
+                f"EFFECT: Reduces oversteer — you should feel more confidence to apply "
+                f"throttle earlier out of slow corners without the rear stepping out. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+
+    if param == "front_spring":
+        if inc:
+            return (
+                f"WHY: {bal_ctx.capitalize()}. Raising the front spring perch offset by "
+                f"{unit_str} effectively stiffens the front end, reducing body roll. "
+                f"EFFECT: Less front grip — turn-in feels sharper but the tyre has less "
+                f"time to load fully. Can increase understeer in slow corners. "
+                f"Only increase if the car feels too soft and floaty over bumps. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+        else:
+            return (
+                f"WHY: {bal_ctx.capitalize()}. Lowering the front spring perch offset by "
+                f"{unit_str} softens the front suspension, giving the tyre more contact "
+                f"time with the road surface. "
+                f"EFFECT: More front grip and better turn-in, especially in slow corners. "
+                f"You should feel the front load up more progressively. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+
+    if param == "rear_spring":
+        if inc:
+            return (
+                f"WHY: {bal_ctx.capitalize()}. Raising the rear spring perch offset by "
+                f"{unit_str} stiffens the rear suspension. "
+                f"EFFECT: Reduces rear squat under acceleration and improves high-speed "
+                f"stability but reduces rear grip in slow corners, increasing oversteer. "
+                f"Best used if the car feels too soft and wallowy at the rear. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+        else:
+            return (
+                f"WHY: {bal_ctx.capitalize()}. Lowering the rear spring perch offset by "
+                f"{unit_str} softens the rear, allowing more rear grip and traction. "
+                f"EFFECT: Better rear stability under braking and on corner exit. "
+                f"You should feel the car more planted when getting on throttle. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+
+    if param == "rear_wing":
+        if inc:
+            return (
+                f"WHY: {bal_ctx.capitalize()}. Increasing rear wing angle by {unit_str} "
+                f"adds rear downforce, pushing the rear tyres harder into the track. "
+                f"EFFECT: More rear grip reduces oversteer through high-speed corners. "
+                f"Trade-off: ~{abs(straight):.1f} km/h less top speed on straights, "
+                f"but ~{abs(corner):.1f} km/h faster through corners. "
+                f"Worth it on tight tracks with few long straights. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+        else:
+            return (
+                f"WHY: {bal_ctx.capitalize()}. Reducing rear wing angle by {unit_str} "
+                f"cuts drag, increasing top speed at the cost of rear downforce. "
+                f"EFFECT: ~{abs(straight):.1f} km/h more top speed but ~{abs(corner):.1f} km/h "
+                f"less corner speed. Can increase oversteer in fast corners. "
+                f"Best on tracks with long straights. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+
+    if param == "front_wing":
+        if inc:
+            return (
+                f"Adding front wing by {unit_str} increases front downforce. "
+                f"EFFECT: More front grip, helping turn-in and reducing understeer. "
+                f"~{abs(straight):.1f} km/h top speed cost, ~{abs(corner):.1f} km/h corner gain. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+        else:
+            return (
+                f"Reducing front wing by {unit_str} cuts front downforce and drag. "
+                f"EFFECT: ~{abs(straight):.1f} km/h more top speed. Can increase understeer "
+                f"in high-speed corners — monitor front tyre temps after the change. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+
+    if param == "tire_pressure":
+        if inc:
+            return (
+                f"WHY: Increasing starting pressure by {mag:.1f} psi on all corners. "
+                f"EFFECT: Higher pressure reduces the tyre contact patch size — the tyre "
+                f"runs hotter faster but provides less peak grip. "
+                f"Use this if tyres are currently running cold (below 80°C) or if you "
+                f"want slightly sharper initial response at the cost of peak cornering grip. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+        else:
+            return (
+                f"WHY: Reducing starting pressure by {mag:.1f} psi on all corners. "
+                f"EFFECT: Lower pressure increases the contact patch, improving peak grip "
+                f"and traction. Particularly effective if tyres are running hot or showing "
+                f"center wear. You should feel more mechanical grip through slow corners. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+
+    if param == "ride_height_front":
+        if inc:
+            return (
+                f"Raising front ride height by {unit_str}. "
+                f"EFFECT: Increases front-end aero platform height, slightly reducing "
+                f"front downforce. Also changes the front suspension geometry and roll "
+                f"centre. Can reduce understeer in some setups. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+        else:
+            return (
+                f"Lowering front ride height by {unit_str}. "
+                f"EFFECT: Reduces front aero platform height, adding downforce and "
+                f"improving front grip. Increases risk of bottoming on kerbs — "
+                f"check for ground contact after the change. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+
+    if param == "ride_height_rear":
+        if inc:
+            return (
+                f"Raising rear ride height by {unit_str}. "
+                f"EFFECT: Increases rear aero platform, slightly reducing rear downforce. "
+                f"Softens the rear's aerodynamic balance — can help if the rear is "
+                f"too planted and causing understeer at high speed. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+        else:
+            return (
+                f"Lowering rear ride height by {unit_str}. "
+                f"EFFECT: Increases rear downforce and plants the rear tyres harder. "
+                f"Helps oversteer in high-speed corners but can bottom out on kerbs. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+
+    if param == "brake_bias":
+        if inc:
+            return (
+                f"WHY: Shifting brake bias {mag:.1f}% more toward the front. "
+                f"EFFECT: Front brakes do more work on corner entry — allows later "
+                f"braking but risks front lock-up and wash-out on entry. "
+                f"Good if you're currently suffering rear lock-up or the car feels "
+                f"nervous under braking. "
+                f"Current bias: check your IBT data — if fronts are locking, move rearward instead. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+        else:
+            return (
+                f"WHY: Shifting brake bias {mag:.1f}% more toward the rear. "
+                f"EFFECT: Rear brakes contribute more on entry — helps rotation and "
+                f"trail-braking feel. Reduces front lock risk but can cause rear instability "
+                f"under heavy braking if overdone. Adjust in small steps and check for "
+                f"rear lock-up under trail braking. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+
+    if param == "tc_level":
+        if inc:
+            return (
+                f"Increasing TC by {unit_str}. "
+                f"EFFECT: The traction control intervenes earlier and more aggressively "
+                f"on corner exit, preventing wheel spin. This costs ~{abs(straight):.1f} km/h "
+                f"exit speed but reduces tyre wear and protects against high-speed slides. "
+                f"Useful in wet conditions or if you're struggling with exit oversteer. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+        else:
+            return (
+                f"Reducing TC by {unit_str}. "
+                f"EFFECT: The system intervenes less on exit, giving you more throttle "
+                f"response and ~{abs(straight):.1f} km/h more exit speed — but demands "
+                f"more precise throttle application. Only reduce if you're confident "
+                f"managing oversteer on exit. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+
+    if param == "abs_level":
+        if inc:
+            return (
+                f"Increasing ABS by {unit_str}. "
+                f"EFFECT: ABS releases brake pressure earlier and more conservatively, "
+                f"giving a longer braking zone but preventing lock-up. Improves "
+                f"consistency under heavy braking. Use if you're struggling to hit "
+                f"consistent brake markers or experiencing lock-up on entry. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+        else:
+            return (
+                f"Reducing ABS by {unit_str}. "
+                f"EFFECT: ABS allows slightly more brake pressure before intervening, "
+                f"enabling shorter braking distances with precise inputs. "
+                f"Only reduce if you have strong, consistent braking technique — "
+                f"too low risks lock-up and flat spots. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+
+    # Fallback
+    return (
+        f"Adjusting {param.replace('_', ' ')} by {delta:+g}. "
+        f"Balance shifts toward {balance}. "
+        + (f"{lt_str} per lap." if lt_str else "")
+    )
 
 
 def get_available_parameters() -> List[str]:
