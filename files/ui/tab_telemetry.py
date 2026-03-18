@@ -123,8 +123,8 @@ class TelemetryTabMixin:
         for i in range(num):
             var = ctk.BooleanVar(value=(i == 0))
             cb = ctk.CTkCheckBox(self._lap_frame, text=str(i + 1), variable=var,
-                width=40, height=22, checkbox_width=16, checkbox_height=16,
-                font=ctk.CTkFont(size=9), command=self._redraw_telem)
+                width=46, height=24, checkbox_width=18, checkbox_height=18,
+                font=ctk.CTkFont(size=11), command=self._redraw_telem)
             cb.pack(side='left', padx=1)
             cb._var = var
             self._lap_checks.append(cb)

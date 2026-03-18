@@ -27,12 +27,12 @@ def card_frame(parent, **kw):
     return ctk.CTkFrame(parent, fg_color=CARD, corner_radius=8, **kw)
 
 def sec_lbl(parent, text):
-    lbl(parent, text, 12, bold=True, color=BLUE).pack(anchor='w', pady=(10, 2))
+    lbl(parent, text, 14, bold=True, color=BLUE).pack(anchor='w', pady=(10, 2))
 
 def stat_blk(parent, label_text, val, color=TEXT, tooltip=None):
     f = ctk.CTkFrame(parent, fg_color="transparent"); f.pack(side='left', padx=10)
-    l = lbl(f, label_text, 9, color=DIM); l.pack()
-    v = lbl(f, val, 13, bold=True, color=color); v.pack()
+    l = lbl(f, label_text, 11, color=DIM); l.pack()
+    v = lbl(f, val, 15, bold=True, color=color); v.pack()
     if tooltip:
         _Tooltip(f, tooltip)
     return f
@@ -82,11 +82,11 @@ class EmbedChart(ctk.CTkFrame):
         super().destroy()
     def std_ax(self, title="", xlabel="Track %"):
         ax = self.fig.add_subplot(111, facecolor='#0d1b2a')
-        ax.set_title(title, color=TEXT, fontsize=11, pad=6)
-        ax.tick_params(colors=DIM, labelsize=8)
+        ax.set_title(title, color=TEXT, fontsize=13, pad=6)
+        ax.tick_params(colors=DIM, labelsize=10)
         for sp in ax.spines.values(): sp.set_color('#2a3050')
         ax.spines['top'].set_visible(False); ax.spines['right'].set_visible(False)
-        ax.set_xlabel(xlabel, color=DIM, fontsize=9)
+        ax.set_xlabel(xlabel, color=DIM, fontsize=11)
         ax.grid(True, alpha=0.1, color='#3a4a6a')
         return ax
 
@@ -97,12 +97,12 @@ class IssueCard(ctk.CTkFrame):
         c = SEV_COLOR[issue.severity]
         icon = {"critical": "🔴", "warning": "🟡", "info": "🔵"}[issue.severity.value]
         hdr = ctk.CTkFrame(self, fg_color="transparent", cursor="hand2"); hdr.pack(fill='x', padx=8, pady=5)
-        lbl(hdr, f"{icon}  {issue.title}", 12, bold=True, color=c, anchor='w').pack(side='left', fill='x', expand=True)
-        ctk.CTkLabel(hdr, text=issue.category.value, font=ctk.CTkFont(size=9),
+        lbl(hdr, f"{icon}  {issue.title}", 13, bold=True, color=c, anchor='w').pack(side='left', fill='x', expand=True)
+        ctk.CTkLabel(hdr, text=issue.category.value, font=ctk.CTkFont(size=11),
             text_color=DIM, fg_color="#2a3050", corner_radius=4).pack(side='right', padx=4)
         self._d = ctk.CTkFrame(self, fg_color="transparent")
-        lbl(self._d, issue.description, 11, color=DIM, wraplength=520, justify='left', anchor='w').pack(fill='x', padx=8, pady=(0, 3))
-        lbl(self._d, f"💡 {issue.recommendation}", 11, color=BLUE, wraplength=520, justify='left', anchor='w').pack(fill='x', padx=8, pady=(0, 6))
+        lbl(self._d, issue.description, 12, color=DIM, wraplength=520, justify='left', anchor='w').pack(fill='x', padx=8, pady=(0, 3))
+        lbl(self._d, f"💡 {issue.recommendation}", 12, color=BLUE, wraplength=520, justify='left', anchor='w').pack(fill='x', padx=8, pady=(0, 6))
         self._open = False
         for w in [hdr] + list(hdr.winfo_children()): w.bind("<Button-1>", self._toggle)
     def _toggle(self, _=None):

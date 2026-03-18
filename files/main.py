@@ -62,8 +62,11 @@ from core.setup_parser        import (SetupParser, SetupExporter, SetupDiffer, P
                                        create_demo_setup, parsed_setup_from_ibt)
 from core.ai_advisor          import (get_ai_recommendations_sync, get_ai_recommendations_stream,
                                        ask_setup_question_stream, generate_session_note_stream,
+                                       generate_tech_legal_setup_stream,
                                        get_setup_recommendation_stream,
                                        _MODEL_HAIKU, _MODEL_SONNET)
+from core.tech_inspector      import (validate_setup, clamp_to_legal, tech_fail_reasons,
+                                      get_bounds, bounds_summary_for_prompt)
 from core.live_telemetry      import LiveTelemetryMonitor, LiveSample
 from core.reference_lap       import compute_reference_delta
 from data.templates.track_templates import get_setup_template, get_track_info, list_tracks
@@ -86,6 +89,9 @@ from core.ibt_cache           import load_cached, save_cached, evict_old_entries
 from core.car_classifier      import classify_car
 from core.setup_recommend     import (find_sto_files, score_sto_matches, copy_base_setup,
                                        get_car_setups_dir, build_checklist, StoMatch)
+from ui.track_map             import (TrackMapWidget, highlights_from_issues,
+                                       highlights_from_corners, highlights_from_sectors,
+                                       highlights_from_brakes)
 
 # ── Theme ─────────────────────────────────────────────────────────────────────
 ctk.set_appearance_mode("dark")
@@ -279,7 +285,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
     def _sidebar(self,parent):
         sb=ctk.CTkFrame(parent,fg_color=PANEL,width=210,corner_radius=0)
         sb.pack(side='left',fill='y'); sb.pack_propagate(False)
-        lbl(sb,"SESSIONS",9,bold=True,color=DIM).pack(anchor='w',padx=12,pady=(10,3))
+        lbl(sb,"SESSIONS",11,bold=True,color=DIM).pack(anchor='w',padx=12,pady=(10,3))
         self._sf=ctk.CTkScrollableFrame(sb,fg_color="transparent")
         self._sf.pack(fill='both',expand=True,padx=6)
         self._no_sess=lbl(self._sf,"No sessions loaded.\nLoad IBT or Demo to begin.",11,color=DIM,justify='center')
@@ -290,7 +296,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         f=ctk.CTkFrame(self._sf,fg_color=CARD,corner_radius=7,cursor="hand2"); f.pack(fill='x',pady=3)
         f._session_data = data
         lbl(f,data.car_name.replace('_',' ').title(),12,bold=True).pack(anchor='w',padx=8,pady=(6,0))
-        lbl(f,data.track_name,10,color=DIM).pack(anchor='w',padx=8)
+        lbl(f,data.track_name,12,color=DIM).pack(anchor='w',padx=8)
         lbl(f,f"Best: {format_laptime(rpt.best_lap)}",11,color=GREEN).pack(anchor='w',padx=8,pady=(2,6))
         for w in [f]+list(f.winfo_children()): w.bind("<Button-1>",lambda e,d=data,r=rpt:self._sel(d,r))
         self._highlight_card(data)
@@ -360,9 +366,9 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         lbl(car_row, d.car_name.replace('_',' ').title(), 15, bold=True).pack(side='left')
         if car_class.value != 'default':
             cls_badge = ctk.CTkLabel(car_row, text=car_class.value.upper().replace('_',' '),
-                font=ctk.CTkFont(size=9, weight='bold'),
+                font=ctk.CTkFont(size=11, weight='bold'),
                 fg_color=PURPLE, text_color="white", corner_radius=4,
-                width=0, height=18, padx=6)
+                width=0, height=20, padx=6)
             cls_badge.pack(side='left', padx=(8,0), pady=2)
         lbl(self._di, d.track_name, 12, color=DIM).pack(anchor='w', padx=12)
         # Session metadata
@@ -374,7 +380,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         if si.get('weather_type') or si.get('skies'):
             meta_parts.append(si.get('skies', si.get('weather_type', '')))
         if meta_parts:
-            lbl(self._di, '  •  '.join(meta_parts), 10, color=DIM).pack(anchor='w', padx=12)
+            lbl(self._di, '  •  '.join(meta_parts), 12, color=DIM).pack(anchor='w', padx=12)
         sr=ctk.CTkFrame(self._di,fg_color="transparent"); sr.pack(fill='x',padx=12,pady=6)
         stat_blk(sr,"Best Lap",format_laptime(r.best_lap),GREEN,tooltip="Fastest valid lap time in session")
         stat_blk(sr,"Avg Lap",format_laptime(r.avg_lap),tooltip="Average of all valid (non-outlier) laps")
@@ -415,7 +421,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             delta=f" +{t-best:.3f}s" if t!=best and best>0 else ""
             fc_s=f"  fc:{format_laptime(fc[i])}" if i<len(fc) else ""
             flag="  ⚠" if is_outlier else ""
-            lbl(self._dl,f"Lap {i+1}: {format_laptime(t)}{delta}{fc_s}{flag}",10,color=clr).pack(anchor='w',padx=10)
+            lbl(self._dl,f"Lap {i+1}: {format_laptime(t)}{delta}{fc_s}{flag}",12,color=clr).pack(anchor='w',padx=10)
         for w in self._dif.winfo_children(): w.destroy()
         lbl(self._dif,"Top Issues",13,bold=True).pack(anchor='w',pady=(4,4))
         for iss in r.issues[:3]: IssueCard(self._dif,iss).pack(fill='x',pady=2)
@@ -451,8 +457,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             lbl(top, h.emoji, 12).pack(side='left')
             c_col = CAT_COLOR.get(h.category, TEXT)
             lbl(top, h.metric_label, 11, bold=True, color=c_col).pack(side='right')
-            lbl(card, h.title, 10, bold=True).pack(anchor='w', padx=8)
-            lbl(card, h.description, 9, color=DIM, wraplength=190,
+            lbl(card, h.title, 12, bold=True).pack(anchor='w', padx=8)
+            lbl(card, h.description, 11, color=DIM, wraplength=190,
                 justify='left').pack(anchor='w', padx=8, pady=(1, 4))
 
     def _draw_ml_prediction(self, d, r):
@@ -474,7 +480,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         stat_blk(mr, "vs Actual", f"{result.delta_vs_actual:+.3f}s",
                  GREEN if result.delta_vs_actual < 0 else RED)
         stat_blk(mr, "Confidence", f"{result.confidence:.0%}", BLUE)
-        lbl(mf, result.insight, 10, color=DIM, wraplength=900,
+        lbl(mf, result.insight, 12, color=DIM, wraplength=900,
             justify='left').pack(anchor='w', padx=12, pady=(0, 8))
 
     def _draw_balance(self,score):
@@ -494,11 +500,11 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             ax.imshow(grad, aspect='auto', cmap='RdYlGn_r', extent=(-1, 1, -0.15, 0.15), vmin=-1, vmax=1)
             ax.axvline(val, color='white', lw=2.5, zorder=5)
             ax.set_xlim(-1.3, 1.3); ax.set_ylim(-0.6, 0.6)
-            ax.text(-1.15, -0.4, "US", color=GREEN, fontsize=7, fontweight='bold')
-            ax.text(0.9, -0.4, "OS", color=RED, fontsize=7, fontweight='bold')
+            ax.text(-1.15, -0.4, "US", color=GREEN, fontsize=9, fontweight='bold')
+            ax.text(0.9, -0.4, "OS", color=RED, fontsize=9, fontweight='bold')
             verdict = "US" if val < -0.15 else "OS" if val > 0.15 else "OK"
-            ax.text(val, 0.35, verdict, ha='center', color='white', fontsize=8, fontweight='bold')
-            ax.set_title(name, color=TEXT, fontsize=9, pad=2)
+            ax.text(val, 0.35, verdict, ha='center', color='white', fontsize=10, fontweight='bold')
+            ax.set_title(name, color=TEXT, fontsize=11, pad=2)
         c.fig.tight_layout(pad=0.3); c.draw()
 
     def _draw_balance_timeline(self, r):
@@ -518,18 +524,18 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         ax.axhspan(-0.05, 0.05, color=BLUE, alpha=0.07)
         ax.set_xlim(0.3, len(laps) + 0.7)
         ax.set_ylim(-1.05, 1.05)
-        ax.set_xlabel("Lap", color=DIM, fontsize=8)
-        ax.set_ylabel("← Understeer   Oversteer →", color=DIM, fontsize=7)
-        ax.tick_params(colors=DIM, labelsize=7)
+        ax.set_xlabel("Lap", color=DIM, fontsize=10)
+        ax.set_ylabel("← Understeer   Oversteer →", color=DIM, fontsize=9)
+        ax.tick_params(colors=DIM, labelsize=9)
         for spine in ax.spines.values(): spine.set_edgecolor('#2a3050')
-        ax.set_title("Balance Timeline — per lap", color=TEXT, fontsize=9, pad=3)
+        ax.set_title("Balance Timeline — per lap", color=TEXT, fontsize=11, pad=3)
         ax.set_facecolor(PANEL)
         c.fig.patch.set_facecolor(PANEL)
         c.fig.tight_layout(pad=0.5); c.draw()
 
     def _draw_tires(self,ts):
         c=self._dth; c.clear(); ax=c.fig.add_subplot(111,facecolor=PANEL)
-        ax.set_title("Tire Temps (°C / °F)",color=TEXT,fontsize=11); ax.set_xlim(0,4); ax.set_ylim(0,3); ax.axis('off')
+        ax.set_title("Tire Temps (°C / °F)",color=TEXT,fontsize=13); ax.set_xlim(0,4); ax.set_ylim(0,3); ax.axis('off')
         pos={'LF':(0.5,2.2),'RF':(2.5,2.2),'LR':(0.5,0.2),'RR':(2.5,0.2)}
         for corner,(cx,cy) in pos.items():
             t=ts.get(corner,{})
@@ -539,10 +545,10 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 cmap=matplotlib.colormaps['RdYlGn_r']
                 rect=matplotlib.patches.Rectangle((cx+i*0.28-0.42,cy),0.28,0.5,facecolor=cmap(norm),edgecolor='#2a3050',lw=0.5)
                 ax.add_patch(rect)
-                ax.text(cx+i*0.28-0.28,cy+0.25,f"{tv:.0f}",ha='center',va='center',fontsize=7,color='white',fontweight='bold')
-            ax.text(cx,cy+0.72,corner,ha='center',fontsize=11,color=TEXT,fontweight='bold')
+                ax.text(cx+i*0.28-0.28,cy+0.25,f"{tv:.0f}",ha='center',va='center',fontsize=9,color='white',fontweight='bold')
+            ax.text(cx,cy+0.72,corner,ha='center',fontsize=13,color=TEXT,fontweight='bold')
             avg_c=t.get('avg',0); avg_f=avg_c*9/5+32
-            ax.text(cx,cy-0.18,f"avg {avg_c:.1f}°C / {avg_f:.1f}°F",ha='center',fontsize=7,color=DIM)
+            ax.text(cx,cy-0.18,f"avg {avg_c:.1f}°C / {avg_f:.1f}°F",ha='center',fontsize=10,color=DIM)
         c.fig.tight_layout(pad=0.3); c.draw()
 
     def _compute_consistency_score(self) -> ConsistencyBreakdown | None:
@@ -578,21 +584,21 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         for name, score, detail in components:
             row = ctk.CTkFrame(bars, fg_color="transparent"); row.pack(fill='x', pady=1)
             clr = GREEN if score >= 85 else YELLOW if score >= 70 else RED
-            lbl(row, f"{name}:", 9, color=DIM).pack(side='left', padx=(0, 4))
+            lbl(row, f"{name}:", 11, color=DIM).pack(side='left', padx=(0, 4))
             # Progress bar
             pb = ctk.CTkProgressBar(row, width=120, height=10,
                 fg_color="#0d1b2a", progress_color=clr, corner_radius=4)
             pb.pack(side='left', padx=4)
             pb.set(score / 100)
-            lbl(row, f"{score:.0f}", 9, bold=True, color=clr).pack(side='left', padx=4)
+            lbl(row, f"{score:.0f}", 11, bold=True, color=clr).pack(side='left', padx=4)
             if detail:
-                lbl(row, detail, 8, color=DIM).pack(side='left', padx=4)
+                lbl(row, detail, 10, color=DIM).pack(side='left', padx=4)
         # Coaching notes
         if cs.notes:
             nf = ctk.CTkFrame(cf, fg_color="#0d1b2a", corner_radius=6)
             nf.pack(fill='x', padx=12, pady=(2, 8))
             for note in cs.notes[:3]:
-                lbl(nf, f"• {note}", 9, color=TEXT, wraplength=500, justify='left', anchor='w').pack(
+                lbl(nf, f"• {note}", 11, color=TEXT, wraplength=500, justify='left', anchor='w').pack(
                     fill='x', padx=8, pady=1)
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -606,6 +612,9 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         for f in ["All","Critical","Warning","Info"]:
             ctk.CTkButton(fbar,text=f,width=75,height=28,fg_color=CARD,
                 hover_color="#1a5a8a",command=lambda v=f:self._pop_issues(v)).pack(side='left',padx=3)
+        # Track map — shows which zones of the track have issues
+        self._issues_map = TrackMapWidget(tab, figsize=(10, 2.8))
+        self._issues_map.pack(fill='x', padx=10, pady=(0, 4))
         self._is=ctk.CTkScrollableFrame(tab,fg_color="transparent")
         self._is.pack(fill='both',expand=True,padx=10,pady=(4,8))
         lbl(self._is,"Load a session to see diagnostic issues.",14,color=DIM).pack(pady=40)
@@ -617,6 +626,10 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         issues=[i for i in self.cur_rpt.issues if flt=="All" or i.severity==sm.get(flt)]
         if not issues: lbl(self._is,"No issues for this filter.",color=DIM).pack(pady=20); return
         for iss in issues: IssueCard(self._is,iss).pack(fill='x',pady=3)
+        # Update track map to highlight zones relevant to visible issues
+        hl = highlights_from_issues(issues, self.cur_data)
+        self._issues_map.update(self.cur_data, highlights=hl,
+                                title="Track Map — highlighted zones correspond to issue categories")
 
     # ══════════════════════════════════════════════════════════════════════════
     # DRIVER ANALYSIS
@@ -639,9 +652,9 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                                 ("Throttle",r.throttle_smoothness,GREEN),("Steering",r.steering_smoothness,YELLOW),
                                 ("Trail Brake",r.trail_braking_score,PURPLE),("Stability",r.oversteer_management,RED)]:
             sc=card_frame(row); sc.pack(side='left',fill='both',expand=True,padx=3)
-            lbl(sc,name,9,color=DIM).pack(pady=(8,0))
+            lbl(sc,name,11,color=DIM).pack(pady=(8,0))
             lbl(sc,f"{score:.0f}",22,bold=True,color=col).pack()
-            lbl(sc,"/100",9,color=DIM).pack()
+            lbl(sc,"/100",11,color=DIM).pack()
             pb=ctk.CTkProgressBar(sc,width=70,height=5,progress_color=col,fg_color="#1e2845")
             pb.set(score/100); pb.pack(pady=(2,8))
         if r.style_profile:
@@ -684,6 +697,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             fg_color=CARD,button_color=ACCENT,width=70,command=lambda _:self._u_sectors()).pack(side='left',padx=8)
         self._secsc=ctk.CTkScrollableFrame(tab,fg_color="transparent")
         self._secsc.pack(fill='both',expand=True,padx=10,pady=(4,8))
+        self._sec_map=TrackMapWidget(self._secsc,figsize=(10,2.8))
+        self._sec_map.pack(fill='x',pady=(0,4))
         self._sec_bar=EmbedChart(self._secsc,figsize=(10,2.5)); self._sec_bar.pack(fill='x',pady=(0,4))
         self._sec_tmp=EmbedChart(self._secsc,figsize=(10,2.5)); self._sec_tmp.pack(fill='x',pady=(0,4))
         self._sec_det=ctk.CTkFrame(self._secsc,fg_color="transparent"); self._sec_det.pack(fill='x')
@@ -699,6 +714,11 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         if not r or not r.sectors: return
         try: self._ph_sectors.pack_forget()
         except Exception: pass
+        # Track map with sector colour bands
+        hl = highlights_from_sectors(r)
+        splits = [s.start_pct for s in r.sectors[1:]]
+        self._sec_map.update(self.cur_data, highlights=hl, sector_splits=splits,
+                             title="Sector Map — red = worst sector")
         S=r.sectors
         xlabs=[f"S{i+1}\n{s.start_pct*100:.0f}–{s.end_pct*100:.0f}%" for i,s in enumerate(S)]
         # Bar chart
@@ -708,16 +728,16 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         bcols=[RED if i==r.worst_sector else BLUE for i in range(len(S))]
         ax.bar(x-w/2,avgs,w,label='Avg',color=bcols,alpha=0.85)
         ax.bar(x+w/2,bests,w,label='Best',color=GREEN,alpha=0.85)
-        ax.set_xticks(x); ax.set_xticklabels(xlabs,color=DIM,fontsize=8)
-        ax.set_ylabel("seconds",color=DIM,fontsize=8)
-        ax.legend(fontsize=8,facecolor='#1e2845',edgecolor='#2a3050',labelcolor=TEXT)
+        ax.set_xticks(x); ax.set_xticklabels(xlabs,color=DIM,fontsize=10)
+        ax.set_ylabel("seconds",color=DIM,fontsize=10)
+        ax.legend(fontsize=10,facecolor='#1e2845',edgecolor='#2a3050',labelcolor=TEXT)
         c.fig.tight_layout(pad=0.8); c.draw()
         # Temp chart
         c2=self._sec_tmp; c2.clear(); ax2=c2.std_ax("Avg Tire Temp by Sector",xlabel="Sector")
         for corner,col in [('lf_temps',BLUE),('rf_temps',RED),('lr_temps',GREEN),('rr_temps',YELLOW)]:
             vals=[np.mean(getattr(s,corner)) if getattr(s,corner) else 0 for s in S]
             ax2.plot(xlabs,vals,marker='o',color=col,label=corner[:2].upper(),lw=1.5)
-        ax2.legend(fontsize=8,facecolor='#1e2845',edgecolor='#2a3050',labelcolor=TEXT)
+        ax2.legend(fontsize=10,facecolor='#1e2845',edgecolor='#2a3050',labelcolor=TEXT)
         c2.fig.tight_layout(pad=0.8); c2.draw()
         # Detail cards
         for w in self._sec_det.winfo_children(): w.destroy()
@@ -731,7 +751,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             lbl(sc,f"Delta: +{s.avg_time-s.best_time:.3f}s",11,color=YELLOW).pack()
             lbl(sc,f"Consistency: {s.consistency:.0f}%",11,color=BLUE).pack()
             spd=np.mean(s.avg_speeds) if s.avg_speeds else 0
-            lbl(sc,f"Avg Speed: {spd:.0f} km/h",10,color=DIM).pack(pady=(0,8))
+            lbl(sc,f"Avg Speed: {spd:.0f} km/h",12,color=DIM).pack(pady=(0,8))
         tb=r.theoretical_best; ab=r.actual_best; left=r.time_left_on_table
         sf=ctk.CTkFrame(self._sec_det,fg_color=PANEL,corner_radius=8); sf.pack(fill='x',pady=6)
         lbl(sf,f"🏆 Theoretical Best: {format_laptime(tb)}  |  Actual Best: {format_laptime(ab)}  |  Time left: +{left:.3f}s",
@@ -1127,15 +1147,15 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         f=self._svf
         for w in f.winfo_children(): w.destroy()
         lbl(f,setup.car or "Unknown Car",14,bold=True,color=ACCENT).pack(anchor='w',padx=10,pady=(10,2))
-        lbl(f,f"Track: {setup.track or '—'}  |  {setup.filename}",10,color=DIM).pack(anchor='w',padx=10,pady=(0,8))
+        lbl(f,f"Track: {setup.track or '—'}  |  {setup.filename}",12,color=DIM).pack(anchor='w',padx=10,pady=(0,8))
         for sec in setup.sections:
             if not sec.params: continue
             ctk.CTkFrame(f,fg_color="#2a3050",height=1).pack(fill='x',padx=10,pady=4)
-            lbl(f,sec.name,11,bold=True,color=BLUE).pack(anchor='w',padx=10,pady=(2,4))
+            lbl(f,sec.name,12,bold=True,color=BLUE).pack(anchor='w',padx=10,pady=(2,4))
             for param,val in sec.params.items():
                 rw=ctk.CTkFrame(f,fg_color="transparent"); rw.pack(fill='x',padx=10)
-                lbl(rw,param,10,color=DIM).pack(side='left')
-                lbl(rw,val,10,bold=True).pack(side='right')
+                lbl(rw,param,12,color=DIM).pack(side='left')
+                lbl(rw,val,12,bold=True).pack(side='right')
         if self.cur_data and self.cur_rpt:
             # Guard: skip if last history entry already matches this session+setup
             prev = self.history._find_last(self.cur_data.car_name, self.cur_data.track_name)
@@ -1150,12 +1170,12 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         lbl(f,"Setup Diff",12,bold=True,color=ACCENT).pack(pady=(10,6))
         changes=SetupDiffer().diff(a,b)
         if not changes: lbl(f,"Setups are identical.",color=DIM).pack(pady=10); return
-        lbl(f,f"{len(changes)} differences",10,color=DIM).pack(anchor='w',padx=8)
+        lbl(f,f"{len(changes)} differences",12,color=DIM).pack(anchor='w',padx=8)
         for ch in changes:
             rw=ctk.CTkFrame(f,fg_color="#1e2845",corner_radius=5); rw.pack(fill='x',pady=2,padx=4)
-            lbl(rw,ch['param'],9,bold=True).pack(anchor='w',padx=8,pady=(5,0))
-            lbl(rw,f"A: {ch['before']}",9,color=RED).pack(anchor='w',padx=8)
-            lbl(rw,f"B: {ch['after']}",9,color=GREEN).pack(anchor='w',padx=8,pady=(0,5))
+            lbl(rw,ch['param'],11,bold=True).pack(anchor='w',padx=8,pady=(5,0))
+            lbl(rw,f"A: {ch['before']}",11,color=RED).pack(anchor='w',padx=8)
+            lbl(rw,f"B: {ch['after']}",11,color=GREEN).pack(anchor='w',padx=8,pady=(0,5))
 
     # ══════════════════════════════════════════════════════════════════════════
     # AI ADVISOR
@@ -1181,15 +1201,15 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self._ai_qb=ctk.CTkButton(qf,text="Ask",width=60,height=28,
             fg_color=BLUE,hover_color="#1a5a8a",command=self._ask_setup_question)
         self._ai_qb.pack(side='right',padx=(0,8))
-        # ── Answer box (compact, for quick question replies) ──────────────────
+        # ── Answer box (quick question replies) ──────────────────────────────
         self._ai_ans=ctk.CTkTextbox(tab,fg_color=CARD,text_color=TEXT,
-            font=ctk.CTkFont(family="Helvetica",size=12),wrap='word',height=70)
+            font=ctk.CTkFont(family="Helvetica",size=14),wrap='word',height=200)
         self._ai_ans.pack(fill='x',padx=10,pady=(0,4))
         self._ai_ans.insert('1.0',"Type a question above and press Ask or Enter.")
         self._ai_ans.configure(state='disabled')
         # ── Main recommendations box ──────────────────────────────────────────
         self._ait=ctk.CTkTextbox(tab,fg_color=PANEL,text_color=TEXT,
-            font=ctk.CTkFont(family="Helvetica",size=13),wrap='word')
+            font=ctk.CTkFont(family="Helvetica",size=15),wrap='word')
         self._ait.pack(fill='both',expand=True,padx=10,pady=(0,8))
         self._ait.insert('1.0',"Load a session then click 'Get Recommendations'.\nRequires Anthropic API key in Settings (⚙).")
         self._ait.configure(state='disabled')
@@ -1366,13 +1386,13 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         for w in f.winfo_children(): w.destroy()
         if info:
             lbl(f,f"📍 {info.name}  •  Downforce: {info.downforce_demand.upper()}  •  Tire stress: {info.tire_stress.upper()}",11,color=DIM).pack(anchor='w',pady=(8,2))
-            if info.notes: lbl(f,info.notes,10,color=DIM,wraplength=660,justify='left').pack(anchor='w',pady=(0,6))
+            if info.notes: lbl(f,info.notes,12,color=DIM,wraplength=660,justify='left').pack(anchor='w',pady=(0,6))
         def sec(title,items):
-            lbl(f,title,12,bold=True,color=BLUE).pack(anchor='w',pady=(8,2))
+            lbl(f,title,13,bold=True,color=BLUE).pack(anchor='w',pady=(8,2))
             for k,v in items:
                 rw=ctk.CTkFrame(f,fg_color=PANEL,corner_radius=5); rw.pack(fill='x',pady=1)
-                lbl(rw,k,10,color=DIM).pack(side='left',padx=10,pady=4)
-                lbl(rw,str(v),10,bold=True).pack(side='right',padx=10)
+                lbl(rw,k,12,color=DIM).pack(side='left',padx=10,pady=4)
+                lbl(rw,str(v),12,bold=True).pack(side='right',padx=10)
         if tmpl.front_wing: sec("🌬 Aero",[("Front Wing",tmpl.front_wing),("Rear Wing",tmpl.rear_wing or "—")])
         if tmpl.tire_pressures_psi:
             p=tmpl.tire_pressures_psi; sec("🏎 Cold Pressures",[(c,f"{p.get(c,'—')} PSI") for c in ['LF','RF','LR','RR']])
@@ -1386,7 +1406,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             lbl(f,"🎯 Key Adjustments",12,bold=True,color=BLUE).pack(anchor='w',pady=(8,2))
             for adj in tmpl.key_adjustments:
                 rw=ctk.CTkFrame(f,fg_color=PANEL,corner_radius=5); rw.pack(fill='x',pady=1)
-                lbl(rw,f"•  {adj}",10,color=TEXT,wraplength=660,justify='left',anchor='w').pack(padx=10,pady=5)
+                lbl(rw,f"•  {adj}",12,color=TEXT,wraplength=660,justify='left',anchor='w').pack(padx=10,pady=5)
         if tmpl.priority_notes:
             pf=ctk.CTkFrame(f,fg_color="#1a3a1a",corner_radius=6); pf.pack(fill='x',pady=6)
             lbl(pf,f"💡 {tmpl.priority_notes}",12,bold=True,color=GREEN,wraplength=660,justify='left').pack(padx=12,pady=8)
@@ -1434,24 +1454,24 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             ec=ctk.CTkFrame(f,fg_color=PANEL,corner_radius=8); ec.pack(fill='x',pady=3)
             hr=ctk.CTkFrame(ec,fg_color="transparent"); hr.pack(fill='x',padx=10,pady=(8,4))
             lbl(hr,f"{entry.car} @ {entry.track}",12,bold=True).pack(side='left')
-            lbl(hr,entry.timestamp[:16].replace('T',' '),10,color=DIM).pack(side='right')
-            lbl(hr,f"Best: {format_laptime(entry.best_lap)}",11,color=GREEN).pack(side='right',padx=12)
+            lbl(hr,entry.timestamp[:16].replace('T',' '),12,color=DIM).pack(side='right')
+            lbl(hr,f"Best: {format_laptime(entry.best_lap)}",12,color=GREEN).pack(side='right',padx=12)
             if entry.changes_from_prev:
-                lbl(ec,f"  {len(entry.changes_from_prev)} change(s) from previous:",10,color=DIM).pack(anchor='w',padx=10)
+                lbl(ec,f"  {len(entry.changes_from_prev)} change(s) from previous:",12,color=DIM).pack(anchor='w',padx=10)
                 for ch in entry.changes_from_prev[:5]:
-                    lbl(ec,f"  {ch['param']}: {ch['before']} → {ch['after']}",10,color=YELLOW).pack(anchor='w',padx=20)
+                    lbl(ec,f"  {ch['param']}: {ch['before']} → {ch['after']}",12,color=YELLOW).pack(anchor='w',padx=20)
                 if len(entry.changes_from_prev)>5:
-                    lbl(ec,f"  ...and {len(entry.changes_from_prev)-5} more",10,color=DIM).pack(anchor='w',padx=20,pady=(0,6))
+                    lbl(ec,f"  ...and {len(entry.changes_from_prev)-5} more",12,color=DIM).pack(anchor='w',padx=20,pady=(0,6))
             else:
-                lbl(ec,"  First session for this car/track.",10,color=DIM).pack(anchor='w',padx=10,pady=(0,6))
+                lbl(ec,"  First session for this car/track.",12,color=DIM).pack(anchor='w',padx=10,pady=(0,6))
             # Show auto-generated session note if available
             note_idx = _note_lookup.get((entry.car, entry.track))
             if note_idx is not None and note_idx in self._session_notes:
                 note_text = self._session_notes[note_idx]
                 note_frame = ctk.CTkFrame(ec, fg_color="#1a2035", corner_radius=6)
                 note_frame.pack(fill='x', padx=10, pady=(0, 8))
-                lbl(note_frame, "📝 Session Note", 9, color=BLUE, bold=True).pack(anchor='w', padx=8, pady=(4, 1))
-                lbl(note_frame, note_text, 10, color=TEXT, wraplength=680).pack(anchor='w', padx=8, pady=(0, 6))
+                lbl(note_frame, "📝 Session Note", 11, color=BLUE, bold=True).pack(anchor='w', padx=8, pady=(4, 1))
+                lbl(note_frame, note_text, 12, color=TEXT, wraplength=680).pack(anchor='w', padx=8, pady=(0, 6))
 
     def _clear_hist(self):
         entries = self.history.get_history()
@@ -1517,7 +1537,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             ax=ch.std_ax("Lap Time Comparison",xlabel="Lap")
             ax.plot(range(1,len(ra.lap_times)+1),ra.lap_times,'o-',color=BLUE,label="A",lw=1.5)
             ax.plot(range(1,len(rb.lap_times)+1),rb.lap_times,'s-',color=RED,label="B",lw=1.5)
-            ax.legend(fontsize=8,facecolor='#1e2845',edgecolor='#2a3050',labelcolor=TEXT)
+            ax.legend(fontsize=10,facecolor='#1e2845',edgecolor='#2a3050',labelcolor=TEXT)
             ch.fig.tight_layout(pad=0.8); ch.draw()
         # Telemetry overlay: best lap from each session
         self._draw_cmp_overlay(f, da, db, self._cmp_ch.get())
@@ -1547,9 +1567,9 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 color=BLUE, lw=1.3, alpha=0.9, label="A best")
         ax.plot(dist_b[sb:eb][::step_b] * 100, arr_b[sb:eb][::step_b],
                 color=RED, lw=1.3, alpha=0.9, label="B best")
-        ax.set_xlabel("Track Position (%)", color=DIM, fontsize=8)
-        ax.set_ylabel(ch_name, color=DIM, fontsize=9)
-        ax.legend(fontsize=8, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT)
+        ax.set_xlabel("Track Position (%)", color=DIM, fontsize=10)
+        ax.set_ylabel(ch_name, color=DIM, fontsize=11)
+        ax.legend(fontsize=10, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT)
         ch.fig.tight_layout(pad=1.0); ch.draw()
 
     def _export_cmp_csv(self):
@@ -1852,6 +1872,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self._ph_brake.pack(pady=40)
         self._brake_sc = ctk.CTkScrollableFrame(tab, fg_color="transparent")
         self._brake_sc.pack(fill='both', expand=True, padx=10, pady=8)
+        self._brake_map = TrackMapWidget(self._brake_sc, figsize=(10, 2.8))
+        self._brake_map.pack(fill='x', pady=(0, 4))
         self._brake_chart = EmbedChart(self._brake_sc, figsize=(10, 3.5))
         self._brake_chart.pack(fill='x', pady=(0, 4))
         self._brake_cards = ctk.CTkFrame(self._brake_sc, fg_color="transparent")
@@ -1866,10 +1888,14 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         report = analyze_braking(d)
         if not report:
             return
+        # Track map with brake zones highlighted
+        hl = highlights_from_brakes(report)
+        self._brake_map.update(d, highlights=hl,
+                               title="Brake Zone Map — red = weakest braking zone")
         # Draw brake pressure chart for first corner
         c = self._brake_chart; c.clear()
         ax = c.std_ax("Brake Pressure Profiles", xlabel="Track %")
-        ax.set_ylabel("Brake", color=DIM, fontsize=8)
+        ax.set_ylabel("Brake", color=DIM, fontsize=10)
         palette = [ACCENT, BLUE, GREEN, YELLOW, PURPLE, RED]
         for i, p in enumerate(report.profiles[:6]):
             col = palette[i % len(palette)]
@@ -1882,7 +1908,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 if np.sum(mask) > 0:
                     ax.plot(ld[s0:e0][mask] * 100, brk[s0:e0][mask], color=col,
                             lw=1.5, alpha=0.8, label=f"Corner {p.corner_num}")
-        ax.legend(fontsize=7, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT)
+        ax.legend(fontsize=9, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT)
         c.fig.tight_layout(pad=0.8); c.draw()
         # Profile cards
         for w in self._brake_cards.winfo_children(): w.destroy()
@@ -1914,7 +1940,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             for fn in report.findings:
                 ff = ctk.CTkFrame(self._brake_cards, fg_color="#1e2845", corner_radius=6)
                 ff.pack(fill='x', pady=2)
-                lbl(ff, f"•  {fn}", 11, color=TEXT, wraplength=820,
+                lbl(ff, f"•  {fn}", 12, color=TEXT, wraplength=820,
                     justify='left', anchor='w').pack(padx=12, pady=6)
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -1987,8 +2013,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             ax.plot(laps, avg, color=col, lw=2, label=f"Stint {si+1}")
         for stop in report.pit_stops:
             ax.axvline(stop.lap, color=RED, ls='--', lw=1, alpha=0.6)
-        ax.set_ylabel("Lap time (s)", color=DIM, fontsize=8)
-        ax.legend(fontsize=7, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT)
+        ax.set_ylabel("Lap time (s)", color=DIM, fontsize=10)
+        ax.legend(fontsize=9, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT)
         c.fig.tight_layout(pad=0.8); c.draw()
         # Summary cards
         for w in self._strat_cards.winfo_children(): w.destroy()
@@ -2010,7 +2036,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             sec_lbl(self._strat_cards, "📋 Strategy Notes")
             for fn in report.findings:
                 ff = ctk.CTkFrame(self._strat_cards, fg_color="#1e2845", corner_radius=6); ff.pack(fill='x', pady=2)
-                lbl(ff, f"•  {fn}", 11, color=TEXT, wraplength=820,
+                lbl(ff, f"•  {fn}", 12, color=TEXT, wraplength=820,
                     justify='left', anchor='w').pack(padx=12, pady=6)
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -2043,12 +2069,12 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         x = list(range(1, report.num_sessions + 1))
         ax.plot(x, report.best_lap_trend, 'o-', color=GREEN, lw=2, label='Best Lap')
         ax.plot(x, report.avg_lap_trend, 's--', color=BLUE, lw=1.5, alpha=0.7, label='Avg Lap')
-        ax.set_ylabel("Lap time (s)", color=DIM, fontsize=8)
+        ax.set_ylabel("Lap time (s)", color=DIM, fontsize=10)
         ax2 = ax.twinx()
         ax2.bar(x, report.consistency_trend, alpha=0.15, color=YELLOW, label='Consistency %')
-        ax2.set_ylabel("Consistency (lower = better)", color=DIM, fontsize=8)
+        ax2.set_ylabel("Consistency (lower = better)", color=DIM, fontsize=10)
         ax2.tick_params(colors=DIM)
-        ax.legend(fontsize=7, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT, loc='upper left')
+        ax.legend(fontsize=9, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT, loc='upper left')
         c.fig.tight_layout(pad=0.8); c.draw()
         # Summary
         for w in self._trends_cards.winfo_children(): w.destroy()
@@ -2063,7 +2089,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         for s in report.summaries:
             sf2 = ctk.CTkFrame(self._trends_cards, fg_color="#1e2845", corner_radius=8); sf2.pack(fill='x', pady=2)
             mr = ctk.CTkFrame(sf2, fg_color="transparent"); mr.pack(fill='x', padx=8, pady=6)
-            lbl(mr, f"S{s.index+1}: {s.car_name[:20]} @ {s.track_name[:20]}", 11,
+            lbl(mr, f"S{s.index+1}: {s.car_name[:20]} @ {s.track_name[:20]}", 13,
                 bold=True).pack(side='left', padx=8)
             stat_blk(mr, "Best", f"{s.best_lap:.3f}s", GREEN)
             stat_blk(mr, "Avg", f"{s.avg_lap:.3f}s")
@@ -2072,7 +2098,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             sec_lbl(self._trends_cards, "📋 Trend Insights")
             for fn in report.findings:
                 ff = ctk.CTkFrame(self._trends_cards, fg_color="#1e2845", corner_radius=6); ff.pack(fill='x', pady=2)
-                lbl(ff, f"•  {fn}", 11, color=TEXT, wraplength=820,
+                lbl(ff, f"•  {fn}", 12, color=TEXT, wraplength=820,
                     justify='left', anchor='w').pack(padx=12, pady=6)
 
         # Balance trend per session
@@ -2091,12 +2117,12 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             ax.axhline(0, color=DIM, lw=0.8, ls=':')
             ax.axhspan(-0.05, 0.05, color=BLUE, alpha=0.07)
             ax.set_ylim(-1.1, 1.1)
-            ax.set_ylabel("← US   OS →", color=DIM, fontsize=7)
-            ax.set_xlabel("Session #", color=DIM, fontsize=8)
-            ax.tick_params(colors=DIM, labelsize=7)
+            ax.set_ylabel("← US   OS →", color=DIM, fontsize=9)
+            ax.set_xlabel("Session #", color=DIM, fontsize=10)
+            ax.tick_params(colors=DIM, labelsize=9)
             for spine in ax.spines.values(): spine.set_edgecolor('#2a3050')
-            ax.set_title("Balance Trend — Overall / Entry / Mid / Exit", color=TEXT, fontsize=9, pad=3)
-            ax.legend(fontsize=7, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT)
+            ax.set_title("Balance Trend — Overall / Entry / Mid / Exit", color=TEXT, fontsize=11, pad=3)
+            ax.legend(fontsize=9, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT)
             ax.set_facecolor(PANEL); bc.fig.patch.set_facecolor(PANEL)
             bc.fig.tight_layout(pad=0.6); bc.draw()
 
@@ -2116,7 +2142,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self._impact_mode = ctk.StringVar(value="Predict")
         ctk.CTkSegmentedButton(
             mode_bar,
-            values=["Predict", "Sensitivity Matrix", "Optimizer"],
+            values=["Predict", "Sensitivity Matrix", "Optimizer", "AI Setup Builder"],
             variable=self._impact_mode,
             fg_color=CARD, selected_color=ACCENT, selected_hover_color="#c0392b",
             command=self._switch_impact_mode,
@@ -2126,10 +2152,11 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self._impact_pane = ctk.CTkFrame(tab, fg_color="transparent")
         self._impact_pane.pack(fill='both', expand=True)
 
-        # Build all three panes (only one visible at a time)
+        # Build all four panes (only one visible at a time)
         self._build_impact_predict_pane()
         self._build_impact_heatmap_pane()
         self._build_impact_optimizer_pane()
+        self._build_impact_ai_setup_pane()
 
         # Show default pane
         self._switch_impact_mode("Predict")
@@ -2138,11 +2165,14 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self._impact_predict_frame.pack_forget()
         self._impact_heatmap_frame.pack_forget()
         self._impact_opt_frame.pack_forget()
+        self._impact_ai_setup_frame.pack_forget()
         if mode == "Predict":
             self._impact_predict_frame.pack(fill='both', expand=True)
         elif mode == "Sensitivity Matrix":
             self._impact_heatmap_frame.pack(fill='both', expand=True)
             self._draw_sensitivity_matrix()
+        elif mode == "AI Setup Builder":
+            self._impact_ai_setup_frame.pack(fill='both', expand=True)
         else:
             self._impact_opt_frame.pack(fill='both', expand=True)
 
@@ -2274,21 +2304,21 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
 
                 brightness = 0.299 * rgba[0] + 0.587 * rgba[1] + 0.114 * rgba[2]
                 txt_color = '#0d1b2a' if brightness > 0.55 else 'white'
-                ax.text(j, i, txt, ha='center', va='center', fontsize=8,
+                ax.text(j, i, txt, ha='center', va='center', fontsize=10,
                         color=txt_color, zorder=2)
 
         ax.set_xlim(-0.5, n_m - 0.5)
         ax.set_ylim(-0.5, n_p - 0.5)
         ax.set_xticks(range(n_m))
-        ax.set_xticklabels(metric_labels, color=TEXT, fontsize=9)
+        ax.set_xticklabels(metric_labels, color=TEXT, fontsize=11)
         ax.set_yticks(range(n_p))
-        ax.set_yticklabels(param_labels, color=TEXT, fontsize=9)
+        ax.set_yticklabels(param_labels, color=TEXT, fontsize=11)
         ax.tick_params(length=0)
         ax.xaxis.tick_top()
         for sp in ax.spines.values():
             sp.set_visible(False)
         ax.set_title("Setup Sensitivity Matrix  (per +1 unit change)",
-                     color=TEXT, fontsize=11, pad=14)
+                     color=TEXT, fontsize=13, pad=14)
 
         # Divider lines between columns and rows
         for j in range(1, n_m):
@@ -2432,6 +2462,149 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 nf.pack(fill='x', padx=12, pady=(0, 8))
                 lbl(nf, pred.explanation, 10, color=TEXT, wraplength=900,
                     justify='left', anchor='w').pack(fill='x', padx=8, pady=6)
+
+    # ── AI Setup Builder pane ─────────────────────────────────────────────────
+    def _build_impact_ai_setup_pane(self):
+        f = ctk.CTkFrame(self._impact_pane, fg_color="transparent")
+        self._impact_ai_setup_frame = f
+
+        # Header description
+        desc = ctk.CTkFrame(f, fg_color=PANEL, corner_radius=8)
+        desc.pack(fill='x', padx=10, pady=(6, 4))
+        lbl(desc,
+            "🤖  AI Setup Builder — generates a complete, tech-inspection-passing setup "
+            "tailored to your telemetry and driving style using Claude.",
+            11, color=DIM, wraplength=900).pack(anchor='w', padx=12, pady=6)
+
+        # Why setups fail tech inspection — collapsible info box
+        fail_f = ctk.CTkFrame(f, fg_color="#1a1f35", corner_radius=8)
+        fail_f.pack(fill='x', padx=10, pady=(0, 4))
+        fail_hdr = ctk.CTkFrame(fail_f, fg_color="transparent")
+        fail_hdr.pack(fill='x', padx=10, pady=(6, 2))
+        lbl(fail_hdr, "⚠  Why setups fail tech inspection", 11, bold=True, color=YELLOW).pack(side='left')
+        self._fail_visible = False
+        self._fail_body = ctk.CTkFrame(fail_f, fg_color="transparent")
+        toggle_btn = ctk.CTkButton(
+            fail_hdr, text="Show", width=55, height=22,
+            fg_color=CARD, hover_color=PANEL,
+            command=lambda: self._toggle_fail_reasons(toggle_btn))
+        toggle_btn.pack(side='right')
+
+        for reason in tech_fail_reasons():
+            lbl(self._fail_body, f"• {reason}", 10, color=DIM,
+                wraplength=880, justify='left', anchor='w').pack(
+                anchor='w', padx=14, pady=2)
+
+        # Controls row
+        ctrl = ctk.CTkFrame(f, fg_color=PANEL, corner_radius=8)
+        ctrl.pack(fill='x', padx=10, pady=4)
+        crow = ctk.CTkFrame(ctrl, fg_color="transparent")
+        crow.pack(fill='x', padx=8, pady=8)
+
+        self._ai_setup_btn = ctk.CTkButton(
+            crow, text="Generate Tech-Legal Setup", width=210, height=34,
+            fg_color=ACCENT, hover_color="#c0392b",
+            command=self._run_ai_setup_builder)
+        self._ai_setup_btn.pack(side='left', padx=(0, 12))
+
+        self._ai_setup_status = lbl(crow, "Load a session and provide an API key in Settings (⚙).",
+                                    11, color=DIM)
+        self._ai_setup_status.pack(side='left')
+
+        # Output textbox (streaming)
+        self._ai_setup_out = ctk.CTkTextbox(
+            f, fg_color=PANEL, text_color=TEXT,
+            font=ctk.CTkFont(family="Courier New", size=14), wrap='word')
+        self._ai_setup_out.pack(fill='both', expand=True, padx=10, pady=(4, 8))
+        self._ai_setup_out.insert(
+            '1.0',
+            "Click 'Generate Tech-Legal Setup' to have Claude analyse your telemetry\n"
+            "and produce a complete, ready-to-use setup with every value within\n"
+            "the car's legal garage limits.\n\n"
+            "Requires: a loaded session  +  Anthropic API key in Settings (⚙).")
+        self._ai_setup_out.configure(state='disabled')
+
+    def _toggle_fail_reasons(self, btn):
+        self._fail_visible = not self._fail_visible
+        if self._fail_visible:
+            self._fail_body.pack(fill='x', padx=4, pady=(0, 6))
+            btn.configure(text="Hide")
+        else:
+            self._fail_body.pack_forget()
+            btn.configure(text="Show")
+
+    def _run_ai_setup_builder(self):
+        if not self.cur_rpt:
+            messagebox.showwarning("No Session", "Load a session first.")
+            return
+        key = _get_api_key().strip()
+        if not key:
+            messagebox.showwarning("API Key Needed",
+                                   "Set your Anthropic API key in Settings (⚙) to use AI Setup Builder.")
+            self._settings()
+            return
+
+        # Consent (reuse existing consent flag)
+        if not self.cfg.get('ai_consent'):
+            ok = messagebox.askyesno(
+                "AI Data Notice",
+                "This will send session telemetry, tire data, driving style\n"
+                "metrics, and setup parameters to the Anthropic Claude API.\n\n"
+                "No personally identifiable information is included.\n\n"
+                "Allow data transmission?")
+            if not ok:
+                return
+            self.cfg['ai_consent'] = True
+            save_cfg(self.cfg)
+
+        self._ai_setup_btn.configure(state='disabled', text="Generating…")
+        self._ai_setup_status.configure(text="⏳ Streaming from Claude…")
+        self._ai_setup_out.configure(state='normal')
+        self._ai_setup_out.delete('1.0', 'end')
+        self._ai_setup_out.insert('1.0', "Generating tech-legal setup…\n\n")
+
+        car_class_str = self.cur_rpt.car_class if self.cur_rpt else "default"
+        setup_flat = self.cur_setup.flat if self.cur_setup else None
+        track_info = None
+        if self.cur_data:
+            try:
+                from data.templates.track_templates import get_track_info
+                track_info = get_track_info(self.cur_data.track_name)
+            except Exception:
+                pass
+
+        def worker():
+            try:
+                for chunk in generate_tech_legal_setup_stream(
+                        report=self.cur_rpt,
+                        car_name=self.cur_data.car_name if self.cur_data else "Unknown",
+                        track_name=self.cur_data.track_name if self.cur_data else "Unknown",
+                        api_key=key,
+                        car_class_str=car_class_str,
+                        style_report=self.cur_style,
+                        stint_report=self.cur_stint,
+                        sector_report=self.cur_sec,
+                        corner_report=getattr(self, 'cur_corner_report', None),
+                        current_setup=setup_flat,
+                        session_info=self.cur_data.session_info if self.cur_data else None,
+                        track_info=track_info):
+                    self.after(0, lambda c=chunk: self._on_ai_setup_chunk(c))
+            except Exception as ex:
+                self.after(0, lambda: self._on_ai_setup_chunk(
+                    f"\n\n⚠ Generation failed: {ex}\nCheck your API key and connection."))
+            self.after(0, self._on_ai_setup_done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_ai_setup_chunk(self, chunk: str):
+        self._ai_setup_out.configure(state='normal')
+        self._ai_setup_out.insert('end', chunk)
+        self._ai_setup_out.see('end')
+        self._ai_setup_out.configure(state='disabled')
+
+    def _on_ai_setup_done(self):
+        self._ai_setup_btn.configure(state='normal', text="Generate Tech-Legal Setup")
+        self._ai_setup_status.configure(text="✅ Setup generated — review each value before loading")
 
     # ══════════════════════════════════════════════════════════════════════════
     # FILE WATCHER

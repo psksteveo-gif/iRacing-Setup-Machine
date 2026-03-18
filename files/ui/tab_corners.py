@@ -7,6 +7,7 @@ from tkinter import messagebox
 
 from ui.theme import (DARK, PANEL, CARD, ACCENT, BLUE, TEXT, DIM, GREEN, YELLOW,
                       RED, PURPLE, lbl, card_frame, stat_blk, sec_lbl, EmbedChart)
+from ui.track_map import TrackMapWidget, highlights_from_corners
 from core.corner_analysis import CornerAnalyzer, CornerAnalysisReport, LapDeltaAnalyzer
 from core.ai_advisor import get_ai_recommendations_stream
 from core.config import get_api_key, save_cfg
@@ -23,6 +24,8 @@ class CornersTabMixin:
         self._cor_sc.pack(fill='both', expand=True, padx=10, pady=8)
         self._cor_summary = ctk.CTkFrame(self._cor_sc, fg_color=PANEL, corner_radius=8)
         self._cor_summary.pack(fill='x', pady=(0, 4))
+        self._cor_map = TrackMapWidget(self._cor_sc, figsize=(10, 2.8))
+        self._cor_map.pack(fill='x', pady=(0, 4))
         self._cor_delta_chart = EmbedChart(self._cor_sc, figsize=(10, 2.5))
         self._cor_delta_chart.pack(fill='x', pady=(0, 4))
         self._cor_cards = ctk.CTkFrame(self._cor_sc, fg_color="transparent")
@@ -34,8 +37,8 @@ class CornersTabMixin:
         self._cor_ai_btn = ctk.CTkButton(self._cor_ai_hdr, text="Get Corner Suggestions", width=180, height=28,
             fg_color=ACCENT, hover_color="#c0392b", command=self._get_corner_ai)
         self._cor_ai_btn.pack(side='right', padx=8)
-        self._cor_ai_text = ctk.CTkTextbox(self._cor_sc, fg_color=PANEL, text_color=TEXT, height=250,
-            font=ctk.CTkFont(family="Helvetica", size=12), wrap='word')
+        self._cor_ai_text = ctk.CTkTextbox(self._cor_sc, fg_color=PANEL, text_color=TEXT, height=300,
+            font=ctk.CTkFont(family="Helvetica", size=14), wrap='word')
         self._cor_ai_text.pack(fill='x', pady=(0, 8))
         self._cor_ai_text.insert('1.0', "Analyze corners first, then click 'Get Corner Suggestions' for AI-powered per-corner setup changes.")
         self._cor_ai_text.configure(state='disabled')
@@ -53,6 +56,14 @@ class CornersTabMixin:
             for w in self._cor_summary.winfo_children(): w.destroy()
             lbl(self._cor_summary, "No corners detected — telemetry may lack sufficient braking data.", 12, color=DIM).pack(pady=10)
             return
+        # Track map — corners coloured green→yellow→red by time delta
+        hl = highlights_from_corners(report)
+        worst = report.corners[report.worst_corner]
+        dots = [{'pct': c.apex_pct, 'label': f"T{c.corner_num}",
+                 'color': RED if (c.corner_num - 1 == report.worst_corner) else DIM}
+                for c in report.corners]
+        self._cor_map.update(d, highlights=hl, corner_dots=dots,
+                             title="Corner Map — red = worst, green = best")
         # Summary bar
         for w in self._cor_summary.winfo_children(): w.destroy()
         sf = ctk.CTkFrame(self._cor_summary, fg_color="transparent"); sf.pack(fill='x', padx=10, pady=8)
