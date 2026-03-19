@@ -26,6 +26,93 @@ def _check_rate_limit() -> bool:
         return True
 
 
+def _weather_guidance(si: dict) -> str:
+    """
+    Translate raw session conditions into concrete setup adjustment guidance
+    for the AI prompt.  Returns an empty string if no useful data is available.
+    """
+    lines = []
+    air   = si.get('air_temp_c')
+    track = si.get('track_temp_c')
+    wtype = str(si.get('weather_type', '')).lower()
+    skies = str(si.get('skies', '')).lower()
+    wind  = si.get('wind_speed_ms')
+
+    # ── Wet / rain ──────────────────────────────────────────────────────────
+    is_wet = any(k in wtype for k in ('rain', 'wet', 'storm')) or \
+             any(k in skies for k in ('rain', 'overcast'))
+    if is_wet:
+        lines += [
+            "WET CONDITIONS — mandatory setup changes:",
+            "  • Tire pressures: start 1.5–2.0 psi LOWER than dry baseline (cold wet rubber needs more contact patch)",
+            "  • Wing angles: reduce by 1–2 steps each end (less drag; mechanical grip matters more than aero)",
+            "  • Ride heights: raise 3–5 mm front and rear (water standing on track reduces aero sensitivity)",
+            "  • Brake bias: shift 1–2% rearward (front lock risk rises dramatically on wet tarmac)",
+            "  • ARBs: soften 1 step each end (suspension compliance helps maintain traction on slippery surfaces)",
+            "  • TC: increase 1–2 levels (exit wheelspin is far more costly than TC intervention in the wet)",
+            "  • ABS: increase 1 level (consistent braking distances are harder to achieve)",
+        ]
+
+    # ── Track temperature ───────────────────────────────────────────────────
+    if track is not None and not is_wet:
+        if track >= 50.0:
+            lines += [
+                f"HOT TRACK ({track:.0f}°C) — tire pressure management critical:",
+                "  • Cold tire pressures: start 0.5–1.0 psi LOWER than baseline (tires reach operating temp very quickly and peak pressure will be high)",
+                "  • Expect front tires to overheat on long stints — consider slightly higher front pressures if inner-edge wear appears",
+                "  • Brake cooling ducts (if adjustable): open 1–2 steps (brake fade risk rises sharply above 45°C ambient)",
+                "  • Fuel load effect is amplified — watch balance shift over stint length",
+            ]
+        elif track >= 40.0:
+            lines += [
+                f"WARM TRACK ({track:.0f}°C) — minor pressure adjustment:",
+                "  • Cold tire pressures: start 0.25–0.5 psi lower than baseline",
+                "  • Tires reach operating window quickly — avoid excessive warm-up laps wasting rubber",
+            ]
+        elif track <= 20.0:
+            lines += [
+                f"COLD TRACK ({track:.0f}°C) — tires slow to reach optimal window:",
+                "  • Cold tire pressures: start 1.0–2.0 psi HIGHER than baseline (pressures drop further before tires warm up)",
+                "  • Warm-up laps are critical — at least 2 full laps before pushing",
+                "  • Reduce TC by 1 level only once confident tires are up to temperature",
+                "  • Brake bias: consider 0.5% more front (cold rears lock more easily)",
+            ]
+        elif track <= 28.0:
+            lines += [
+                f"COOL TRACK ({track:.0f}°C) — modest pressure increase recommended:",
+                "  • Cold tire pressures: start 0.5 psi higher than baseline",
+                "  • First flying lap may feel understeer as fronts lag behind rears in warm-up",
+            ]
+
+    # ── Air temperature / density ───────────────────────────────────────────
+    if air is not None and not is_wet:
+        if air >= 35.0:
+            lines.append(
+                f"HIGH AIR TEMP ({air:.0f}°C): reduced air density → marginally less downforce (~1–2%). "
+                "No setup change needed but be aware top speed will be slightly higher than baseline suggests."
+            )
+        elif air <= 10.0:
+            lines.append(
+                f"LOW AIR TEMP ({air:.0f}°C): dense cold air → slightly more downforce than baseline. "
+                "Car may feel more planted than expected. Engine also produces peak power more easily."
+            )
+
+    # ── Wind ────────────────────────────────────────────────────────────────
+    if wind is not None and wind >= 6.0:
+        wind_dir = si.get('wind_direction_deg')
+        dir_str  = f" from {wind_dir:.0f}°" if wind_dir is not None else ""
+        lines += [
+            f"SIGNIFICANT WIND ({wind:.1f} m/s{dir_str}) — handling implications:",
+            "  • High-speed corner balance will vary lap-to-lap depending on wind direction vs corner heading",
+            "  • Consider 0.5–1 step more rear wing for stability if main straight is a headwind",
+            "  • Brake markers may need adjusting into a headwind (car brakes shorter) vs tailwind (longer zone)",
+        ]
+
+    if not lines:
+        return ""
+    return "CONDITION-SPECIFIC SETUP ADJUSTMENTS:\n" + "\n".join(lines) + "\n"
+
+
 def _sanitize(text: str, max_len: int = 200) -> str:
     """Strip control chars and truncate for safe prompt inclusion."""
     cleaned = ''.join(c for c in text if c.isprintable() or c in '\n\t')
@@ -772,6 +859,9 @@ def generate_tech_legal_setup_stream(
         if getattr(track_info, 'notes', None):
             track_text += f"  Notes: {track_info.notes}\n"
 
+    # ── Weather interpretation guidance ───────────────────────────────────
+    weather_guidance = _weather_guidance(si)
+
     # ── Style hints section ────────────────────────────────────────────────
     hints_text = ""
     if style_hints:
@@ -807,7 +897,7 @@ TELEMETRY — what this driver's session shows
 ═══════════════════════════════════════════════════════
 {telem_text}
 {cond_text}{track_text}
-DETECTED ISSUES:
+{weather_guidance}DETECTED ISSUES:
 {issues_text}
 TIRE TEMPERATURES:
 {tire_text if tire_text else "  No tire data.\n"}

@@ -385,6 +385,205 @@ def bounds_summary_for_prompt(car_class) -> str:
     return "\n".join(lines)
 
 
+# ── Parameter name normalisation ───────────────────────────────────────────────
+#
+# Claude outputs human-readable names like "LF Camber", "Front ARB", "Brake Bias".
+# Our bounds dict uses snake_case internal keys like "camber_lf", "arb_front".
+# This table maps every reasonable Claude output variant → internal key.
+#
+# Keys are lowercased + whitespace-collapsed before lookup.
+_CLAUDE_NAME_MAP: Dict[str, str] = {
+    # ── Camber ────────────────────────────────────────────────────────────────
+    "lf camber":                "camber_lf",
+    "rf camber":                "camber_rf",
+    "lr camber":                "camber_lr",
+    "rr camber":                "camber_rr",
+    "left front camber":        "camber_lf",
+    "right front camber":       "camber_rf",
+    "left rear camber":         "camber_lr",
+    "right rear camber":        "camber_rr",
+    "camber lf":                "camber_lf",
+    "camber rf":                "camber_rf",
+    "camber lr":                "camber_lr",
+    "camber rr":                "camber_rr",
+    # ── Toe ───────────────────────────────────────────────────────────────────
+    "front toe":                "toe_front",
+    "rear toe":                 "toe_rear",
+    "toe front":                "toe_front",
+    "toe rear":                 "toe_rear",
+    "front toe in":             "toe_front",
+    "rear toe in":              "toe_rear",
+    # ── Tire pressures ────────────────────────────────────────────────────────
+    "lf cold pressure":         "pressure_lf",
+    "rf cold pressure":         "pressure_rf",
+    "lr cold pressure":         "pressure_lr",
+    "rr cold pressure":         "pressure_rr",
+    "lf pressure":              "pressure_lf",
+    "rf pressure":              "pressure_rf",
+    "lr pressure":              "pressure_lr",
+    "rr pressure":              "pressure_rr",
+    "left front cold pressure": "pressure_lf",
+    "right front cold pressure":"pressure_rf",
+    "left rear cold pressure":  "pressure_lr",
+    "right rear cold pressure": "pressure_rr",
+    "left front pressure":      "pressure_lf",
+    "right front pressure":     "pressure_rf",
+    "left rear pressure":       "pressure_lr",
+    "right rear pressure":      "pressure_rr",
+    "lf starting pressure":     "pressure_lf",
+    "rf starting pressure":     "pressure_rf",
+    "lr starting pressure":     "pressure_lr",
+    "rr starting pressure":     "pressure_rr",
+    # ── Springs ───────────────────────────────────────────────────────────────
+    "lf spring":                "spring_lf",
+    "rf spring":                "spring_rf",
+    "lr spring":                "spring_lr",
+    "rr spring":                "spring_rr",
+    "lf spring rate":           "spring_lf",
+    "rf spring rate":           "spring_rf",
+    "lr spring rate":           "spring_lr",
+    "rr spring rate":           "spring_rr",
+    "left front spring":        "spring_lf",
+    "right front spring":       "spring_rf",
+    "left rear spring":         "spring_lr",
+    "right rear spring":        "spring_rr",
+    "spring lf":                "spring_lf",
+    "spring rf":                "spring_rf",
+    "spring lr":                "spring_lr",
+    "spring rr":                "spring_rr",
+    # ── ARBs ──────────────────────────────────────────────────────────────────
+    "front arb":                "arb_front",
+    "rear arb":                 "arb_rear",
+    "arb front":                "arb_front",
+    "arb rear":                 "arb_rear",
+    "front anti-roll bar":      "arb_front",
+    "rear anti-roll bar":       "arb_rear",
+    "front sway bar":           "arb_front",
+    "rear sway bar":            "arb_rear",
+    "front stabilizer bar":     "arb_front",
+    "rear stabilizer bar":      "arb_rear",
+    # ── Ride heights ──────────────────────────────────────────────────────────
+    "lf ride height":           "rh_lf",
+    "rf ride height":           "rh_rf",
+    "lr ride height":           "rh_lr",
+    "rr ride height":           "rh_rr",
+    "ride height lf":           "rh_lf",
+    "ride height rf":           "rh_rf",
+    "ride height lr":           "rh_lr",
+    "ride height rr":           "rh_rr",
+    "left front ride height":   "rh_lf",
+    "right front ride height":  "rh_rf",
+    "left rear ride height":    "rh_lr",
+    "right rear ride height":   "rh_rr",
+    # ── Slow bump dampers ─────────────────────────────────────────────────────
+    "lf slow bump":             "bump_slow_lf",
+    "rf slow bump":             "bump_slow_rf",
+    "lr slow bump":             "bump_slow_lr",
+    "rr slow bump":             "bump_slow_rr",
+    "lf bump slow":             "bump_slow_lf",
+    "rf bump slow":             "bump_slow_rf",
+    "lr bump slow":             "bump_slow_lr",
+    "rr bump slow":             "bump_slow_rr",
+    "left front slow bump":     "bump_slow_lf",
+    "right front slow bump":    "bump_slow_rf",
+    "left rear slow bump":      "bump_slow_lr",
+    "right rear slow bump":     "bump_slow_rr",
+    # ── Fast bump dampers ─────────────────────────────────────────────────────
+    "lf fast bump":             "bump_fast_lf",
+    "rf fast bump":             "bump_fast_rf",
+    "lr fast bump":             "bump_fast_lr",
+    "rr fast bump":             "bump_fast_rr",
+    "lf bump fast":             "bump_fast_lf",
+    "rf bump fast":             "bump_fast_rf",
+    "lr bump fast":             "bump_fast_lr",
+    "rr bump fast":             "bump_fast_rr",
+    # ── Slow rebound dampers ──────────────────────────────────────────────────
+    "lf slow rebound":          "rebound_slow_lf",
+    "rf slow rebound":          "rebound_slow_rf",
+    "lr slow rebound":          "rebound_slow_lr",
+    "rr slow rebound":          "rebound_slow_rr",
+    "lf rebound slow":          "rebound_slow_lf",
+    "rf rebound slow":          "rebound_slow_rf",
+    "lr rebound slow":          "rebound_slow_lr",
+    "rr rebound slow":          "rebound_slow_rr",
+    "left front slow rebound":  "rebound_slow_lf",
+    "right front slow rebound": "rebound_slow_rf",
+    "left rear slow rebound":   "rebound_slow_lr",
+    "right rear slow rebound":  "rebound_slow_rr",
+    # ── Fast rebound dampers ──────────────────────────────────────────────────
+    "lf fast rebound":          "rebound_fast_lf",
+    "rf fast rebound":          "rebound_fast_rf",
+    "lr fast rebound":          "rebound_fast_lr",
+    "rr fast rebound":          "rebound_fast_rr",
+    "lf rebound fast":          "rebound_fast_lf",
+    "rf rebound fast":          "rebound_fast_rf",
+    "lr rebound fast":          "rebound_fast_lr",
+    "rr rebound fast":          "rebound_fast_rr",
+    # ── Wings / Aero ──────────────────────────────────────────────────────────
+    "front wing":               "wing_front",
+    "rear wing":                "wing_rear",
+    "wing front":               "wing_front",
+    "wing rear":                "wing_rear",
+    "front wing angle":         "wing_front",
+    "rear wing angle":          "wing_rear",
+    "front downforce":          "wing_front",
+    "rear downforce":           "wing_rear",
+    "front brake duct":         "brake_duct_front",
+    "rear brake duct":          "brake_duct_rear",
+    "brake duct front":         "brake_duct_front",
+    "brake duct rear":          "brake_duct_rear",
+    # ── Brakes ────────────────────────────────────────────────────────────────
+    "brake bias":               "brake_bias",
+    "brake balance":            "brake_bias",
+    "front brake bias":         "brake_bias",
+    "brake pressure bias":      "brake_bias",
+    "brake pressure":           "brake_pressure",
+    "max brake pressure":       "brake_pressure",
+    "brake force":              "brake_pressure",
+    # ── Electronics ───────────────────────────────────────────────────────────
+    "tc":                       "tc_1",
+    "tc1":                      "tc_1",
+    "tc 1":                     "tc_1",
+    "traction control":         "tc_1",
+    "traction control 1":       "tc_1",
+    "tc2":                      "tc_2",
+    "tc 2":                     "tc_2",
+    "traction control 2":       "tc_2",
+    "abs":                      "abs",
+    "abs setting":              "abs",
+    # ── Differential ──────────────────────────────────────────────────────────
+    "diff preload":             "diff_preload",
+    "differential preload":     "diff_preload",
+    "preload":                  "diff_preload",
+    "diff power ramp":          "diff_power",
+    "power ramp":               "diff_power",
+    "diff coast ramp":          "diff_coast",
+    "coast ramp":               "diff_coast",
+    "diff power":               "diff_power",
+    "diff coast":               "diff_coast",
+}
+
+
+def normalize_param_key(raw_name: str) -> Optional[str]:
+    """
+    Map a human-readable parameter name (as output by Claude) to the internal
+    bounds key used in tech_inspector.  Returns None if no mapping found.
+
+    Matching is case-insensitive and whitespace-collapsed.
+    """
+    key = " ".join(raw_name.lower().strip().split())
+    # Direct lookup first
+    if key in _CLAUDE_NAME_MAP:
+        return _CLAUDE_NAME_MAP[key]
+    # Try stripping common trailing words that Claude sometimes appends
+    for suffix in (" setting", " rate", " angle", " level", " (front)", " (rear)"):
+        if key.endswith(suffix):
+            trimmed = key[: -len(suffix)].strip()
+            if trimmed in _CLAUDE_NAME_MAP:
+                return _CLAUDE_NAME_MAP[trimmed]
+    return None
+
+
 def tech_fail_reasons() -> List[str]:
     """
     Return a human-readable list of common reasons setups fail tech inspection,

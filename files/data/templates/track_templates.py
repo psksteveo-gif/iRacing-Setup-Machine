@@ -23,6 +23,7 @@ class TrackInfo:
 
 @dataclass
 class SetupTemplate:
+    # ── Legacy text fields (kept for backward compat) ──────────────────────
     front_wing: Optional[str] = None
     rear_wing: Optional[str] = None
     tire_pressures_psi: Optional[Dict[str, float]] = None
@@ -34,6 +35,66 @@ class SetupTemplate:
     brake_bias_pct: Optional[float] = None
     key_adjustments: Optional[List[str]] = None
     priority_notes: Optional[str] = None
+
+    # ── Numeric fields — used by get_baseline_setup_text for AI prompts ────
+    # Wings (step numbers)
+    wing_front_step: Optional[int] = None
+    wing_rear_step: Optional[int] = None
+
+    # Toe (mm; negative = toe-out, positive = toe-in)
+    toe_front_mm: Optional[float] = None
+    toe_rear_mm: Optional[float] = None
+
+    # Spring rates (N/mm; lb/in for stock class)
+    spring_lf: Optional[float] = None
+    spring_rf: Optional[float] = None
+    spring_lr: Optional[float] = None
+    spring_rr: Optional[float] = None
+    spring_unit: str = "N/mm"
+
+    # ARBs (1–7 clicks; 1=softest)
+    arb_front: Optional[int] = None
+    arb_rear: Optional[int] = None
+
+    # Ride heights (mm)
+    rh_lf: Optional[float] = None
+    rh_rf: Optional[float] = None
+    rh_lr: Optional[float] = None
+    rh_rr: Optional[float] = None
+
+    # Slow-speed dampers (clicks; 1=softest)
+    bump_slow_lf: Optional[int] = None
+    bump_slow_rf: Optional[int] = None
+    bump_slow_lr: Optional[int] = None
+    bump_slow_rr: Optional[int] = None
+
+    # Fast-speed dampers (clicks)
+    bump_fast_lf: Optional[int] = None
+    bump_fast_rf: Optional[int] = None
+    bump_fast_lr: Optional[int] = None
+    bump_fast_rr: Optional[int] = None
+
+    # Slow rebound (clicks)
+    rebound_slow_lf: Optional[int] = None
+    rebound_slow_rf: Optional[int] = None
+    rebound_slow_lr: Optional[int] = None
+    rebound_slow_rr: Optional[int] = None
+
+    # Fast rebound (clicks)
+    rebound_fast_lf: Optional[int] = None
+    rebound_fast_rf: Optional[int] = None
+    rebound_fast_lr: Optional[int] = None
+    rebound_fast_rr: Optional[int] = None
+
+    # Differential
+    diff_preload_nm: Optional[float] = None
+    diff_power_deg: Optional[float] = None
+    diff_coast_deg: Optional[float] = None
+
+    # Electronics (0–9 levels)
+    tc_1: Optional[int] = None
+    abs_setting: Optional[int] = None
+    brake_pressure_pct: Optional[float] = None
 
 
 # ── Track Database ────────────────────────────────────────────────────────────
@@ -998,209 +1059,437 @@ def _find_track(track_name: str) -> Optional[TrackInfo]:
 # Templates for every car class × downforce level.
 
 _TEMPLATES: Dict[str, Dict[str, SetupTemplate]] = {
+    # ══════════════════════════════════════════════════════════════════════════
+    # GT3  —  Full numeric baselines (40+ parameters)
+    # ══════════════════════════════════════════════════════════════════════════
     "gt3": {
+        # Low downforce: Monza, Daytona Road, Le Mans, Spa long-run
         "low": SetupTemplate(
-            front_wing="3-4 / 10", rear_wing="3-4 / 10",
+            front_wing="3 / 10", rear_wing="3 / 10",
             tire_pressures_psi={'LF': 27.0, 'RF': 27.0, 'LR': 26.0, 'RR': 26.0},
             camber_deg={'LF': -3.2, 'RF': -3.2, 'LR': -2.0, 'RR': -2.0},
-            spring_notes="Stiffer springs for stability at high speed",
-            arb_notes="Softer ARBs for mechanical grip in slow corners",
-            ride_height_notes="Low front and rear for reduced drag",
-            damper_notes="Stiffer bump to manage aero platform",
             brake_bias_pct=56.0,
-            key_adjustments=["Minimize wing angles", "Lower ride height", "Stiffen springs"],
-            priority_notes="Top speed is king — sacrifice corner speed for straight-line pace."
+            key_adjustments=["Minimize wing for top speed", "Stiffer springs for platform stability"],
+            priority_notes="Top speed is king — accept some corner compromise for straight-line pace.",
+            # ── Numeric ──
+            wing_front_step=3, wing_rear_step=3,
+            toe_front_mm=0.0, toe_rear_mm=1.5,
+            spring_lf=95.0, spring_rf=95.0, spring_lr=85.0, spring_rr=85.0,
+            arb_front=3, arb_rear=3,
+            rh_lf=58.0, rh_rf=58.0, rh_lr=74.0, rh_rr=74.0,
+            bump_slow_lf=8, bump_slow_rf=8, bump_slow_lr=7, bump_slow_rr=7,
+            bump_fast_lf=5, bump_fast_rf=5, bump_fast_lr=4, bump_fast_rr=4,
+            rebound_slow_lf=10, rebound_slow_rf=10, rebound_slow_lr=9, rebound_slow_rr=9,
+            rebound_fast_lf=6, rebound_fast_rf=6, rebound_fast_lr=5, rebound_fast_rr=5,
+            diff_preload_nm=50.0, diff_power_deg=45.0, diff_coast_deg=0.0,
+            tc_1=4, abs_setting=4, brake_pressure_pct=96.0,
         ),
+        # Medium downforce: Spa, Silverstone, Road America, COTA, Sebring
         "medium": SetupTemplate(
             front_wing="5 / 10", rear_wing="5 / 10",
             tire_pressures_psi={'LF': 27.5, 'RF': 27.5, 'LR': 26.5, 'RR': 26.5},
             camber_deg={'LF': -3.0, 'RF': -3.0, 'LR': -1.8, 'RR': -1.8},
-            spring_notes="Medium springs — balance compliance and response",
-            arb_notes="Medium front and rear ARBs",
-            ride_height_notes="Standard ride height for balanced downforce",
-            damper_notes="Balanced bump and rebound settings",
             brake_bias_pct=55.0,
-            key_adjustments=["Balance front and rear downforce", "Tune ARBs for balance"],
-            priority_notes="Balanced approach — work on mechanical grip and aero equally."
+            key_adjustments=["Balance front/rear downforce", "Tune ARBs for balance"],
+            priority_notes="Balanced approach — equal weight on mechanical and aero grip.",
+            # ── Numeric ──
+            wing_front_step=5, wing_rear_step=5,
+            toe_front_mm=0.0, toe_rear_mm=1.5,
+            spring_lf=80.0, spring_rf=80.0, spring_lr=70.0, spring_rr=70.0,
+            arb_front=4, arb_rear=4,
+            rh_lf=62.0, rh_rf=62.0, rh_lr=78.0, rh_rr=78.0,
+            bump_slow_lf=7, bump_slow_rf=7, bump_slow_lr=6, bump_slow_rr=6,
+            bump_fast_lf=4, bump_fast_rf=4, bump_fast_lr=3, bump_fast_rr=3,
+            rebound_slow_lf=9, rebound_slow_rf=9, rebound_slow_lr=8, rebound_slow_rr=8,
+            rebound_fast_lf=6, rebound_fast_rf=6, rebound_fast_lr=5, rebound_fast_rr=5,
+            diff_preload_nm=50.0, diff_power_deg=45.0, diff_coast_deg=0.0,
+            tc_1=4, abs_setting=4, brake_pressure_pct=95.0,
         ),
+        # High downforce: Monaco, Singapore, Hungaroring, Zandvoort
         "high": SetupTemplate(
-            front_wing="7-8 / 10", rear_wing="7-8 / 10",
+            front_wing="7 / 10", rear_wing="7 / 10",
             tire_pressures_psi={'LF': 28.0, 'RF': 28.0, 'LR': 27.0, 'RR': 27.0},
             camber_deg={'LF': -3.5, 'RF': -3.5, 'LR': -2.2, 'RR': -2.2},
-            spring_notes="Softer springs to work with high aero load",
-            arb_notes="Stiffer ARBs to control body roll with downforce",
-            ride_height_notes="Slightly higher to manage ground clearance under load",
-            damper_notes="Softer bump for curb compliance",
             brake_bias_pct=54.5,
-            key_adjustments=["Maximize wing angles", "Soften springs", "Manage tire temps"],
-            priority_notes="Corner speed focus — accept straight-line deficit for faster turns."
+            key_adjustments=["Maximize wing for corner speed", "Soften springs for curb compliance"],
+            priority_notes="Corner speed is everything — accept straight-line deficit.",
+            # ── Numeric ──
+            wing_front_step=7, wing_rear_step=7,
+            toe_front_mm=-0.5, toe_rear_mm=2.0,
+            spring_lf=65.0, spring_rf=65.0, spring_lr=60.0, spring_rr=60.0,
+            arb_front=5, arb_rear=5,
+            rh_lf=65.0, rh_rf=65.0, rh_lr=82.0, rh_rr=82.0,
+            bump_slow_lf=6, bump_slow_rf=6, bump_slow_lr=5, bump_slow_rr=5,
+            bump_fast_lf=4, bump_fast_rf=4, bump_fast_lr=3, bump_fast_rr=3,
+            rebound_slow_lf=8, rebound_slow_rf=8, rebound_slow_lr=7, rebound_slow_rr=7,
+            rebound_fast_lf=5, rebound_fast_rf=5, rebound_fast_lr=4, rebound_fast_rr=4,
+            diff_preload_nm=50.0, diff_power_deg=45.0, diff_coast_deg=0.0,
+            tc_1=3, abs_setting=3, brake_pressure_pct=94.0,
         ),
     },
+    # ══════════════════════════════════════════════════════════════════════════
+    # GT4  —  Mechanical grip dominant; limited aero
+    # ══════════════════════════════════════════════════════════════════════════
     "gt4": {
         "low": SetupTemplate(
-            front_wing="N/A (fixed aero)", rear_wing="Low if adjustable",
+            front_wing="1 / 5", rear_wing="1 / 5",
             tire_pressures_psi={'LF': 27.5, 'RF': 27.5, 'LR': 26.5, 'RR': 26.5},
             camber_deg={'LF': -2.8, 'RF': -2.8, 'LR': -1.5, 'RR': -1.5},
-            spring_notes="Stiffer for high-speed stability",
-            arb_notes="Softer ARBs — less aero means more reliance on mechanical grip",
-            ride_height_notes="Lowest legal setting to reduce drag",
             brake_bias_pct=56.0,
-            key_adjustments=["Minimize drag", "Stiffen springs", "Focus on corner exit traction"],
-            priority_notes="GT4 has limited aero — mechanical grip is everything."
+            key_adjustments=["Limited aero — mechanical grip is everything", "Focus on exit traction"],
+            priority_notes="GT4 has minimal aero — springs and ARBs are the primary balance tools.",
+            wing_front_step=1, wing_rear_step=1,
+            toe_front_mm=0.0, toe_rear_mm=1.5,
+            spring_lf=60.0, spring_rf=60.0, spring_lr=55.0, spring_rr=55.0,
+            arb_front=3, arb_rear=3,
+            rh_lf=65.0, rh_rf=65.0, rh_lr=82.0, rh_rr=82.0,
+            bump_slow_lf=7, bump_slow_rf=7, bump_slow_lr=6, bump_slow_rr=6,
+            bump_fast_lf=4, bump_fast_rf=4, bump_fast_lr=3, bump_fast_rr=3,
+            rebound_slow_lf=9, rebound_slow_rf=9, rebound_slow_lr=8, rebound_slow_rr=8,
+            rebound_fast_lf=5, rebound_fast_rf=5, rebound_fast_lr=4, rebound_fast_rr=4,
+            diff_preload_nm=50.0, diff_power_deg=45.0, diff_coast_deg=5.0,
+            tc_1=5, abs_setting=4, brake_pressure_pct=95.0,
         ),
         "medium": SetupTemplate(
             tire_pressures_psi={'LF': 28.0, 'RF': 28.0, 'LR': 27.0, 'RR': 27.0},
             camber_deg={'LF': -2.5, 'RF': -2.5, 'LR': -1.3, 'RR': -1.3},
-            spring_notes="Medium springs for balance",
-            arb_notes="Medium ARBs",
             brake_bias_pct=55.5,
-            key_adjustments=["Balance mechanical grip", "Smooth driving inputs"],
-            priority_notes="Balanced GT4 setup — let the car flow."
+            key_adjustments=["Balance mechanical grip", "Smooth driving inputs critical"],
+            priority_notes="Balanced GT4 — let the car flow, smooth inputs reward more than setup.",
+            wing_front_step=2, wing_rear_step=2,
+            toe_front_mm=0.0, toe_rear_mm=1.5,
+            spring_lf=55.0, spring_rf=55.0, spring_lr=50.0, spring_rr=50.0,
+            arb_front=4, arb_rear=4,
+            rh_lf=67.0, rh_rf=67.0, rh_lr=84.0, rh_rr=84.0,
+            bump_slow_lf=6, bump_slow_rf=6, bump_slow_lr=5, bump_slow_rr=5,
+            bump_fast_lf=4, bump_fast_rf=4, bump_fast_lr=3, bump_fast_rr=3,
+            rebound_slow_lf=8, rebound_slow_rf=8, rebound_slow_lr=7, rebound_slow_rr=7,
+            rebound_fast_lf=5, rebound_fast_rf=5, rebound_fast_lr=4, rebound_fast_rr=4,
+            diff_preload_nm=50.0, diff_power_deg=45.0, diff_coast_deg=5.0,
+            tc_1=5, abs_setting=4, brake_pressure_pct=95.0,
         ),
         "high": SetupTemplate(
             tire_pressures_psi={'LF': 28.5, 'RF': 28.5, 'LR': 27.5, 'RR': 27.5},
             camber_deg={'LF': -3.0, 'RF': -3.0, 'LR': -1.8, 'RR': -1.8},
-            spring_notes="Softer springs for corner compliance",
-            arb_notes="Stiffer to control roll",
             brake_bias_pct=55.0,
-            key_adjustments=["Soften springs", "Stiffen ARBs", "Manage tire temps"],
-            priority_notes="Maximize corner speed at high-downforce tracks."
+            key_adjustments=["Soften springs for compliance at technical tracks", "Stiffen ARBs for roll control"],
+            priority_notes="Technical track GT4 — softer springs help at slow corners where aero can't.",
+            wing_front_step=3, wing_rear_step=3,
+            toe_front_mm=-0.5, toe_rear_mm=2.0,
+            spring_lf=50.0, spring_rf=50.0, spring_lr=45.0, spring_rr=45.0,
+            arb_front=5, arb_rear=5,
+            rh_lf=70.0, rh_rf=70.0, rh_lr=87.0, rh_rr=87.0,
+            bump_slow_lf=5, bump_slow_rf=5, bump_slow_lr=5, bump_slow_rr=5,
+            bump_fast_lf=3, bump_fast_rf=3, bump_fast_lr=3, bump_fast_rr=3,
+            rebound_slow_lf=7, rebound_slow_rf=7, rebound_slow_lr=7, rebound_slow_rr=7,
+            rebound_fast_lf=4, rebound_fast_rf=4, rebound_fast_lr=4, rebound_fast_rr=4,
+            diff_preload_nm=50.0, diff_power_deg=45.0, diff_coast_deg=5.0,
+            tc_1=4, abs_setting=4, brake_pressure_pct=94.0,
         ),
     },
+    # ══════════════════════════════════════════════════════════════════════════
+    # GTP / Hypercar / LMDh  —  Very stiff; ride height critical
+    # ══════════════════════════════════════════════════════════════════════════
     "gtp": {
         "low": SetupTemplate(
-            front_wing="Low setting", rear_wing="Low setting",
+            front_wing="3 / 12", rear_wing="3 / 12",
             tire_pressures_psi={'LF': 22.0, 'RF': 22.0, 'LR': 21.0, 'RR': 21.0},
             camber_deg={'LF': -3.5, 'RF': -3.5, 'LR': -2.0, 'RR': -2.0},
-            spring_notes="Stiff springs for aero platform at speed",
             brake_bias_pct=58.0,
-            key_adjustments=["Minimize drag", "Lower ride height", "Focus on straight-line speed"],
-            priority_notes="LMDh/Hypercar — aero platform and top speed for Le Mans-type tracks."
+            key_adjustments=["Minimize drag for top speed", "Very low ride height for aero platform"],
+            priority_notes="LMDh/Hypercar — aero platform stability is everything at Le Mans speeds.",
+            wing_front_step=3, wing_rear_step=3,
+            toe_front_mm=0.0, toe_rear_mm=1.0,
+            spring_lf=180.0, spring_rf=180.0, spring_lr=190.0, spring_rr=190.0,
+            arb_front=4, arb_rear=5,
+            rh_lf=35.0, rh_rf=35.0, rh_lr=55.0, rh_rr=55.0,
+            bump_slow_lf=10, bump_slow_rf=10, bump_slow_lr=10, bump_slow_rr=10,
+            bump_fast_lf=6, bump_fast_rf=6, bump_fast_lr=6, bump_fast_rr=6,
+            rebound_slow_lf=12, rebound_slow_rf=12, rebound_slow_lr=12, rebound_slow_rr=12,
+            rebound_fast_lf=7, rebound_fast_rf=7, rebound_fast_lr=7, rebound_fast_rr=7,
+            diff_preload_nm=100.0, diff_power_deg=60.0, diff_coast_deg=10.0,
+            tc_1=6, abs_setting=5, brake_pressure_pct=95.0,
         ),
         "medium": SetupTemplate(
-            front_wing="Medium setting", rear_wing="Medium setting",
+            front_wing="6 / 12", rear_wing="6 / 12",
             tire_pressures_psi={'LF': 22.5, 'RF': 22.5, 'LR': 21.5, 'RR': 21.5},
             camber_deg={'LF': -3.2, 'RF': -3.2, 'LR': -1.8, 'RR': -1.8},
             brake_bias_pct=57.0,
-            key_adjustments=["Balance aero platform with ride", "Tune hybrid deployment"],
-            priority_notes="Balanced GTP setup for mixed circuits."
+            key_adjustments=["Balance aero platform with ride", "Tune hybrid deployment zones"],
+            priority_notes="Balanced GTP for mixed-speed circuits.",
+            wing_front_step=6, wing_rear_step=6,
+            toe_front_mm=0.0, toe_rear_mm=1.0,
+            spring_lf=160.0, spring_rf=160.0, spring_lr=170.0, spring_rr=170.0,
+            arb_front=5, arb_rear=5,
+            rh_lf=38.0, rh_rf=38.0, rh_lr=58.0, rh_rr=58.0,
+            bump_slow_lf=9, bump_slow_rf=9, bump_slow_lr=9, bump_slow_rr=9,
+            bump_fast_lf=6, bump_fast_rf=6, bump_fast_lr=6, bump_fast_rr=6,
+            rebound_slow_lf=11, rebound_slow_rf=11, rebound_slow_lr=11, rebound_slow_rr=11,
+            rebound_fast_lf=6, rebound_fast_rf=6, rebound_fast_lr=6, rebound_fast_rr=6,
+            diff_preload_nm=100.0, diff_power_deg=55.0, diff_coast_deg=10.0,
+            tc_1=6, abs_setting=5, brake_pressure_pct=95.0,
         ),
         "high": SetupTemplate(
-            front_wing="High setting", rear_wing="High setting",
+            front_wing="9 / 12", rear_wing="9 / 12",
             tire_pressures_psi={'LF': 23.0, 'RF': 23.0, 'LR': 22.0, 'RR': 22.0},
             camber_deg={'LF': -3.8, 'RF': -3.8, 'LR': -2.3, 'RR': -2.3},
             brake_bias_pct=56.5,
-            key_adjustments=["Max downforce", "Soften springs for compliance"],
-            priority_notes="Maximum corner speed for technical circuits."
+            key_adjustments=["Maximum downforce", "Soften springs slightly for curb compliance"],
+            priority_notes="Technical circuit GTP — maximize corner speed, manage floor scraping.",
+            wing_front_step=9, wing_rear_step=9,
+            toe_front_mm=-0.5, toe_rear_mm=1.5,
+            spring_lf=140.0, spring_rf=140.0, spring_lr=155.0, spring_rr=155.0,
+            arb_front=5, arb_rear=6,
+            rh_lf=42.0, rh_rf=42.0, rh_lr=62.0, rh_rr=62.0,
+            bump_slow_lf=8, bump_slow_rf=8, bump_slow_lr=8, bump_slow_rr=8,
+            bump_fast_lf=5, bump_fast_rf=5, bump_fast_lr=5, bump_fast_rr=5,
+            rebound_slow_lf=10, rebound_slow_rf=10, rebound_slow_lr=10, rebound_slow_rr=10,
+            rebound_fast_lf=6, rebound_fast_rf=6, rebound_fast_lr=6, rebound_fast_rr=6,
+            diff_preload_nm=100.0, diff_power_deg=50.0, diff_coast_deg=10.0,
+            tc_1=5, abs_setting=4, brake_pressure_pct=94.0,
         ),
     },
+    # ══════════════════════════════════════════════════════════════════════════
+    # GTE  —  Similar to GTP but lower downforce class
+    # ══════════════════════════════════════════════════════════════════════════
     "gte": {
         "low": SetupTemplate(
-            front_wing="Low setting", rear_wing="Low setting",
             tire_pressures_psi={'LF': 22.5, 'RF': 22.5, 'LR': 21.5, 'RR': 21.5},
             camber_deg={'LF': -3.3, 'RF': -3.3, 'LR': -1.8, 'RR': -1.8},
             brake_bias_pct=57.5,
-            key_adjustments=["Reduce drag", "Stiffen springs for top speed stability"],
-            priority_notes="GTE low-drag setup for long straights."
+            key_adjustments=["Reduce drag", "Stiffen springs for top-speed platform"],
+            priority_notes="GTE low-drag setup for long straights.",
+            wing_front_step=3, wing_rear_step=3,
+            toe_front_mm=0.0, toe_rear_mm=1.0,
+            spring_lf=150.0, spring_rf=150.0, spring_lr=160.0, spring_rr=160.0,
+            arb_front=4, arb_rear=4,
+            rh_lf=40.0, rh_rf=40.0, rh_lr=60.0, rh_rr=60.0,
+            bump_slow_lf=9, bump_slow_rf=9, bump_slow_lr=8, bump_slow_rr=8,
+            bump_fast_lf=5, bump_fast_rf=5, bump_fast_lr=5, bump_fast_rr=5,
+            rebound_slow_lf=11, rebound_slow_rf=11, rebound_slow_lr=10, rebound_slow_rr=10,
+            rebound_fast_lf=6, rebound_fast_rf=6, rebound_fast_lr=6, rebound_fast_rr=6,
+            diff_preload_nm=80.0, diff_power_deg=50.0, diff_coast_deg=5.0,
+            tc_1=5, abs_setting=4, brake_pressure_pct=95.0,
         ),
         "medium": SetupTemplate(
             tire_pressures_psi={'LF': 23.0, 'RF': 23.0, 'LR': 22.0, 'RR': 22.0},
             camber_deg={'LF': -3.0, 'RF': -3.0, 'LR': -1.6, 'RR': -1.6},
             brake_bias_pct=57.0,
             key_adjustments=["Balance aero and mechanical grip"],
-            priority_notes="Balanced GTE setup."
+            priority_notes="Balanced GTE setup.",
+            wing_front_step=5, wing_rear_step=5,
+            toe_front_mm=0.0, toe_rear_mm=1.0,
+            spring_lf=135.0, spring_rf=135.0, spring_lr=145.0, spring_rr=145.0,
+            arb_front=4, arb_rear=5,
+            rh_lf=43.0, rh_rf=43.0, rh_lr=63.0, rh_rr=63.0,
+            bump_slow_lf=8, bump_slow_rf=8, bump_slow_lr=8, bump_slow_rr=8,
+            bump_fast_lf=5, bump_fast_rf=5, bump_fast_lr=5, bump_fast_rr=5,
+            rebound_slow_lf=10, rebound_slow_rf=10, rebound_slow_lr=10, rebound_slow_rr=10,
+            rebound_fast_lf=6, rebound_fast_rf=6, rebound_fast_lr=6, rebound_fast_rr=6,
+            diff_preload_nm=80.0, diff_power_deg=50.0, diff_coast_deg=5.0,
+            tc_1=5, abs_setting=4, brake_pressure_pct=95.0,
         ),
         "high": SetupTemplate(
             tire_pressures_psi={'LF': 23.5, 'RF': 23.5, 'LR': 22.5, 'RR': 22.5},
             camber_deg={'LF': -3.5, 'RF': -3.5, 'LR': -2.0, 'RR': -2.0},
             brake_bias_pct=56.5,
             key_adjustments=["Maximize downforce", "Manage temps"],
-            priority_notes="GTE high-downforce setup for technical layouts."
+            priority_notes="GTE high-downforce for technical layouts.",
+            wing_front_step=8, wing_rear_step=8,
+            toe_front_mm=-0.5, toe_rear_mm=1.5,
+            spring_lf=120.0, spring_rf=120.0, spring_lr=130.0, spring_rr=130.0,
+            arb_front=5, arb_rear=5,
+            rh_lf=47.0, rh_rf=47.0, rh_lr=67.0, rh_rr=67.0,
+            bump_slow_lf=7, bump_slow_rf=7, bump_slow_lr=7, bump_slow_rr=7,
+            bump_fast_lf=4, bump_fast_rf=4, bump_fast_lr=4, bump_fast_rr=4,
+            rebound_slow_lf=9, rebound_slow_rf=9, rebound_slow_lr=9, rebound_slow_rr=9,
+            rebound_fast_lf=5, rebound_fast_rf=5, rebound_fast_lr=5, rebound_fast_rr=5,
+            diff_preload_nm=80.0, diff_power_deg=50.0, diff_coast_deg=5.0,
+            tc_1=4, abs_setting=4, brake_pressure_pct=94.0,
         ),
     },
+    # ══════════════════════════════════════════════════════════════════════════
+    # LMP2  —  Ground effect prototype; stiff springs, low ride height
+    # ══════════════════════════════════════════════════════════════════════════
     "lmp2": {
         "low": SetupTemplate(
-            front_wing="Low setting", rear_wing="Low setting",
+            front_wing="3 / 10", rear_wing="3 / 10",
             tire_pressures_psi={'LF': 22.0, 'RF': 22.0, 'LR': 21.0, 'RR': 21.0},
             camber_deg={'LF': -3.5, 'RF': -3.5, 'LR': -2.0, 'RR': -2.0},
             brake_bias_pct=57.5,
-            key_adjustments=["Reduce drag", "Lower ride height"],
-            priority_notes="LMP2 low-drag for top speed."
+            key_adjustments=["Minimize drag", "Maintain low ride height for ground effect"],
+            priority_notes="LMP2 low-drag — top speed and aero platform for endurance.",
+            wing_front_step=3, wing_rear_step=3,
+            toe_front_mm=0.0, toe_rear_mm=1.0,
+            spring_lf=160.0, spring_rf=160.0, spring_lr=170.0, spring_rr=170.0,
+            arb_front=4, arb_rear=4,
+            rh_lf=33.0, rh_rf=33.0, rh_lr=50.0, rh_rr=50.0,
+            bump_slow_lf=10, bump_slow_rf=10, bump_slow_lr=9, bump_slow_rr=9,
+            bump_fast_lf=5, bump_fast_rf=5, bump_fast_lr=5, bump_fast_rr=5,
+            rebound_slow_lf=12, rebound_slow_rf=12, rebound_slow_lr=11, rebound_slow_rr=11,
+            rebound_fast_lf=7, rebound_fast_rf=7, rebound_fast_lr=6, rebound_fast_rr=6,
+            diff_preload_nm=80.0, diff_power_deg=50.0, diff_coast_deg=5.0,
+            tc_1=5, abs_setting=4, brake_pressure_pct=95.0,
         ),
         "medium": SetupTemplate(
             tire_pressures_psi={'LF': 22.5, 'RF': 22.5, 'LR': 21.5, 'RR': 21.5},
             camber_deg={'LF': -3.2, 'RF': -3.2, 'LR': -1.8, 'RR': -1.8},
             brake_bias_pct=57.0,
             key_adjustments=["Balance aero platform and ride height"],
-            priority_notes="Balanced LMP2 setup."
+            priority_notes="Balanced LMP2 setup for mixed-speed circuits.",
+            wing_front_step=5, wing_rear_step=5,
+            toe_front_mm=0.0, toe_rear_mm=1.0,
+            spring_lf=145.0, spring_rf=145.0, spring_lr=155.0, spring_rr=155.0,
+            arb_front=4, arb_rear=5,
+            rh_lf=36.0, rh_rf=36.0, rh_lr=53.0, rh_rr=53.0,
+            bump_slow_lf=9, bump_slow_rf=9, bump_slow_lr=9, bump_slow_rr=9,
+            bump_fast_lf=5, bump_fast_rf=5, bump_fast_lr=5, bump_fast_rr=5,
+            rebound_slow_lf=11, rebound_slow_rf=11, rebound_slow_lr=11, rebound_slow_rr=11,
+            rebound_fast_lf=6, rebound_fast_rf=6, rebound_fast_lr=6, rebound_fast_rr=6,
+            diff_preload_nm=80.0, diff_power_deg=50.0, diff_coast_deg=5.0,
+            tc_1=5, abs_setting=4, brake_pressure_pct=95.0,
         ),
         "high": SetupTemplate(
             tire_pressures_psi={'LF': 23.0, 'RF': 23.0, 'LR': 22.0, 'RR': 22.0},
             camber_deg={'LF': -3.8, 'RF': -3.8, 'LR': -2.3, 'RR': -2.3},
             brake_bias_pct=56.0,
-            key_adjustments=["Maximize wing", "Soften springs for compliance"],
-            priority_notes="Maximum cornering speed for technical tracks."
+            key_adjustments=["Maximize wing", "Soften springs for curb compliance"],
+            priority_notes="Maximum cornering speed LMP2 for technical tracks.",
+            wing_front_step=8, wing_rear_step=8,
+            toe_front_mm=-0.5, toe_rear_mm=1.5,
+            spring_lf=130.0, spring_rf=130.0, spring_lr=140.0, spring_rr=140.0,
+            arb_front=5, arb_rear=5,
+            rh_lf=40.0, rh_rf=40.0, rh_lr=57.0, rh_rr=57.0,
+            bump_slow_lf=8, bump_slow_rf=8, bump_slow_lr=8, bump_slow_rr=8,
+            bump_fast_lf=4, bump_fast_rf=4, bump_fast_lr=4, bump_fast_rr=4,
+            rebound_slow_lf=10, rebound_slow_rf=10, rebound_slow_lr=10, rebound_slow_rr=10,
+            rebound_fast_lf=5, rebound_fast_rf=5, rebound_fast_lr=5, rebound_fast_rr=5,
+            diff_preload_nm=80.0, diff_power_deg=50.0, diff_coast_deg=5.0,
+            tc_1=4, abs_setting=4, brake_pressure_pct=94.0,
         ),
     },
+    # ══════════════════════════════════════════════════════════════════════════
+    # PROTOTYPE  —  Older DP / sport-protos (HPD ARX-01, Riley DP, etc.)
+    # ══════════════════════════════════════════════════════════════════════════
     "prototype": {
         "low": SetupTemplate(
             tire_pressures_psi={'LF': 23.0, 'RF': 23.0, 'LR': 22.0, 'RR': 22.0},
             camber_deg={'LF': -3.0, 'RF': -3.0, 'LR': -1.5, 'RR': -1.5},
             brake_bias_pct=57.0,
             key_adjustments=["Reduce drag", "Stable aero platform"],
-            priority_notes="Older prototype low-drag setup."
+            priority_notes="Older prototype low-drag setup.",
+            wing_front_step=3, wing_rear_step=3,
+            toe_front_mm=0.0, toe_rear_mm=1.0,
+            spring_lf=140.0, spring_rf=140.0, spring_lr=150.0, spring_rr=150.0,
+            arb_front=3, arb_rear=4,
+            rh_lf=40.0, rh_rf=40.0, rh_lr=58.0, rh_rr=58.0,
+            bump_slow_lf=9, bump_slow_rf=9, bump_slow_lr=8, bump_slow_rr=8,
+            bump_fast_lf=5, bump_fast_rf=5, bump_fast_lr=5, bump_fast_rr=5,
+            rebound_slow_lf=11, rebound_slow_rf=11, rebound_slow_lr=10, rebound_slow_rr=10,
+            rebound_fast_lf=6, rebound_fast_rf=6, rebound_fast_lr=5, rebound_fast_rr=5,
+            diff_preload_nm=70.0, diff_power_deg=45.0, diff_coast_deg=5.0,
+            tc_1=5, abs_setting=4, brake_pressure_pct=95.0,
         ),
         "medium": SetupTemplate(
             tire_pressures_psi={'LF': 23.5, 'RF': 23.5, 'LR': 22.5, 'RR': 22.5},
             brake_bias_pct=56.5,
             key_adjustments=["Balance grip and stability"],
-            priority_notes="Balanced prototype setup."
+            priority_notes="Balanced prototype setup.",
+            wing_front_step=5, wing_rear_step=5,
+            toe_front_mm=0.0, toe_rear_mm=1.0,
+            spring_lf=125.0, spring_rf=125.0, spring_lr=135.0, spring_rr=135.0,
+            arb_front=4, arb_rear=4,
+            rh_lf=43.0, rh_rf=43.0, rh_lr=61.0, rh_rr=61.0,
+            bump_slow_lf=8, bump_slow_rf=8, bump_slow_lr=8, bump_slow_rr=8,
+            bump_fast_lf=5, bump_fast_rf=5, bump_fast_lr=4, bump_fast_rr=4,
+            rebound_slow_lf=10, rebound_slow_rf=10, rebound_slow_lr=10, rebound_slow_rr=10,
+            rebound_fast_lf=6, rebound_fast_rf=6, rebound_fast_lr=5, rebound_fast_rr=5,
+            diff_preload_nm=70.0, diff_power_deg=45.0, diff_coast_deg=5.0,
+            tc_1=5, abs_setting=4, brake_pressure_pct=95.0,
         ),
         "high": SetupTemplate(
             tire_pressures_psi={'LF': 24.0, 'RF': 24.0, 'LR': 23.0, 'RR': 23.0},
             brake_bias_pct=56.0,
-            key_adjustments=["Max wing angles", "Soften springs"],
-            priority_notes="Max downforce for technical tracks."
+            key_adjustments=["Max wing angles", "Soften springs slightly"],
+            priority_notes="Max downforce for technical tracks.",
+            wing_front_step=8, wing_rear_step=8,
+            toe_front_mm=-0.5, toe_rear_mm=1.5,
+            spring_lf=110.0, spring_rf=110.0, spring_lr=120.0, spring_rr=120.0,
+            arb_front=5, arb_rear=5,
+            rh_lf=47.0, rh_rf=47.0, rh_lr=65.0, rh_rr=65.0,
+            bump_slow_lf=7, bump_slow_rf=7, bump_slow_lr=7, bump_slow_rr=7,
+            bump_fast_lf=4, bump_fast_rf=4, bump_fast_lr=4, bump_fast_rr=4,
+            rebound_slow_lf=9, rebound_slow_rf=9, rebound_slow_lr=9, rebound_slow_rr=9,
+            rebound_fast_lf=5, rebound_fast_rf=5, rebound_fast_lr=5, rebound_fast_rr=5,
+            diff_preload_nm=70.0, diff_power_deg=45.0, diff_coast_deg=5.0,
+            tc_1=4, abs_setting=4, brake_pressure_pct=94.0,
         ),
     },
+    # ══════════════════════════════════════════════════════════════════════════
+    # FORMULA  —  Single-seater; very stiff springs, very low ride height
+    # ══════════════════════════════════════════════════════════════════════════
     "formula": {
         "low": SetupTemplate(
-            front_wing="Low setting", rear_wing="Low setting",
+            front_wing="4 / 20", rear_wing="4 / 20",
             tire_pressures_psi={'LF': 21.0, 'RF': 21.0, 'LR': 20.0, 'RR': 20.0},
             camber_deg={'LF': -3.5, 'RF': -3.5, 'LR': -2.0, 'RR': -2.0},
-            spring_notes="Stiff springs for high-speed stability",
-            arb_notes="Soft ARBs for kerb riding",
-            ride_height_notes="Minimum legal ride height",
-            damper_notes="Stiff bump, medium rebound",
             brake_bias_pct=57.0,
-            key_adjustments=["Reduce wing angles", "Lower ride height", "Stiffen springs"],
-            priority_notes="Minimize drag for top speed circuits."
+            key_adjustments=["Minimize drag for top-speed circuits", "Stiff springs for aero platform"],
+            priority_notes="Minimize drag — peaky engine loses power quickly off peak RPM, so top speed matters.",
+            wing_front_step=4, wing_rear_step=4,
+            toe_front_mm=0.0, toe_rear_mm=0.5,
+            spring_lf=250.0, spring_rf=250.0, spring_lr=280.0, spring_rr=280.0,
+            arb_front=3, arb_rear=3,
+            rh_lf=30.0, rh_rf=30.0, rh_lr=45.0, rh_rr=45.0,
+            bump_slow_lf=9, bump_slow_rf=9, bump_slow_lr=9, bump_slow_rr=9,
+            bump_fast_lf=5, bump_fast_rf=5, bump_fast_lr=5, bump_fast_rr=5,
+            rebound_slow_lf=11, rebound_slow_rf=11, rebound_slow_lr=11, rebound_slow_rr=11,
+            rebound_fast_lf=6, rebound_fast_rf=6, rebound_fast_lr=6, rebound_fast_rr=6,
+            diff_preload_nm=50.0, diff_power_deg=40.0, diff_coast_deg=0.0,
+            tc_1=3, abs_setting=3, brake_pressure_pct=95.0,
         ),
         "medium": SetupTemplate(
-            front_wing="Medium setting", rear_wing="Medium setting",
+            front_wing="10 / 20", rear_wing="10 / 20",
             tire_pressures_psi={'LF': 21.5, 'RF': 21.5, 'LR': 20.5, 'RR': 20.5},
             camber_deg={'LF': -3.2, 'RF': -3.2, 'LR': -1.8, 'RR': -1.8},
-            spring_notes="Medium springs",
-            arb_notes="Medium ARBs",
-            ride_height_notes="Standard ride height",
-            damper_notes="Balanced settings",
             brake_bias_pct=56.0,
-            key_adjustments=["Balance aero and mechanical grip"],
-            priority_notes="General-purpose formula car setup."
+            key_adjustments=["Balance aero and mechanical grip", "Wing angle is primary balance tool"],
+            priority_notes="General-purpose formula setup — 1 wing step = measurable balance shift.",
+            wing_front_step=10, wing_rear_step=10,
+            toe_front_mm=0.0, toe_rear_mm=0.5,
+            spring_lf=220.0, spring_rf=220.0, spring_lr=240.0, spring_rr=240.0,
+            arb_front=4, arb_rear=4,
+            rh_lf=33.0, rh_rf=33.0, rh_lr=48.0, rh_rr=48.0,
+            bump_slow_lf=8, bump_slow_rf=8, bump_slow_lr=8, bump_slow_rr=8,
+            bump_fast_lf=5, bump_fast_rf=5, bump_fast_lr=5, bump_fast_rr=5,
+            rebound_slow_lf=10, rebound_slow_rf=10, rebound_slow_lr=10, rebound_slow_rr=10,
+            rebound_fast_lf=6, rebound_fast_rf=6, rebound_fast_lr=6, rebound_fast_rr=6,
+            diff_preload_nm=50.0, diff_power_deg=40.0, diff_coast_deg=0.0,
+            tc_1=3, abs_setting=3, brake_pressure_pct=95.0,
         ),
         "high": SetupTemplate(
-            front_wing="High setting", rear_wing="High setting",
+            front_wing="16 / 20", rear_wing="16 / 20",
             tire_pressures_psi={'LF': 22.0, 'RF': 22.0, 'LR': 21.0, 'RR': 21.0},
             camber_deg={'LF': -3.8, 'RF': -3.8, 'LR': -2.3, 'RR': -2.3},
-            spring_notes="Softer springs for aero compliance",
-            arb_notes="Stiffer ARBs for roll control",
-            ride_height_notes="Higher front for more front downforce",
-            damper_notes="Softer bump for kerb compliance",
             brake_bias_pct=55.0,
-            key_adjustments=["Max wing angles", "Soften springs", "Watch tire temps"],
-            priority_notes="Maximum downforce for tight/technical circuits."
+            key_adjustments=["Maximize wing for slow technical track", "Softer springs for kerb compliance"],
+            priority_notes="Maximum downforce for tight technical layouts — trail braking is key.",
+            wing_front_step=16, wing_rear_step=16,
+            toe_front_mm=-0.5, toe_rear_mm=1.0,
+            spring_lf=190.0, spring_rf=190.0, spring_lr=210.0, spring_rr=210.0,
+            arb_front=5, arb_rear=5,
+            rh_lf=37.0, rh_rf=37.0, rh_lr=52.0, rh_rr=52.0,
+            bump_slow_lf=7, bump_slow_rf=7, bump_slow_lr=7, bump_slow_rr=7,
+            bump_fast_lf=4, bump_fast_rf=4, bump_fast_lr=4, bump_fast_rr=4,
+            rebound_slow_lf=9, rebound_slow_rf=9, rebound_slow_lr=9, rebound_slow_rr=9,
+            rebound_fast_lf=5, rebound_fast_rf=5, rebound_fast_lr=5, rebound_fast_rr=5,
+            diff_preload_nm=50.0, diff_power_deg=35.0, diff_coast_deg=0.0,
+            tc_1=2, abs_setting=2, brake_pressure_pct=94.0,
         ),
     },
+    # ══════════════════════════════════════════════════════════════════════════
+    # SUPER FORMULA
+    # ══════════════════════════════════════════════════════════════════════════
     "super_formula": {
         "low": SetupTemplate(
             front_wing="Low setting", rear_wing="Low setting",
@@ -1208,150 +1497,370 @@ _TEMPLATES: Dict[str, Dict[str, SetupTemplate]] = {
             camber_deg={'LF': -3.5, 'RF': -3.5, 'LR': -2.0, 'RR': -2.0},
             brake_bias_pct=58.0,
             key_adjustments=["Minimize drag", "Stiff springs"],
-            priority_notes="Super Formula low-drag setup."
+            priority_notes="Super Formula low-drag setup.",
+            wing_front_step=5, wing_rear_step=5,
+            toe_front_mm=0.0, toe_rear_mm=0.5,
+            spring_lf=280.0, spring_rf=280.0, spring_lr=300.0, spring_rr=300.0,
+            arb_front=3, arb_rear=4,
+            rh_lf=28.0, rh_rf=28.0, rh_lr=43.0, rh_rr=43.0,
+            bump_slow_lf=9, bump_slow_rf=9, bump_slow_lr=9, bump_slow_rr=9,
+            bump_fast_lf=5, bump_fast_rf=5, bump_fast_lr=5, bump_fast_rr=5,
+            rebound_slow_lf=11, rebound_slow_rf=11, rebound_slow_lr=11, rebound_slow_rr=11,
+            rebound_fast_lf=6, rebound_fast_rf=6, rebound_fast_lr=6, rebound_fast_rr=6,
+            diff_preload_nm=40.0, diff_power_deg=35.0, diff_coast_deg=0.0,
+            tc_1=3, abs_setting=3, brake_pressure_pct=95.0,
         ),
         "medium": SetupTemplate(
             tire_pressures_psi={'LF': 21.5, 'RF': 21.5, 'LR': 20.5, 'RR': 20.5},
             brake_bias_pct=57.0,
             key_adjustments=["Balance downforce and drag"],
-            priority_notes="Balanced Super Formula setup."
+            priority_notes="Balanced Super Formula setup.",
+            wing_front_step=10, wing_rear_step=10,
+            toe_front_mm=0.0, toe_rear_mm=0.5,
+            spring_lf=250.0, spring_rf=250.0, spring_lr=270.0, spring_rr=270.0,
+            arb_front=4, arb_rear=4,
+            rh_lf=31.0, rh_rf=31.0, rh_lr=46.0, rh_rr=46.0,
+            bump_slow_lf=8, bump_slow_rf=8, bump_slow_lr=8, bump_slow_rr=8,
+            bump_fast_lf=5, bump_fast_rf=5, bump_fast_lr=5, bump_fast_rr=5,
+            rebound_slow_lf=10, rebound_slow_rf=10, rebound_slow_lr=10, rebound_slow_rr=10,
+            rebound_fast_lf=6, rebound_fast_rf=6, rebound_fast_lr=6, rebound_fast_rr=6,
+            diff_preload_nm=40.0, diff_power_deg=35.0, diff_coast_deg=0.0,
+            tc_1=3, abs_setting=3, brake_pressure_pct=95.0,
         ),
         "high": SetupTemplate(
             tire_pressures_psi={'LF': 22.0, 'RF': 22.0, 'LR': 21.0, 'RR': 21.0},
             brake_bias_pct=56.0,
             key_adjustments=["Max wing", "Soften springs for compliance"],
-            priority_notes="Max downforce Super Formula for street/technical tracks."
+            priority_notes="Max downforce Super Formula for street/technical tracks.",
+            wing_front_step=16, wing_rear_step=16,
+            toe_front_mm=-0.5, toe_rear_mm=1.0,
+            spring_lf=220.0, spring_rf=220.0, spring_lr=240.0, spring_rr=240.0,
+            arb_front=5, arb_rear=5,
+            rh_lf=35.0, rh_rf=35.0, rh_lr=50.0, rh_rr=50.0,
+            bump_slow_lf=7, bump_slow_rf=7, bump_slow_lr=7, bump_slow_rr=7,
+            bump_fast_lf=4, bump_fast_rf=4, bump_fast_lr=4, bump_fast_rr=4,
+            rebound_slow_lf=9, rebound_slow_rf=9, rebound_slow_lr=9, rebound_slow_rr=9,
+            rebound_fast_lf=5, rebound_fast_rf=5, rebound_fast_lr=5, rebound_fast_rr=5,
+            diff_preload_nm=40.0, diff_power_deg=30.0, diff_coast_deg=0.0,
+            tc_1=2, abs_setting=2, brake_pressure_pct=94.0,
         ),
     },
+    # ══════════════════════════════════════════════════════════════════════════
+    # PORSCHE CUP  —  Rear-engine; lower brake bias; softer front springs
+    # ══════════════════════════════════════════════════════════════════════════
     "porsche_cup": {
         "low": SetupTemplate(
-            front_wing="N/A (rear-engine aero)", rear_wing="Low setting",
+            front_wing="1 / 3", rear_wing="1 / 3",
             tire_pressures_psi={'LF': 27.0, 'RF': 27.0, 'LR': 26.0, 'RR': 26.0},
             camber_deg={'LF': -3.0, 'RF': -3.0, 'LR': -2.2, 'RR': -2.2},
             brake_bias_pct=52.0,
-            key_adjustments=["Low wing", "Rear-engine balance — rear brake bias lower"],
-            priority_notes="Rear-engine means more rear brake bias caution. Minimize drag."
+            key_adjustments=["Rear-engine: lower brake bias", "Stiffer rear springs for rear-weight stability"],
+            priority_notes="Rear-engine — rear brakes carry more load. Minimize drag on fast circuits.",
+            wing_front_step=1, wing_rear_step=1,
+            toe_front_mm=0.0, toe_rear_mm=1.5,
+            spring_lf=55.0, spring_rf=55.0, spring_lr=75.0, spring_rr=75.0,
+            arb_front=3, arb_rear=4,
+            rh_lf=65.0, rh_rf=65.0, rh_lr=75.0, rh_rr=75.0,
+            bump_slow_lf=6, bump_slow_rf=6, bump_slow_lr=7, bump_slow_rr=7,
+            bump_fast_lf=4, bump_fast_rf=4, bump_fast_lr=4, bump_fast_rr=4,
+            rebound_slow_lf=8, rebound_slow_rf=8, rebound_slow_lr=9, rebound_slow_rr=9,
+            rebound_fast_lf=5, rebound_fast_rf=5, rebound_fast_lr=5, rebound_fast_rr=5,
+            diff_preload_nm=75.0, diff_power_deg=40.0, diff_coast_deg=5.0,
+            tc_1=4, abs_setting=4, brake_pressure_pct=95.0,
         ),
         "medium": SetupTemplate(
             tire_pressures_psi={'LF': 27.5, 'RF': 27.5, 'LR': 26.5, 'RR': 26.5},
             camber_deg={'LF': -2.8, 'RF': -2.8, 'LR': -2.0, 'RR': -2.0},
             brake_bias_pct=51.5,
-            key_adjustments=["Balance understeer/oversteer", "Smooth throttle application"],
-            priority_notes="Balanced Porsche Cup setup. Respect the rear engine."
+            key_adjustments=["Balance understeer/oversteer — rear engine sensitive to throttle"],
+            priority_notes="Balanced Porsche Cup. Respect the rear-engine snap oversteer risk on power.",
+            wing_front_step=2, wing_rear_step=2,
+            toe_front_mm=0.0, toe_rear_mm=1.5,
+            spring_lf=50.0, spring_rf=50.0, spring_lr=70.0, spring_rr=70.0,
+            arb_front=3, arb_rear=4,
+            rh_lf=67.0, rh_rf=67.0, rh_lr=77.0, rh_rr=77.0,
+            bump_slow_lf=6, bump_slow_rf=6, bump_slow_lr=7, bump_slow_rr=7,
+            bump_fast_lf=4, bump_fast_rf=4, bump_fast_lr=4, bump_fast_rr=4,
+            rebound_slow_lf=8, rebound_slow_rf=8, rebound_slow_lr=9, rebound_slow_rr=9,
+            rebound_fast_lf=5, rebound_fast_rf=5, rebound_fast_lr=5, rebound_fast_rr=5,
+            diff_preload_nm=75.0, diff_power_deg=40.0, diff_coast_deg=5.0,
+            tc_1=4, abs_setting=4, brake_pressure_pct=95.0,
         ),
         "high": SetupTemplate(
             tire_pressures_psi={'LF': 28.0, 'RF': 28.0, 'LR': 27.0, 'RR': 27.0},
             camber_deg={'LF': -3.2, 'RF': -3.2, 'LR': -2.5, 'RR': -2.5},
             brake_bias_pct=51.0,
-            key_adjustments=["High wing", "Softer rear springs", "Manage rear temps"],
-            priority_notes="Max downforce for technical tracks. Watch rear tire temps."
+            key_adjustments=["Softer rear springs for compliance at technical tracks", "More rear camber for grip"],
+            priority_notes="Technical track Cup — watch rear tire temps from high camber.",
+            wing_front_step=3, wing_rear_step=3,
+            toe_front_mm=-0.5, toe_rear_mm=2.0,
+            spring_lf=45.0, spring_rf=45.0, spring_lr=65.0, spring_rr=65.0,
+            arb_front=4, arb_rear=5,
+            rh_lf=70.0, rh_rf=70.0, rh_lr=80.0, rh_rr=80.0,
+            bump_slow_lf=5, bump_slow_rf=5, bump_slow_lr=6, bump_slow_rr=6,
+            bump_fast_lf=3, bump_fast_rf=3, bump_fast_lr=4, bump_fast_rr=4,
+            rebound_slow_lf=7, rebound_slow_rf=7, rebound_slow_lr=8, rebound_slow_rr=8,
+            rebound_fast_lf=4, rebound_fast_rf=4, rebound_fast_lr=5, rebound_fast_rr=5,
+            diff_preload_nm=75.0, diff_power_deg=40.0, diff_coast_deg=5.0,
+            tc_1=3, abs_setting=3, brake_pressure_pct=94.0,
         ),
     },
+    # ══════════════════════════════════════════════════════════════════════════
+    # TCR  —  FWD; high brake bias; front tires handle braking + steering + traction
+    # ══════════════════════════════════════════════════════════════════════════
     "tcr": {
         "low": SetupTemplate(
             tire_pressures_psi={'LF': 28.0, 'RF': 28.0, 'LR': 27.0, 'RR': 27.0},
             camber_deg={'LF': -2.5, 'RF': -2.5, 'LR': -1.2, 'RR': -1.2},
             brake_bias_pct=58.0,
-            key_adjustments=["FWD — manage front tire temps", "Reduce drag"],
-            priority_notes="FWD touring car — front tires do all the work."
+            key_adjustments=["FWD: manage front tire temps", "Soft rear ARB for rotation"],
+            priority_notes="FWD — front tires do everything. High TC prevents exit wheelspin.",
+            wing_front_step=1, wing_rear_step=1,
+            toe_front_mm=0.0, toe_rear_mm=1.5,
+            spring_lf=65.0, spring_rf=65.0, spring_lr=55.0, spring_rr=55.0,
+            arb_front=3, arb_rear=2,
+            rh_lf=63.0, rh_rf=63.0, rh_lr=80.0, rh_rr=80.0,
+            bump_slow_lf=6, bump_slow_rf=6, bump_slow_lr=5, bump_slow_rr=5,
+            bump_fast_lf=4, bump_fast_rf=4, bump_fast_lr=3, bump_fast_rr=3,
+            rebound_slow_lf=8, rebound_slow_rf=8, rebound_slow_lr=7, rebound_slow_rr=7,
+            rebound_fast_lf=5, rebound_fast_rf=5, rebound_fast_lr=4, rebound_fast_rr=4,
+            diff_preload_nm=25.0, diff_power_deg=30.0, diff_coast_deg=10.0,
+            tc_1=6, abs_setting=5, brake_pressure_pct=95.0,
         ),
         "medium": SetupTemplate(
             tire_pressures_psi={'LF': 28.5, 'RF': 28.5, 'LR': 27.5, 'RR': 27.5},
             camber_deg={'LF': -2.3, 'RF': -2.3, 'LR': -1.0, 'RR': -1.0},
             brake_bias_pct=57.5,
-            key_adjustments=["Balance front grip and rotation"],
-            priority_notes="Balanced TCR setup."
+            key_adjustments=["Balance front grip and rotation", "Trail-brake to rotate nose"],
+            priority_notes="Balanced TCR — trail braking is the main technique for rotation.",
+            wing_front_step=2, wing_rear_step=2,
+            toe_front_mm=0.0, toe_rear_mm=1.5,
+            spring_lf=60.0, spring_rf=60.0, spring_lr=50.0, spring_rr=50.0,
+            arb_front=4, arb_rear=3,
+            rh_lf=65.0, rh_rf=65.0, rh_lr=82.0, rh_rr=82.0,
+            bump_slow_lf=6, bump_slow_rf=6, bump_slow_lr=5, bump_slow_rr=5,
+            bump_fast_lf=4, bump_fast_rf=4, bump_fast_lr=3, bump_fast_rr=3,
+            rebound_slow_lf=8, rebound_slow_rf=8, rebound_slow_lr=7, rebound_slow_rr=7,
+            rebound_fast_lf=5, rebound_fast_rf=5, rebound_fast_lr=4, rebound_fast_rr=4,
+            diff_preload_nm=25.0, diff_power_deg=30.0, diff_coast_deg=10.0,
+            tc_1=6, abs_setting=5, brake_pressure_pct=95.0,
         ),
         "high": SetupTemplate(
             tire_pressures_psi={'LF': 29.0, 'RF': 29.0, 'LR': 28.0, 'RR': 28.0},
             camber_deg={'LF': -2.8, 'RF': -2.8, 'LR': -1.3, 'RR': -1.3},
             brake_bias_pct=57.0,
-            key_adjustments=["Maximize front grip", "Trail-brake to rotate"],
-            priority_notes="TCR high-downforce. Front tires are the priority."
+            key_adjustments=["Maximize front grip at technical tracks", "More front camber for cornering"],
+            priority_notes="TCR at technical circuits — front tire life is the primary constraint.",
+            wing_front_step=3, wing_rear_step=3,
+            toe_front_mm=-0.5, toe_rear_mm=2.0,
+            spring_lf=55.0, spring_rf=55.0, spring_lr=45.0, spring_rr=45.0,
+            arb_front=4, arb_rear=3,
+            rh_lf=68.0, rh_rf=68.0, rh_lr=85.0, rh_rr=85.0,
+            bump_slow_lf=5, bump_slow_rf=5, bump_slow_lr=5, bump_slow_rr=5,
+            bump_fast_lf=3, bump_fast_rf=3, bump_fast_lr=3, bump_fast_rr=3,
+            rebound_slow_lf=7, rebound_slow_rf=7, rebound_slow_lr=7, rebound_slow_rr=7,
+            rebound_fast_lf=4, rebound_fast_rf=4, rebound_fast_lr=4, rebound_fast_rr=4,
+            diff_preload_nm=25.0, diff_power_deg=30.0, diff_coast_deg=10.0,
+            tc_1=5, abs_setting=4, brake_pressure_pct=94.0,
         ),
     },
+    # ══════════════════════════════════════════════════════════════════════════
+    # V8 SUPERCAR
+    # ══════════════════════════════════════════════════════════════════════════
     "v8_supercar": {
         "low": SetupTemplate(
             tire_pressures_psi={'LF': 26.0, 'RF': 26.0, 'LR': 25.0, 'RR': 25.0},
             camber_deg={'LF': -2.5, 'RF': -2.5, 'LR': -1.0, 'RR': -1.0},
             brake_bias_pct=56.0,
-            key_adjustments=["Reduce drag", "Stiffen rear springs for stability"],
-            priority_notes="V8 Supercar low drag for long straights."
+            key_adjustments=["Reduce drag", "Stiffen rear for stability at speed"],
+            priority_notes="V8 Supercar low-drag — heavy car so good braking stability critical.",
+            wing_front_step=2, wing_rear_step=2,
+            toe_front_mm=0.0, toe_rear_mm=1.5,
+            spring_lf=80.0, spring_rf=80.0, spring_lr=90.0, spring_rr=90.0,
+            arb_front=4, arb_rear=5,
+            rh_lf=70.0, rh_rf=70.0, rh_lr=85.0, rh_rr=85.0,
+            bump_slow_lf=8, bump_slow_rf=8, bump_slow_lr=7, bump_slow_rr=7,
+            bump_fast_lf=5, bump_fast_rf=5, bump_fast_lr=4, bump_fast_rr=4,
+            rebound_slow_lf=10, rebound_slow_rf=10, rebound_slow_lr=9, rebound_slow_rr=9,
+            rebound_fast_lf=6, rebound_fast_rf=6, rebound_fast_lr=5, rebound_fast_rr=5,
+            diff_preload_nm=75.0, diff_power_deg=45.0, diff_coast_deg=5.0,
+            tc_1=4, abs_setting=4, brake_pressure_pct=95.0,
         ),
         "medium": SetupTemplate(
             tire_pressures_psi={'LF': 26.5, 'RF': 26.5, 'LR': 25.5, 'RR': 25.5},
             brake_bias_pct=55.5,
-            key_adjustments=["Balance mechanical grip with aero"],
-            priority_notes="Balanced V8 Supercar setup."
+            key_adjustments=["Balance mechanical grip with limited aero"],
+            priority_notes="Balanced V8 Supercar setup.",
+            wing_front_step=3, wing_rear_step=3,
+            toe_front_mm=0.0, toe_rear_mm=1.5,
+            spring_lf=75.0, spring_rf=75.0, spring_lr=85.0, spring_rr=85.0,
+            arb_front=4, arb_rear=4,
+            rh_lf=72.0, rh_rf=72.0, rh_lr=88.0, rh_rr=88.0,
+            bump_slow_lf=7, bump_slow_rf=7, bump_slow_lr=6, bump_slow_rr=6,
+            bump_fast_lf=4, bump_fast_rf=4, bump_fast_lr=4, bump_fast_rr=4,
+            rebound_slow_lf=9, rebound_slow_rf=9, rebound_slow_lr=8, rebound_slow_rr=8,
+            rebound_fast_lf=5, rebound_fast_rf=5, rebound_fast_lr=5, rebound_fast_rr=5,
+            diff_preload_nm=75.0, diff_power_deg=45.0, diff_coast_deg=5.0,
+            tc_1=4, abs_setting=4, brake_pressure_pct=95.0,
         ),
         "high": SetupTemplate(
             tire_pressures_psi={'LF': 27.0, 'RF': 27.0, 'LR': 26.0, 'RR': 26.0},
             brake_bias_pct=55.0,
-            key_adjustments=["Maximize downforce", "Soften springs for compliance"],
-            priority_notes="V8 Supercar high-downforce for street circuits."
+            key_adjustments=["More downforce for street circuits", "Softer springs for compliance"],
+            priority_notes="V8 Supercar at street circuit — softer to absorb bumps and kerbs.",
+            wing_front_step=4, wing_rear_step=4,
+            toe_front_mm=-0.5, toe_rear_mm=2.0,
+            spring_lf=70.0, spring_rf=70.0, spring_lr=80.0, spring_rr=80.0,
+            arb_front=5, arb_rear=5,
+            rh_lf=75.0, rh_rf=75.0, rh_lr=92.0, rh_rr=92.0,
+            bump_slow_lf=6, bump_slow_rf=6, bump_slow_lr=6, bump_slow_rr=6,
+            bump_fast_lf=4, bump_fast_rf=4, bump_fast_lr=3, bump_fast_rr=3,
+            rebound_slow_lf=8, rebound_slow_rf=8, rebound_slow_lr=8, rebound_slow_rr=8,
+            rebound_fast_lf=5, rebound_fast_rf=5, rebound_fast_lr=4, rebound_fast_rr=4,
+            diff_preload_nm=75.0, diff_power_deg=45.0, diff_coast_deg=5.0,
+            tc_1=3, abs_setting=3, brake_pressure_pct=94.0,
         ),
     },
+    # ══════════════════════════════════════════════════════════════════════════
+    # STOCK  —  Springs in lb/in; oval setup philosophy
+    # ══════════════════════════════════════════════════════════════════════════
     "stock": {
         "low": SetupTemplate(
             tire_pressures_psi={'LF': 30.0, 'RF': 30.0, 'LR': 29.0, 'RR': 29.0},
-            spring_notes="Stiffer for high-speed oval stability",
             brake_bias_pct=60.0,
-            key_adjustments=["Reduce drag", "Manage stagger", "Focus on tire wear"],
-            priority_notes="Stock car — manage aero push and tire degradation."
+            key_adjustments=["Reduce drag at superspeedway", "Manage stagger", "Tire wear over long stints"],
+            priority_notes="Stock car superspeedway — manage aero push and tire degradation.",
+            toe_front_mm=0.0, toe_rear_mm=0.5,
+            spring_lf=800.0, spring_rf=1000.0, spring_lr=900.0, spring_rr=1100.0,
+            spring_unit="lb/in",
+            arb_front=3, arb_rear=4,
+            rh_lf=120.0, rh_rf=125.0, rh_lr=130.0, rh_rr=135.0,
+            bump_slow_lf=7, bump_slow_rf=7, bump_slow_lr=6, bump_slow_rr=6,
+            bump_fast_lf=4, bump_fast_rf=4, bump_fast_lr=4, bump_fast_rr=4,
+            rebound_slow_lf=9, rebound_slow_rf=9, rebound_slow_lr=8, rebound_slow_rr=8,
+            rebound_fast_lf=5, rebound_fast_rf=5, rebound_fast_lr=5, rebound_fast_rr=5,
+            tc_1=4, abs_setting=4, brake_pressure_pct=100.0,
         ),
         "medium": SetupTemplate(
             tire_pressures_psi={'LF': 31.0, 'RF': 31.0, 'LR': 30.0, 'RR': 30.0},
             brake_bias_pct=59.0,
             key_adjustments=["Balance push vs loose", "Tune track bar and wedge"],
-            priority_notes="Balanced stock car setup."
+            priority_notes="Balanced stock car setup for short ovals.",
+            spring_lf=650.0, spring_rf=850.0, spring_lr=750.0, spring_rr=950.0,
+            spring_unit="lb/in",
+            arb_front=4, arb_rear=4,
+            rh_lf=125.0, rh_rf=130.0, rh_lr=135.0, rh_rr=140.0,
+            bump_slow_lf=7, bump_slow_rf=7, bump_slow_lr=6, bump_slow_rr=6,
+            bump_fast_lf=4, bump_fast_rf=4, bump_fast_lr=4, bump_fast_rr=4,
+            rebound_slow_lf=9, rebound_slow_rf=9, rebound_slow_lr=8, rebound_slow_rr=8,
+            rebound_fast_lf=5, rebound_fast_rf=5, rebound_fast_lr=5, rebound_fast_rr=5,
+            tc_1=4, abs_setting=4, brake_pressure_pct=100.0,
         ),
         "high": SetupTemplate(
             tire_pressures_psi={'LF': 32.0, 'RF': 32.0, 'LR': 31.0, 'RR': 31.0},
             brake_bias_pct=58.0,
-            key_adjustments=["More downforce for short tracks", "Stiffer sway bars"],
-            priority_notes="Short track / road course stock car setup."
+            key_adjustments=["Road course / short track", "Stiffer sway bars", "More balanced setup"],
+            priority_notes="Stock car road course — transition to conventional road-course philosophy.",
+            spring_lf=550.0, spring_rf=700.0, spring_lr=650.0, spring_rr=800.0,
+            spring_unit="lb/in",
+            arb_front=5, arb_rear=5,
+            rh_lf=130.0, rh_rf=135.0, rh_lr=140.0, rh_rr=145.0,
+            bump_slow_lf=6, bump_slow_rf=6, bump_slow_lr=6, bump_slow_rr=6,
+            bump_fast_lf=4, bump_fast_rf=4, bump_fast_lr=4, bump_fast_rr=4,
+            rebound_slow_lf=8, rebound_slow_rf=8, rebound_slow_lr=8, rebound_slow_rr=8,
+            rebound_fast_lf=5, rebound_fast_rf=5, rebound_fast_lr=5, rebound_fast_rr=5,
+            tc_1=4, abs_setting=4, brake_pressure_pct=100.0,
         ),
     },
+    # ══════════════════════════════════════════════════════════════════════════
+    # RALLY CROSS / ROAD ROOKIE / SPORTS CAR  —  Simpler entries
+    # ══════════════════════════════════════════════════════════════════════════
     "rally_cross": {
         "low": SetupTemplate(
             tire_pressures_psi={'LF': 24.0, 'RF': 24.0, 'LR': 23.0, 'RR': 23.0},
-            spring_notes="Soft springs for dirt section compliance",
             brake_bias_pct=55.0,
-            key_adjustments=["Lower pressures for dirt grip", "Soft suspension"],
-            priority_notes="Rallycross — compromise between dirt and tarmac."
+            key_adjustments=["Lower pressures for dirt grip", "Soft suspension for loose surface"],
+            priority_notes="Rallycross — compromise between dirt and tarmac sections.",
+            spring_lf=45.0, spring_rf=45.0, spring_lr=40.0, spring_rr=40.0,
+            arb_front=2, arb_rear=2,
+            rh_lf=80.0, rh_rf=80.0, rh_lr=95.0, rh_rr=95.0,
+            bump_slow_lf=5, bump_slow_rf=5, bump_slow_lr=5, bump_slow_rr=5,
+            bump_fast_lf=3, bump_fast_rf=3, bump_fast_lr=3, bump_fast_rr=3,
+            rebound_slow_lf=7, rebound_slow_rf=7, rebound_slow_lr=7, rebound_slow_rr=7,
+            rebound_fast_lf=4, rebound_fast_rf=4, rebound_fast_lr=4, rebound_fast_rr=4,
+            tc_1=5, abs_setting=4, brake_pressure_pct=95.0,
         ),
         "medium": SetupTemplate(
             tire_pressures_psi={'LF': 25.0, 'RF': 25.0, 'LR': 24.0, 'RR': 24.0},
             brake_bias_pct=54.0,
             key_adjustments=["Balance dirt and paved sections"],
-            priority_notes="Balanced rallycross setup."
+            priority_notes="Balanced rallycross setup.",
+            spring_lf=50.0, spring_rf=50.0, spring_lr=45.0, spring_rr=45.0,
+            arb_front=3, arb_rear=3,
+            rh_lf=78.0, rh_rf=78.0, rh_lr=93.0, rh_rr=93.0,
+            bump_slow_lf=5, bump_slow_rf=5, bump_slow_lr=5, bump_slow_rr=5,
+            bump_fast_lf=3, bump_fast_rf=3, bump_fast_lr=3, bump_fast_rr=3,
+            rebound_slow_lf=7, rebound_slow_rf=7, rebound_slow_lr=7, rebound_slow_rr=7,
+            rebound_fast_lf=4, rebound_fast_rf=4, rebound_fast_lr=4, rebound_fast_rr=4,
+            tc_1=5, abs_setting=4, brake_pressure_pct=95.0,
         ),
         "high": SetupTemplate(
             tire_pressures_psi={'LF': 26.0, 'RF': 26.0, 'LR': 25.0, 'RR': 25.0},
             brake_bias_pct=53.0,
-            key_adjustments=["More paved-focused", "Slightly stiffer springs"],
-            priority_notes="Rallycross with more tarmac sections."
+            key_adjustments=["More paved-focus", "Slightly stiffer for tarmac grip"],
+            priority_notes="Rallycross setup biased toward tarmac sections.",
+            spring_lf=55.0, spring_rf=55.0, spring_lr=50.0, spring_rr=50.0,
+            arb_front=3, arb_rear=3,
+            rh_lf=75.0, rh_rf=75.0, rh_lr=90.0, rh_rr=90.0,
+            bump_slow_lf=6, bump_slow_rf=6, bump_slow_lr=5, bump_slow_rr=5,
+            bump_fast_lf=4, bump_fast_rf=4, bump_fast_lr=3, bump_fast_rr=3,
+            rebound_slow_lf=8, rebound_slow_rf=8, rebound_slow_lr=7, rebound_slow_rr=7,
+            rebound_fast_lf=5, rebound_fast_rf=5, rebound_fast_lr=4, rebound_fast_rr=4,
+            tc_1=4, abs_setting=4, brake_pressure_pct=95.0,
         ),
     },
     "dirt_oval": {
         "low": SetupTemplate(
             tire_pressures_psi={'LF': 14.0, 'RF': 14.0, 'LR': 14.0, 'RR': 14.0},
-            spring_notes="Very soft — let the car work with the dirt",
             brake_bias_pct=50.0,
             key_adjustments=["Stagger is king", "Soft springs", "Left-side weight bias"],
-            priority_notes="Dirt oval — stagger and weight distribution dominate."
+            priority_notes="Dirt oval — stagger and weight distribution dominate setup.",
+            spring_lf=150.0, spring_rf=200.0, spring_lr=175.0, spring_rr=225.0, spring_unit="lb/in",
+            arb_front=2, arb_rear=2,
+            rh_lf=100.0, rh_rf=105.0, rh_lr=110.0, rh_rr=115.0,
+            bump_slow_lf=4, bump_slow_rf=4, bump_slow_lr=4, bump_slow_rr=4,
+            bump_fast_lf=2, bump_fast_rf=2, bump_fast_lr=2, bump_fast_rr=2,
+            rebound_slow_lf=6, rebound_slow_rf=6, rebound_slow_lr=6, rebound_slow_rr=6,
+            rebound_fast_lf=3, rebound_fast_rf=3, rebound_fast_lr=3, rebound_fast_rr=3,
+            tc_1=3, abs_setting=3, brake_pressure_pct=90.0,
         ),
         "medium": SetupTemplate(
             tire_pressures_psi={'LF': 15.0, 'RF': 15.0, 'LR': 15.0, 'RR': 15.0},
             brake_bias_pct=50.0,
             key_adjustments=["Balance stagger with track conditions"],
-            priority_notes="Medium dirt oval setup."
+            priority_notes="Medium dirt oval setup.",
+            spring_lf=175.0, spring_rf=225.0, spring_lr=200.0, spring_rr=250.0, spring_unit="lb/in",
+            arb_front=2, arb_rear=3,
+            rh_lf=105.0, rh_rf=110.0, rh_lr=115.0, rh_rr=120.0,
+            bump_slow_lf=4, bump_slow_rf=4, bump_slow_lr=4, bump_slow_rr=4,
+            bump_fast_lf=3, bump_fast_rf=3, bump_fast_lr=3, bump_fast_rr=3,
+            rebound_slow_lf=6, rebound_slow_rf=6, rebound_slow_lr=6, rebound_slow_rr=6,
+            rebound_fast_lf=3, rebound_fast_rf=3, rebound_fast_lr=3, rebound_fast_rr=3,
+            tc_1=3, abs_setting=3, brake_pressure_pct=90.0,
         ),
         "high": SetupTemplate(
             tire_pressures_psi={'LF': 16.0, 'RF': 16.0, 'LR': 16.0, 'RR': 16.0},
             brake_bias_pct=50.0,
-            key_adjustments=["Stiffer for slick/packed track conditions"],
-            priority_notes="Packed dirt — slightly stiffer setup."
+            key_adjustments=["Stiffer for slick/packed track"],
+            priority_notes="Packed dirt — slightly stiffer setup.",
+            spring_lf=200.0, spring_rf=250.0, spring_lr=225.0, spring_rr=275.0, spring_unit="lb/in",
+            arb_front=3, arb_rear=3,
+            rh_lf=110.0, rh_rf=115.0, rh_lr=120.0, rh_rr=125.0,
+            bump_slow_lf=5, bump_slow_rf=5, bump_slow_lr=5, bump_slow_rr=5,
+            bump_fast_lf=3, bump_fast_rf=3, bump_fast_lr=3, bump_fast_rr=3,
+            rebound_slow_lf=7, rebound_slow_rf=7, rebound_slow_lr=7, rebound_slow_rr=7,
+            rebound_fast_lf=4, rebound_fast_rf=4, rebound_fast_lr=4, rebound_fast_rr=4,
+            tc_1=3, abs_setting=3, brake_pressure_pct=90.0,
         ),
     },
     "road_rookie": {
@@ -1359,20 +1868,53 @@ _TEMPLATES: Dict[str, Dict[str, SetupTemplate]] = {
             tire_pressures_psi={'LF': 30.0, 'RF': 30.0, 'LR': 29.0, 'RR': 29.0},
             camber_deg={'LF': -1.5, 'RF': -1.5, 'LR': -1.0, 'RR': -1.0},
             brake_bias_pct=55.0,
-            key_adjustments=["Keep it simple", "Focus on smooth inputs"],
-            priority_notes="Beginner car — development work matters more than setup."
+            key_adjustments=["Keep setup simple", "Focus on smooth inputs"],
+            priority_notes="Beginner car — driver development matters more than setup tuning.",
+            wing_front_step=2, wing_rear_step=2,
+            toe_front_mm=0.0, toe_rear_mm=1.5,
+            spring_lf=35.0, spring_rf=35.0, spring_lr=30.0, spring_rr=30.0,
+            arb_front=2, arb_rear=2,
+            rh_lf=75.0, rh_rf=75.0, rh_lr=90.0, rh_rr=90.0,
+            bump_slow_lf=5, bump_slow_rf=5, bump_slow_lr=5, bump_slow_rr=5,
+            bump_fast_lf=3, bump_fast_rf=3, bump_fast_lr=3, bump_fast_rr=3,
+            rebound_slow_lf=7, rebound_slow_rf=7, rebound_slow_lr=7, rebound_slow_rr=7,
+            rebound_fast_lf=4, rebound_fast_rf=4, rebound_fast_lr=4, rebound_fast_rr=4,
+            diff_preload_nm=25.0, diff_power_deg=30.0, diff_coast_deg=5.0,
+            tc_1=5, abs_setting=5, brake_pressure_pct=90.0,
         ),
         "medium": SetupTemplate(
             tire_pressures_psi={'LF': 30.5, 'RF': 30.5, 'LR': 29.5, 'RR': 29.5},
             brake_bias_pct=54.0,
             key_adjustments=["Smooth inputs", "Consistent braking points"],
-            priority_notes="Balanced rookie/beginner setup."
+            priority_notes="Balanced entry-level setup.",
+            wing_front_step=2, wing_rear_step=2,
+            toe_front_mm=0.0, toe_rear_mm=1.5,
+            spring_lf=32.0, spring_rf=32.0, spring_lr=28.0, spring_rr=28.0,
+            arb_front=3, arb_rear=3,
+            rh_lf=77.0, rh_rf=77.0, rh_lr=92.0, rh_rr=92.0,
+            bump_slow_lf=5, bump_slow_rf=5, bump_slow_lr=5, bump_slow_rr=5,
+            bump_fast_lf=3, bump_fast_rf=3, bump_fast_lr=3, bump_fast_rr=3,
+            rebound_slow_lf=7, rebound_slow_rf=7, rebound_slow_lr=7, rebound_slow_rr=7,
+            rebound_fast_lf=4, rebound_fast_rf=4, rebound_fast_lr=4, rebound_fast_rr=4,
+            diff_preload_nm=25.0, diff_power_deg=30.0, diff_coast_deg=5.0,
+            tc_1=5, abs_setting=5, brake_pressure_pct=90.0,
         ),
         "high": SetupTemplate(
             tire_pressures_psi={'LF': 31.0, 'RF': 31.0, 'LR': 30.0, 'RR': 30.0},
             brake_bias_pct=53.0,
-            key_adjustments=["More aggressive camber", "Focus on rotation"],
-            priority_notes="Aggressive rookie setup for technical tracks."
+            key_adjustments=["More aggressive camber", "Focus on rotation at slow corners"],
+            priority_notes="Aggressive entry-level setup for technical tracks.",
+            wing_front_step=3, wing_rear_step=3,
+            toe_front_mm=-0.5, toe_rear_mm=2.0,
+            spring_lf=28.0, spring_rf=28.0, spring_lr=25.0, spring_rr=25.0,
+            arb_front=3, arb_rear=3,
+            rh_lf=80.0, rh_rf=80.0, rh_lr=95.0, rh_rr=95.0,
+            bump_slow_lf=4, bump_slow_rf=4, bump_slow_lr=4, bump_slow_rr=4,
+            bump_fast_lf=3, bump_fast_rf=3, bump_fast_lr=3, bump_fast_rr=3,
+            rebound_slow_lf=6, rebound_slow_rf=6, rebound_slow_lr=6, rebound_slow_rr=6,
+            rebound_fast_lf=3, rebound_fast_rf=3, rebound_fast_lr=3, rebound_fast_rr=3,
+            diff_preload_nm=25.0, diff_power_deg=30.0, diff_coast_deg=5.0,
+            tc_1=4, abs_setting=4, brake_pressure_pct=90.0,
         ),
     },
     "sports_car": {
@@ -1381,19 +1923,52 @@ _TEMPLATES: Dict[str, Dict[str, SetupTemplate]] = {
             camber_deg={'LF': -2.5, 'RF': -2.5, 'LR': -1.5, 'RR': -1.5},
             brake_bias_pct=56.0,
             key_adjustments=["Reduce drag", "Stable platform at speed"],
-            priority_notes="Sports car — balance fun and speed."
+            priority_notes="Sports car low-drag setup for fast circuits.",
+            wing_front_step=2, wing_rear_step=2,
+            toe_front_mm=0.0, toe_rear_mm=1.5,
+            spring_lf=65.0, spring_rf=65.0, spring_lr=60.0, spring_rr=60.0,
+            arb_front=3, arb_rear=3,
+            rh_lf=65.0, rh_rf=65.0, rh_lr=80.0, rh_rr=80.0,
+            bump_slow_lf=7, bump_slow_rf=7, bump_slow_lr=6, bump_slow_rr=6,
+            bump_fast_lf=4, bump_fast_rf=4, bump_fast_lr=3, bump_fast_rr=3,
+            rebound_slow_lf=9, rebound_slow_rf=9, rebound_slow_lr=8, rebound_slow_rr=8,
+            rebound_fast_lf=5, rebound_fast_rf=5, rebound_fast_lr=4, rebound_fast_rr=4,
+            diff_preload_nm=40.0, diff_power_deg=40.0, diff_coast_deg=0.0,
+            tc_1=4, abs_setting=4, brake_pressure_pct=95.0,
         ),
         "medium": SetupTemplate(
             tire_pressures_psi={'LF': 28.5, 'RF': 28.5, 'LR': 27.5, 'RR': 27.5},
             brake_bias_pct=55.0,
             key_adjustments=["Balance grip and stability"],
-            priority_notes="Balanced sports car setup."
+            priority_notes="Balanced sports car setup.",
+            wing_front_step=3, wing_rear_step=3,
+            toe_front_mm=0.0, toe_rear_mm=1.5,
+            spring_lf=60.0, spring_rf=60.0, spring_lr=55.0, spring_rr=55.0,
+            arb_front=4, arb_rear=4,
+            rh_lf=67.0, rh_rf=67.0, rh_lr=83.0, rh_rr=83.0,
+            bump_slow_lf=6, bump_slow_rf=6, bump_slow_lr=6, bump_slow_rr=6,
+            bump_fast_lf=4, bump_fast_rf=4, bump_fast_lr=3, bump_fast_rr=3,
+            rebound_slow_lf=8, rebound_slow_rf=8, rebound_slow_lr=8, rebound_slow_rr=8,
+            rebound_fast_lf=5, rebound_fast_rf=5, rebound_fast_lr=4, rebound_fast_rr=4,
+            diff_preload_nm=40.0, diff_power_deg=40.0, diff_coast_deg=0.0,
+            tc_1=4, abs_setting=4, brake_pressure_pct=95.0,
         ),
         "high": SetupTemplate(
             tire_pressures_psi={'LF': 29.0, 'RF': 29.0, 'LR': 28.0, 'RR': 28.0},
             brake_bias_pct=54.0,
-            key_adjustments=["More camber for cornering", "Softer springs"],
-            priority_notes="Technical track sports car setup."
+            key_adjustments=["More camber for cornering", "Softer springs for technical track"],
+            priority_notes="Technical track sports car setup.",
+            wing_front_step=4, wing_rear_step=4,
+            toe_front_mm=-0.5, toe_rear_mm=2.0,
+            spring_lf=55.0, spring_rf=55.0, spring_lr=50.0, spring_rr=50.0,
+            arb_front=4, arb_rear=4,
+            rh_lf=70.0, rh_rf=70.0, rh_lr=87.0, rh_rr=87.0,
+            bump_slow_lf=5, bump_slow_rf=5, bump_slow_lr=5, bump_slow_rr=5,
+            bump_fast_lf=3, bump_fast_rf=3, bump_fast_lr=3, bump_fast_rr=3,
+            rebound_slow_lf=7, rebound_slow_rf=7, rebound_slow_lr=7, rebound_slow_rr=7,
+            rebound_fast_lf=4, rebound_fast_rf=4, rebound_fast_lr=4, rebound_fast_rr=4,
+            diff_preload_nm=40.0, diff_power_deg=40.0, diff_coast_deg=0.0,
+            tc_1=3, abs_setting=4, brake_pressure_pct=94.0,
         ),
     },
 }
@@ -1450,14 +2025,109 @@ def get_baseline_setup_text(car_class: str, track_name: str) -> str:
     if template.brake_bias_pct:
         lines.append(f"  Brake bias:      {template.brake_bias_pct}% front")
 
-    if template.spring_notes:
+    # Toe
+    if template.toe_front_mm is not None or template.toe_rear_mm is not None:
+        tf = f"{template.toe_front_mm:+.1f} mm" if template.toe_front_mm is not None else "?"
+        tr = f"{template.toe_rear_mm:+.1f} mm" if template.toe_rear_mm is not None else "?"
+        lines.append(f"  Toe:             Front {tf}  Rear {tr}")
+
+    # Springs
+    if any(v is not None for v in [template.spring_lf, template.spring_rf,
+                                    template.spring_lr, template.spring_rr]):
+        u = template.spring_unit or "N/mm"
+        lf = f"{template.spring_lf}" if template.spring_lf is not None else "?"
+        rf = f"{template.spring_rf}" if template.spring_rf is not None else "?"
+        lr = f"{template.spring_lr}" if template.spring_lr is not None else "?"
+        rr = f"{template.spring_rr}" if template.spring_rr is not None else "?"
+        lines.append(f"  Springs ({u}):  LF {lf}  RF {rf}  LR {lr}  RR {rr}")
+    elif template.spring_notes:
         lines.append(f"  Springs:         {template.spring_notes}")
-    if template.arb_notes:
+
+    # ARBs
+    if template.arb_front is not None or template.arb_rear is not None:
+        af = template.arb_front if template.arb_front is not None else "?"
+        ar = template.arb_rear if template.arb_rear is not None else "?"
+        lines.append(f"  ARBs:            Front {af}  Rear {ar}")
+    elif template.arb_notes:
         lines.append(f"  ARBs:            {template.arb_notes}")
-    if template.ride_height_notes:
+
+    # Ride heights
+    if any(v is not None for v in [template.rh_lf, template.rh_rf,
+                                    template.rh_lr, template.rh_rr]):
+        lf = f"{template.rh_lf}" if template.rh_lf is not None else "?"
+        rf = f"{template.rh_rf}" if template.rh_rf is not None else "?"
+        lr = f"{template.rh_lr}" if template.rh_lr is not None else "?"
+        rr = f"{template.rh_rr}" if template.rh_rr is not None else "?"
+        lines.append(f"  Ride heights (mm): LF {lf}  RF {rf}  LR {lr}  RR {rr}")
+    elif template.ride_height_notes:
         lines.append(f"  Ride heights:    {template.ride_height_notes}")
-    if template.damper_notes:
+
+    # Slow bump dampers
+    if any(v is not None for v in [template.bump_slow_lf, template.bump_slow_rf,
+                                    template.bump_slow_lr, template.bump_slow_rr]):
+        lf = template.bump_slow_lf if template.bump_slow_lf is not None else "?"
+        rf = template.bump_slow_rf if template.bump_slow_rf is not None else "?"
+        lr = template.bump_slow_lr if template.bump_slow_lr is not None else "?"
+        rr = template.bump_slow_rr if template.bump_slow_rr is not None else "?"
+        lines.append(f"  Bump slow:       LF {lf}  RF {rf}  LR {lr}  RR {rr}")
+
+    # Fast bump dampers
+    if any(v is not None for v in [template.bump_fast_lf, template.bump_fast_rf,
+                                    template.bump_fast_lr, template.bump_fast_rr]):
+        lf = template.bump_fast_lf if template.bump_fast_lf is not None else "?"
+        rf = template.bump_fast_rf if template.bump_fast_rf is not None else "?"
+        lr = template.bump_fast_lr if template.bump_fast_lr is not None else "?"
+        rr = template.bump_fast_rr if template.bump_fast_rr is not None else "?"
+        lines.append(f"  Bump fast:       LF {lf}  RF {rf}  LR {lr}  RR {rr}")
+
+    # Slow rebound dampers
+    if any(v is not None for v in [template.rebound_slow_lf, template.rebound_slow_rf,
+                                    template.rebound_slow_lr, template.rebound_slow_rr]):
+        lf = template.rebound_slow_lf if template.rebound_slow_lf is not None else "?"
+        rf = template.rebound_slow_rf if template.rebound_slow_rf is not None else "?"
+        lr = template.rebound_slow_lr if template.rebound_slow_lr is not None else "?"
+        rr = template.rebound_slow_rr if template.rebound_slow_rr is not None else "?"
+        lines.append(f"  Rebound slow:    LF {lf}  RF {rf}  LR {lr}  RR {rr}")
+
+    # Fast rebound dampers
+    if any(v is not None for v in [template.rebound_fast_lf, template.rebound_fast_rf,
+                                    template.rebound_fast_lr, template.rebound_fast_rr]):
+        lf = template.rebound_fast_lf if template.rebound_fast_lf is not None else "?"
+        rf = template.rebound_fast_rf if template.rebound_fast_rf is not None else "?"
+        lr = template.rebound_fast_lr if template.rebound_fast_lr is not None else "?"
+        rr = template.rebound_fast_rr if template.rebound_fast_rr is not None else "?"
+        lines.append(f"  Rebound fast:    LF {lf}  RF {rf}  LR {lr}  RR {rr}")
+
+    # Fallback text damper notes (legacy)
+    if template.damper_notes and not any(v is not None for v in [
+            template.bump_slow_lf, template.bump_fast_lf,
+            template.rebound_slow_lf, template.rebound_fast_lf]):
         lines.append(f"  Dampers:         {template.damper_notes}")
+
+    # Differential
+    if any(v is not None for v in [template.diff_preload_nm,
+                                    template.diff_power_deg, template.diff_coast_deg]):
+        parts = []
+        if template.diff_preload_nm is not None:
+            parts.append(f"Preload {template.diff_preload_nm} Nm")
+        if template.diff_power_deg is not None:
+            parts.append(f"Power ramp {template.diff_power_deg}°")
+        if template.diff_coast_deg is not None:
+            parts.append(f"Coast ramp {template.diff_coast_deg}°")
+        lines.append(f"  Differential:    {', '.join(parts)}")
+
+    # Electronics
+    elec_parts = []
+    if template.tc_1 is not None:
+        elec_parts.append(f"TC {template.tc_1}")
+    if template.abs_setting is not None:
+        elec_parts.append(f"ABS {template.abs_setting}")
+    if elec_parts:
+        lines.append(f"  Electronics:     {', '.join(elec_parts)}")
+
+    # Brake pressure
+    if template.brake_pressure_pct is not None:
+        lines.append(f"  Brake pressure:  {template.brake_pressure_pct}%")
 
     if template.key_adjustments:
         lines.append("  Key adjustments:")

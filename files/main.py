@@ -1051,6 +1051,10 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
                 target=OptimizationTarget(mode='balance_and_time'),
                 n_generations=60,
                 pop_size=80,
+                car_class=self.cur_rpt.car_class if self.cur_rpt else None,
+                balance_entry=self.cur_rpt.balance_entry if self.cur_rpt else 0.0,
+                balance_mid=self.cur_rpt.balance_mid if self.cur_rpt else 0.0,
+                balance_exit=self.cur_rpt.balance_exit if self.cur_rpt else 0.0,
             )
             self.after(0, lambda: _done(result))
 
@@ -2885,7 +2889,7 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
         self._impact_mode = ctk.StringVar(value="Predict")
         ctk.CTkSegmentedButton(
             mode_bar,
-            values=["Predict", "Sensitivity Matrix", "Optimizer", "AI Setup Builder"],
+            values=["Predict", "Sensitivity Matrix", "Optimizer", "AI Setup Builder", "IBT Compare"],
             variable=self._impact_mode,
             fg_color=CARD, selected_color=ACCENT, selected_hover_color="#c0392b",
             command=self._switch_impact_mode,
@@ -2895,11 +2899,12 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
         self._impact_pane = ctk.CTkFrame(tab, fg_color="transparent")
         self._impact_pane.pack(fill='both', expand=True)
 
-        # Build all four panes (only one visible at a time)
+        # Build all panes (only one visible at a time)
         self._build_impact_predict_pane()
         self._build_impact_heatmap_pane()
         self._build_impact_optimizer_pane()
         self._build_impact_ai_setup_pane()
+        self._build_impact_compare_pane()
 
         # Show default pane
         self._switch_impact_mode("Predict")
@@ -2909,6 +2914,7 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
         self._impact_heatmap_frame.pack_forget()
         self._impact_opt_frame.pack_forget()
         self._impact_ai_setup_frame.pack_forget()
+        self._impact_compare_frame.pack_forget()
         if mode == "Predict":
             self._impact_predict_frame.pack(fill='both', expand=True)
         elif mode == "Sensitivity Matrix":
@@ -2916,6 +2922,8 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
             self._draw_sensitivity_matrix()
         elif mode == "AI Setup Builder":
             self._impact_ai_setup_frame.pack(fill='both', expand=True)
+        elif mode == "IBT Compare":
+            self._impact_compare_frame.pack(fill='both', expand=True)
         else:
             self._impact_opt_frame.pack(fill='both', expand=True)
 
@@ -3154,6 +3162,10 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
                 target=target,
                 n_generations=gens,
                 pop_size=80,
+                car_class=self.cur_rpt.car_class if self.cur_rpt else None,
+                balance_entry=self.cur_rpt.balance_entry if self.cur_rpt else 0.0,
+                balance_mid=self.cur_rpt.balance_mid if self.cur_rpt else 0.0,
+                balance_exit=self.cur_rpt.balance_exit if self.cur_rpt else 0.0,
             )
             self.after(0, lambda r=result: self._show_optimizer_result(r, balance))
 
@@ -3258,7 +3270,7 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
         self._ai_setup_out = ctk.CTkTextbox(
             f, fg_color=PANEL, text_color=TEXT,
             font=ctk.CTkFont(family="Courier New", size=14), wrap='word')
-        self._ai_setup_out.pack(fill='both', expand=True, padx=10, pady=(4, 8))
+        self._ai_setup_out.pack(fill='both', expand=True, padx=10, pady=(4, 4))
         self._ai_setup_out.insert(
             '1.0',
             "Click 'Generate Tech-Legal Setup' to have Claude analyse your telemetry\n"
@@ -3266,6 +3278,27 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
             "the car's legal garage limits.\n\n"
             "Requires: a loaded session  +  Anthropic API key in Settings (⚙).")
         self._ai_setup_out.configure(state='disabled')
+
+        # ── Save-to-iRacing row (enabled after generation) ────────────────────
+        save_row = ctk.CTkFrame(f, fg_color=PANEL, corner_radius=8)
+        save_row.pack(fill='x', padx=10, pady=(0, 8))
+        save_inner = ctk.CTkFrame(save_row, fg_color='transparent')
+        save_inner.pack(fill='x', padx=10, pady=8)
+
+        self._ai_setup_save_btn = ctk.CTkButton(
+            save_inner, text="Save Reference Card", width=200, height=34,
+            fg_color=GREEN, hover_color='#1a7a3a', state='disabled',
+            command=self._save_ai_setup_to_iracing)
+        self._ai_setup_save_btn.pack(side='left', padx=(0, 12))
+
+        self._ai_setup_filename_var = ctk.StringVar(value="ai_setup")
+        ctk.CTkEntry(save_inner, textvariable=self._ai_setup_filename_var,
+                     width=260, height=32,
+                     font=ctk.CTkFont(size=11),
+                     placeholder_text="filename (no extension)").pack(side='left', padx=(0, 10))
+
+        self._ai_setup_tech_lbl = lbl(save_inner, "", 10, color=DIM)
+        self._ai_setup_tech_lbl.pack(side='left')
 
     def _toggle_fail_reasons(self, btn):
         self._fail_visible = not self._fail_visible
@@ -3347,7 +3380,460 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
 
     def _on_ai_setup_done(self):
         self._ai_setup_btn.configure(state='normal', text="Generate Tech-Legal Setup")
-        self._ai_setup_status.configure(text="✅ Setup generated — review each value before loading")
+        self._ai_setup_status.configure(
+            text="✅ Setup generated — click 'Save Reference Card' then enter values in iRacing Garage")
+        # Build a sensible default filename from car + track + timestamp
+        car_slug  = re.sub(r'[^\w]', '_', (self.cur_data.car_name  if self.cur_data else 'car'))[:20]
+        trk_slug  = re.sub(r'[^\w]', '_', (self.cur_data.track_name if self.cur_data else 'track'))[:20]
+        ts        = datetime.now().strftime('%m%d_%H%M')
+        self._ai_setup_filename_var.set(f"AI_{car_slug}_{trk_slug}_{ts}")
+        self._ai_setup_save_btn.configure(state='normal')
+
+    @staticmethod
+    def _parse_ai_setup_table(text: str, car_name: str, track_name: str):
+        """
+        Parse Claude's PARAMETER | VALUE table from the AI Setup Builder output
+        into a ParsedSetup object suitable for StoWriter.
+
+        Handles the format:
+            PARAMETER              | VALUE        | CHANGED FROM BASELINE? | REASON
+            -----------------------|--------------|------------------------|-------
+            LF Camber              | -3.2 deg     | Yes (was -3.0)         | ...
+        """
+        from core.setup_parser import ParsedSetup, SetupSection
+
+        setup = ParsedSetup(
+            car=car_name,
+            track=track_name,
+            filename='(AI generated)',
+            parsed_at=datetime.now().isoformat(),
+        )
+
+        # Ordered section groupings by keyword match
+        _SECTION_KEYWORDS = [
+            ('Tires',        ['pressure', 'tire type']),
+            ('Alignment',    ['camber', 'toe']),
+            ('Suspension',   ['spring', 'arb', 'anti-roll', 'ride height', 'bump',
+                              'rebound', 'damper', 'perch']),
+            ('Aerodynamics', ['wing', 'duct', 'aero', 'downforce']),
+            ('Brakes',       ['brake bias', 'brake pressure', 'max brake', 'brake pad']),
+            ('Electronics',  ['tc', 'traction control', 'abs']),
+            ('Differential', ['diff', 'preload', 'power ramp', 'coast ramp']),
+        ]
+
+        def _section_for(param: str) -> str:
+            p = param.lower()
+            for sec_name, keywords in _SECTION_KEYWORDS:
+                if any(kw in p for kw in keywords):
+                    return sec_name
+            return 'General'
+
+        sections_dict: dict = {}  # section_name -> {param: value}
+
+        for line in text.splitlines():
+            if '|' not in line:
+                continue
+            parts = [p.strip() for p in line.split('|')]
+            if len(parts) < 2:
+                continue
+            param = parts[0].strip()
+            value = parts[1].strip()
+            # Skip blank, header, or separator rows
+            if not param or not value:
+                continue
+            if set(param).issubset(set('-: ')):
+                continue
+            if param.upper() in ('PARAMETER', 'PARAM'):
+                continue
+            if value.upper() in ('VALUE', 'CHANGED FROM BASELINE?', 'REASON', ''):
+                continue
+
+            sec = _section_for(param)
+            sections_dict.setdefault(sec, {})[param] = value
+            setup.flat[param] = value
+
+        # Emit sections in a logical order
+        _ORDER = ['Tires', 'Alignment', 'Suspension', 'Aerodynamics',
+                  'Brakes', 'Electronics', 'Differential', 'General']
+        for sec_name in _ORDER:
+            if sec_name in sections_dict and sections_dict[sec_name]:
+                setup.sections.append(SetupSection(sec_name, sections_dict[sec_name]))
+
+        return setup
+
+    def _save_ai_setup_to_iracing(self):
+        """
+        Parse the AI-generated setup table, validate against car-class tech bounds,
+        clamp any out-of-range values, and write a .sto file directly to the
+        iRacing setups folder.
+        """
+        # Grab the full generated text
+        self._ai_setup_out.configure(state='normal')
+        ai_text = self._ai_setup_out.get('1.0', 'end').strip()
+        self._ai_setup_out.configure(state='disabled')
+
+        if not ai_text or 'Generate Tech-Legal Setup' in ai_text:
+            messagebox.showwarning("Nothing to Save",
+                                   "Generate a setup first, then save.")
+            return
+
+        car_name   = self.cur_data.car_name   if self.cur_data else ''
+        track_name = self.cur_data.track_name if self.cur_data else ''
+
+        # Parse the AI table into a ParsedSetup
+        setup = self._parse_ai_setup_table(ai_text, car_name, track_name)
+        if not setup.flat:
+            messagebox.showerror(
+                "Parse Failed",
+                "Could not find a setup table in the AI output.\n\n"
+                "Make sure the generation completed successfully — the output "
+                "should contain a PARAMETER | VALUE table.")
+            return
+
+        # ── Tech inspection: clamp & report ───────────────────────────────────
+        car_class_str = (self.cur_rpt.car_class if self.cur_rpt else 'default') or 'default'
+        tech_warnings: list[str] = []
+        try:
+            from core.tech_inspector import validate_setup, normalize_param_key
+
+            # Build a float dict keyed by internal bounds names using the lookup table.
+            # Each Claude-output parameter name is mapped through normalize_param_key
+            # so e.g. "LF Camber" → "camber_lf", "Brake Bias" → "brake_bias".
+            float_vals: dict[str, float] = {}
+            flat_key_to_internal: dict[str, str] = {}  # flat_key → internal key
+            for flat_key, v in setup.flat.items():
+                internal = normalize_param_key(flat_key)
+                if internal is None:
+                    continue
+                m = re.search(r'[-+]?\d*\.?\d+', str(v))
+                if m:
+                    float_vals[internal] = float(m.group())
+                    flat_key_to_internal[flat_key] = internal
+
+            issues = validate_setup(float_vals, car_class_str)
+            if issues:
+                # Build reverse map: internal key → flat key for applying corrections
+                internal_to_flat = {v: k for k, v in flat_key_to_internal.items()}
+                for iss in issues:
+                    tech_warnings.append(
+                        f"  • {iss.display_name}: {iss.value:.3g} → clamped to "
+                        f"{iss.clamped_value:.3g} {iss.unit}")
+                    flat_key = internal_to_flat.get(iss.param)
+                    if flat_key and flat_key in setup.flat:
+                        suffix = re.sub(r'[-+]?\d*\.?\d+', '',
+                                        str(setup.flat[flat_key])).strip()
+                        setup.flat[flat_key] = f"{iss.clamped_value:.3g} {suffix}".strip()
+                        setup.set(flat_key, setup.flat[flat_key])
+        except Exception:
+            pass  # Tech inspection optional — don't block save
+
+        # ── Locate output folder (iRacing setups if found, else Documents) ────
+        setups_base = self._find_iracing_setups_dir()
+        car_slug = re.sub(r'[^\w\-]', '_', car_name or 'car').lower().strip('_')
+        if setups_base:
+            dest_dir = os.path.join(setups_base, car_slug)
+        else:
+            dest_dir = os.path.join(os.path.expanduser('~/Documents'), 'iRacing Setup Machine')
+        os.makedirs(dest_dir, exist_ok=True)
+
+        # ── Write a human-readable reference file (.txt) ──────────────────────
+        # iRacing .sto files are a proprietary binary format — we cannot generate
+        # a file iRacing will load automatically.  Instead we write a clearly
+        # labelled reference card the driver enters manually in the iRacing Garage.
+        base_name = self._ai_setup_filename_var.get().strip() or 'ai_setup'
+        base_name = re.sub(r'\.sto$', '', base_name, flags=re.IGNORECASE)
+        ref_name = base_name + '_reference.txt'
+        ref_path = os.path.join(dest_dir, ref_name)
+
+        try:
+            from core.tech_inspector import get_bounds, normalize_param_key
+            bounds = get_bounds(car_class_str)
+            now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
+            ref_lines = [
+                "═" * 64,
+                f"  iRacing Setup Reference Card",
+                f"  Car:   {car_name}",
+                f"  Track: {track_name}",
+                f"  Generated: {now_str}",
+                "═" * 64,
+                "",
+                "HOW TO USE:",
+                "  1. Open iRacing → Garage screen for this car",
+                "  2. Enter each value below using the garage sliders/inputs",
+                "  3. All values have been validated against legal ranges",
+                f"  4. {'⚠  ' + str(len(tech_warnings)) + ' value(s) were auto-corrected to stay within legal limits — see notes below' if tech_warnings else '✅  All values are within legal ranges — no corrections needed'}",
+                "",
+                "─" * 64,
+                "SETUP VALUES",
+                "─" * 64,
+            ]
+
+            # Group by section
+            current_section = None
+            for sec in setup.sections:
+                ref_lines.append(f"\n  [{sec.name}]")
+                for param, value in sec.params.items():
+                    internal_key = normalize_param_key(param)
+                    b = bounds.get(internal_key) if internal_key else None
+                    range_str = f"  (legal: {b.min_val:.3g}–{b.max_val:.3g} {b.unit})" if b else ""
+                    ref_lines.append(f"    {param:<40} {value}{range_str}")
+
+            if tech_warnings:
+                ref_lines += [
+                    "",
+                    "─" * 64,
+                    "⚠  AUTO-CORRECTIONS APPLIED (original values were out of range)",
+                    "─" * 64,
+                ]
+                ref_lines += tech_warnings
+
+            ref_lines += [
+                "",
+                "─" * 64,
+                "NOTE: iRacing setup files (.sto) use a proprietary binary format.",
+                "These values must be entered manually in the iRacing Garage screen.",
+                "═" * 64,
+            ]
+
+            with open(ref_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(ref_lines))
+
+        except Exception as exc:
+            logger.exception("Failed to write setup reference file")
+            messagebox.showerror("Save Failed", f"Could not write reference file:\n{exc}")
+            return
+
+        # ── Copy values to clipboard for quick pasting ────────────────────────
+        try:
+            clip_lines = [f"{p}: {v}" for sec in setup.sections for p, v in sec.params.items()]
+            self.clipboard_clear()
+            self.clipboard_append('\n'.join(clip_lines))
+        except Exception:
+            pass
+
+        # ── Success feedback ──────────────────────────────────────────────────
+        warn_block = ""
+        if tech_warnings:
+            warn_block = (
+                "\n\n⚠  These values were out-of-range and auto-corrected:\n"
+                + "\n".join(tech_warnings)
+            )
+
+        self._ai_setup_tech_lbl.configure(
+            text=f"✅ Reference saved — enter values in iRacing Garage"
+                 + (f"  ({len(tech_warnings)} value(s) corrected)" if tech_warnings else ""),
+            text_color=YELLOW if tech_warnings else GREEN)
+
+        messagebox.showinfo(
+            "Setup Reference Card Saved",
+            f"Reference file written to:\n{ref_path}\n\n"
+            "── How to apply this setup in iRacing ──\n"
+            "1. Open iRacing and go to the Garage screen\n"
+            "2. Open the reference file above (or check clipboard)\n"
+            "3. Enter each value using the garage sliders\n"
+            "4. All values are within legal ranges for this car class\n"
+            "5. Run tech inspection in iRacing to confirm before going on track\n\n"
+            "Note: iRacing .sto files are binary — this tool saves a reference\n"
+            "card you enter manually. This guarantees no format mismatch."
+            + warn_block)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # IBT COMPARE PANE
+    # ══════════════════════════════════════════════════════════════════════════
+    def _build_impact_compare_pane(self):
+        """Build the IBT comparison pane — load a second IBT and diff against current."""
+        f = ctk.CTkFrame(self._impact_pane, fg_color="transparent")
+        self._impact_compare_frame = f
+        self._cmp_rpt = None   # AnalysisReport for comparison IBT
+
+        # Header
+        hdr = ctk.CTkFrame(f, fg_color=PANEL, corner_radius=8)
+        hdr.pack(fill='x', padx=10, pady=(6, 4))
+        lbl(hdr,
+            "IBT Compare — load a second IBT file (after applying your new setup) and see "
+            "exactly what improved, what got worse, and by how much.",
+            11, color=DIM, wraplength=900).pack(anchor='w', padx=12, pady=6)
+
+        # Control row
+        ctrl = ctk.CTkFrame(f, fg_color=PANEL, corner_radius=8)
+        ctrl.pack(fill='x', padx=10, pady=(0, 6))
+        inner = ctk.CTkFrame(ctrl, fg_color="transparent")
+        inner.pack(fill='x', padx=10, pady=8)
+
+        self._cmp_file_lbl = lbl(inner, "No comparison file loaded", 11, color=DIM)
+        self._cmp_file_lbl.pack(side='left', padx=(0, 12))
+
+        ctk.CTkButton(
+            inner, text="Load Comparison IBT…", width=180, height=32,
+            fg_color=ACCENT, hover_color='#c0392b',
+            command=self._load_compare_ibt,
+        ).pack(side='left', padx=(0, 8))
+
+        self._cmp_status = lbl(inner, "", 10, color=DIM)
+        self._cmp_status.pack(side='left')
+
+        # Scrollable results area
+        sc = ctk.CTkScrollableFrame(f, fg_color="transparent")
+        sc.pack(fill='both', expand=True, padx=10, pady=(0, 10))
+        self._cmp_results_frame = sc
+
+        # Placeholder text
+        self._cmp_placeholder = lbl(
+            sc,
+            "Load a comparison IBT above to see a before/after delta report.\n\n"
+            "Workflow:\n"
+            "  1. Load your original IBT (the one with issues) as usual\n"
+            "  2. Apply the AI-generated or optimizer-recommended setup in iRacing\n"
+            "  3. Do a session and save the new IBT\n"
+            "  4. Come back here and load the new IBT as the comparison file\n"
+            "  5. This view shows exactly what changed and by how much",
+            12, color=DIM, wraplength=860, justify='left')
+        self._cmp_placeholder.pack(anchor='w', padx=16, pady=24)
+
+    def _load_compare_ibt(self):
+        """Open file dialog, parse second IBT, run analysis, trigger comparison display."""
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(
+            title="Load Comparison IBT",
+            filetypes=[("iRacing Telemetry", "*.ibt"), ("All Files", "*.*")],
+        )
+        if not path:
+            return
+        self._cmp_file_lbl.configure(text=os.path.basename(path), text_color=TEXT)
+        self._cmp_status.configure(text="⏳ Analysing…", text_color=DIM)
+        self.update_idletasks()
+
+        def worker():
+            try:
+                from core.ibt_parser import IBTParser
+                from core.analysis_engine import AnalysisEngine
+                parser = IBTParser(path)
+                data = parser.parse()
+                engine = AnalysisEngine()
+                rpt = engine.analyze(data)
+                self.after(0, lambda: self._show_compare_result(rpt))
+            except Exception as exc:
+                self.after(0, lambda e=exc: self._cmp_status.configure(
+                    text=f"Error: {e}", text_color=RED))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_compare_result(self, cmp_rpt):
+        """Render the before/after delta report."""
+        self._cmp_rpt = cmp_rpt
+        self._cmp_status.configure(text="✅ Analysis complete", text_color=GREEN)
+
+        # Clear old results
+        for w in self._cmp_results_frame.winfo_children():
+            w.destroy()
+
+        base = self.cur_rpt
+        if not base:
+            lbl(self._cmp_results_frame,
+                "No base IBT loaded — please load your original IBT on the main screen first.",
+                12, color=RED).pack(anchor='w', padx=10, pady=10)
+            return
+
+        def _delta_color(val, better_is_lower=True):
+            """Return GREEN if improvement, RED if regression."""
+            if abs(val) < 0.001:
+                return DIM
+            return GREEN if (val < 0) == better_is_lower else RED
+
+        def _section(title):
+            fr = ctk.CTkFrame(self._cmp_results_frame, fg_color=PANEL, corner_radius=8)
+            fr.pack(fill='x', padx=4, pady=4)
+            lbl(fr, title, 12, bold=True).pack(anchor='w', padx=12, pady=(8, 2))
+            return fr
+
+        def _row(parent, label, before, after, unit="", better_is_lower=False, fmt=".3f"):
+            try:
+                bv = float(before); av = float(after); delta = av - bv
+            except (TypeError, ValueError):
+                bv = before; av = after; delta = None
+            rw = ctk.CTkFrame(parent, fg_color="transparent")
+            rw.pack(fill='x', padx=12, pady=2)
+            lbl(rw, label, 10, color=DIM).pack(side='left')
+            bef_str = f"{bv:{fmt}}{unit}" if delta is not None else str(bv)
+            aft_str = f"{av:{fmt}}{unit}" if delta is not None else str(av)
+            lbl(rw, bef_str, 10, color=DIM).pack(side='left', padx=(8, 0))
+            lbl(rw, "→", 10, color=DIM).pack(side='left', padx=4)
+            if delta is not None:
+                dcolor = _delta_color(delta, better_is_lower)
+                sign = "+" if delta > 0 else ""
+                lbl(rw, aft_str, 10, bold=True, color=TEXT).pack(side='left')
+                lbl(rw, f"  ({sign}{delta:{fmt}}{unit})", 10, color=dcolor).pack(side='left', padx=2)
+            else:
+                lbl(rw, aft_str, 10, bold=True, color=TEXT).pack(side='left')
+
+        # ── Lap Time ──────────────────────────────────────────────────────────
+        lap_sec = _section("Lap Time")
+        _row(lap_sec, "Best Lap:",   base.best_lap, cmp_rpt.best_lap, unit="s",
+             better_is_lower=True, fmt=".3f")
+        _row(lap_sec, "Average Lap:", base.avg_lap, cmp_rpt.avg_lap, unit="s",
+             better_is_lower=True, fmt=".3f")
+
+        # ── Balance ───────────────────────────────────────────────────────────
+        bal_sec = _section("Balance  (−1=US  0=Neutral  +1=OS)")
+        _row(bal_sec, "Overall Balance:",  base.balance_score, cmp_rpt.balance_score,
+             better_is_lower=False, fmt="+.3f")
+        _row(bal_sec, "Entry Phase:",      base.balance_entry, cmp_rpt.balance_entry,
+             better_is_lower=False, fmt="+.3f")
+        _row(bal_sec, "Mid-Corner:",       base.balance_mid, cmp_rpt.balance_mid,
+             better_is_lower=False, fmt="+.3f")
+        _row(bal_sec, "Exit Phase:",       base.balance_exit, cmp_rpt.balance_exit,
+             better_is_lower=False, fmt="+.3f")
+
+        # ── Grip Utilization ─────────────────────────────────────────────────
+        grip_sec = _section("Grip Utilization")
+        _row(grip_sec, "Grip Utilization:", base.grip_utilization_pct,
+             cmp_rpt.grip_utilization_pct, unit="%", better_is_lower=False, fmt=".1f")
+
+        # ── Tire Temperatures ─────────────────────────────────────────────────
+        if base.tire_summary and cmp_rpt.tire_summary:
+            tire_sec = _section("Tire Temperatures  (avg °C per corner)")
+            for corner in ['LF', 'RF', 'LR', 'RR']:
+                bt = base.tire_summary.get(corner, {}).get('avg')
+                ct = cmp_rpt.tire_summary.get(corner, {}).get('avg')
+                if bt is not None and ct is not None:
+                    _row(tire_sec, f"  {corner}:", bt, ct, unit="°C",
+                         better_is_lower=False, fmt=".1f")
+                    # Also show inner/outer spread (narrower = better)
+                    bi = base.tire_summary[corner].get('inner', 0)
+                    bo = base.tire_summary[corner].get('outer', 0)
+                    ci = cmp_rpt.tire_summary[corner].get('inner', 0)
+                    co = cmp_rpt.tire_summary[corner].get('outer', 0)
+                    b_spread = abs(bi - bo)
+                    c_spread = abs(ci - co)
+                    _row(tire_sec, f"  {corner} spread (inner−outer):",
+                         b_spread, c_spread, unit="°C", better_is_lower=True, fmt=".1f")
+
+        # ── Issues Count ──────────────────────────────────────────────────────
+        iss_sec = _section("Detected Issues")
+        b_critical = sum(1 for i in base.issues if i.severity.value == 'critical')
+        c_critical = sum(1 for i in cmp_rpt.issues if i.severity.value == 'critical')
+        b_warning  = sum(1 for i in base.issues if i.severity.value == 'warning')
+        c_warning  = sum(1 for i in cmp_rpt.issues if i.severity.value == 'warning')
+        _row(iss_sec, "Critical Issues:", b_critical, c_critical,
+             better_is_lower=True, fmt=".0f")
+        _row(iss_sec, "Warnings:", b_warning, c_warning,
+             better_is_lower=True, fmt=".0f")
+
+        # ── New / Resolved Issues ─────────────────────────────────────────────
+        base_titles = {i.title for i in base.issues}
+        cmp_titles  = {i.title for i in cmp_rpt.issues}
+        resolved = base_titles - cmp_titles
+        new_issues = cmp_titles - base_titles
+
+        if resolved:
+            res_sec = _section("Resolved Issues (no longer detected)")
+            for t in sorted(resolved):
+                lbl(res_sec, f"  ✅  {t}", 10, color=GREEN).pack(anchor='w', padx=12, pady=1)
+
+        if new_issues:
+            new_sec = _section("New Issues (appeared in comparison)")
+            for t in sorted(new_issues):
+                lbl(new_sec, f"  ⚠  {t}", 10, color=YELLOW).pack(anchor='w', padx=12, pady=1)
 
     # ══════════════════════════════════════════════════════════════════════════
     # FILE WATCHER

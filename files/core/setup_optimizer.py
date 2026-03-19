@@ -12,7 +12,7 @@ import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict
 
-from core.setup_impact import _EFFECT_MODELS, predict_impact, ImpactReport
+from core.setup_impact import _EFFECT_MODELS, _get_model_for_class, predict_impact, ImpactReport
 
 
 # ── Data types ────────────────────────────────────────────────────────────────
@@ -53,6 +53,10 @@ def optimize_setup(
     n_generations: int = 60,
     pop_size: int = 80,
     rng_seed: int = 0,
+    car_class: Optional[str] = None,
+    balance_entry: float = 0.0,
+    balance_mid: float = 0.0,
+    balance_exit: float = 0.0,
 ) -> OptimizationResult:
     """
     Run a genetic algorithm to find the optimal set of setup changes.
@@ -71,6 +75,15 @@ def optimize_setup(
         Population size (default 80).
     rng_seed : int
         Random seed for reproducibility.
+    car_class : str, optional
+        Car class string (e.g. 'gt3', 'formula', 'tcr') — selects appropriate
+        physics model coefficients for lap-time and balance predictions.
+    balance_entry : float
+        Corner-entry (trail-brake) balance phase score (-1=US, +1=OS).
+    balance_mid : float
+        Mid-corner balance phase score.
+    balance_exit : float
+        Corner-exit (power-on) balance phase score.
 
     Returns
     -------
@@ -81,17 +94,58 @@ def optimize_setup(
     if current_issues is None:
         current_issues = []
 
+    # Build car-class-specific effect models
+    effect_models = _get_model_for_class(car_class)
+
     rng = np.random.RandomState(rng_seed)
     max_d = target.max_delta_per_param
 
     # ── Fitness function ──────────────────────────────────────────────────────
+    # Corner-phase error weights:  entry phase → brake_bias / front_arb;
+    # mid phase → springs / arb;  exit phase → TC / diff / rear_spring.
+    # Build a per-parameter phase penalty that rewards fixing the worst phase.
+    _PHASE_PARAMS = {
+        "entry":  {"brake_bias", "front_arb", "front_spring"},
+        "mid":    {"front_spring", "rear_spring", "front_arb", "rear_arb",
+                   "ride_height_front", "ride_height_rear"},
+        "exit":   {"tc_level", "rear_spring", "rear_arb", "tire_pressure"},
+    }
+    _phase_scores = {
+        "entry": balance_entry,
+        "mid":   balance_mid,
+        "exit":  balance_exit,
+    }
+
+    def _phase_bonus(param: str, delta: float) -> float:
+        """Extra fitness reward for changes that fix the worst corner phase."""
+        bonus = 0.0
+        for phase, phase_params in _PHASE_PARAMS.items():
+            if param not in phase_params:
+                continue
+            ph_bal = _phase_scores[phase]
+            if abs(ph_bal) < 0.10:
+                continue  # phase is neutral — no bonus
+            param_bal = effect_models.get(param, {}).get("balance", "neutral")
+            opp = {"oversteer": "understeer", "understeer": "oversteer", "neutral": "neutral"}
+            # Reward if this change moves balance opposite to the phase's imbalance
+            if ph_bal < 0 and delta > 0 and param_bal == "oversteer":
+                bonus += abs(ph_bal) * 0.15   # phase understeers, change adds oversteer → good
+            elif ph_bal > 0 and delta > 0 and param_bal == "understeer":
+                bonus += abs(ph_bal) * 0.15
+            elif ph_bal < 0 and delta < 0 and opp.get(param_bal) == "oversteer":
+                bonus += abs(ph_bal) * 0.15
+            elif ph_bal > 0 and delta < 0 and opp.get(param_bal) == "understeer":
+                bonus += abs(ph_bal) * 0.15
+        return bonus
+
     def _fitness(ind: np.ndarray) -> float:
         changes = [{'parameter': _PARAMS[i], 'delta': float(ind[i])}
                    for i in range(_N) if abs(ind[i]) >= 0.5]
         if not changes:
             return 1e6
 
-        report = predict_impact(changes)
+        report = predict_impact(changes, current_balance=current_balance,
+                                car_class=car_class)
 
         # Balance improvement
         bal_shift = _BAL_DELTA.get(report.net_balance_shift, 0.0)
@@ -105,21 +159,23 @@ def optimize_setup(
         complexity = len(changes) * 0.04
 
         # Confidence reward (prefer high-confidence parameters)
-        avg_conf = np.mean([_EFFECT_MODELS[c['parameter']]['confidence']
+        avg_conf = np.mean([effect_models.get(c['parameter'], _EFFECT_MODELS.get(c['parameter'], {})).get('confidence', 0.5)
                             for c in changes])
         conf_reward = (1.0 - avg_conf) * 0.3
 
+        # Corner-phase bonus (reward changes that fix the worst phase)
+        phase_bonus = sum(_phase_bonus(c['parameter'], c['delta']) for c in changes)
+
         if target.mode == "lap_time":
-            # Minimise absolute lap time impact (already near-neutral car)
-            return lt_cost + complexity + conf_reward + balance_error * 0.3
+            return lt_cost + complexity + conf_reward + balance_error * 0.3 - phase_bonus
         elif target.mode == "fix_balance":
-            # Strongly minimise balance error, lap time secondary
-            return balance_error * target.balance_weight + lt_cost * 0.5 + complexity + conf_reward
+            return balance_error * target.balance_weight + lt_cost * 0.5 + complexity + conf_reward - phase_bonus
         else:  # balance_and_time
             return (balance_error * target.balance_weight
                     + lt_cost * 1.0
                     + complexity
-                    + conf_reward)
+                    + conf_reward
+                    - phase_bonus)
 
     # ── Initialise population ─────────────────────────────────────────────────
     # Seed initial population with balance-aware bias
@@ -174,7 +230,7 @@ def optimize_setup(
 
     # Sort by predicted absolute lap-time impact (most impactful first)
     raw_changes.sort(
-        key=lambda c: abs(_EFFECT_MODELS[c['parameter']]['lap_time_per_click'] * c['delta']),
+        key=lambda c: abs(effect_models.get(c['parameter'], _EFFECT_MODELS.get(c['parameter'], {})).get('lap_time_per_click', 0.0) * c['delta']),
         reverse=True,
     )
 
@@ -186,7 +242,8 @@ def optimize_setup(
         idx = int(np.argmax(np.abs(best_ind)))
         best_changes = [{'parameter': _PARAMS[idx], 'delta': float(best_ind[idx])}]
 
-    final_report = predict_impact(best_changes)
+    final_report = predict_impact(best_changes, current_balance=current_balance,
+                                  car_class=car_class)
     bal_shift = _BAL_DELTA.get(final_report.net_balance_shift, 0.0)
     projected_balance = float(np.clip(current_balance + bal_shift, -1.0, 1.0))
 

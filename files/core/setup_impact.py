@@ -5,7 +5,7 @@ Estimates sector time, balance, tire wear impact from adjustments.
 
 import numpy as np
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 
 
 @dataclass
@@ -138,9 +138,156 @@ _EFFECT_MODELS: Dict[str, Dict] = {
 }
 
 
+# ── Car-class-specific physics overrides ────────────────────────────────────
+# Each entry overrides one or more fields in _EFFECT_MODELS for a specific class.
+# Multipliers are applied to lap_time_per_click, corner_speed, straight_speed.
+# confidence overrides the flat confidence value.
+#
+# Sources: iRacing physics community data, telemetry analysis, lap-time sensitivity
+# studies from GT3/GTP/Formula class communities.
+_CLASS_MODELS: Dict[str, Dict[str, Dict[str, Any]]] = {
+    # ── GT3 ─────────────────────────────────────────────────────────────────
+    "gt3": {
+        # Base models are calibrated for GT3 — no changes needed
+    },
+    # ── GT4 ─────────────────────────────────────────────────────────────────
+    "gt4": {
+        # Lower downforce, more mechanically-dependent than GT3
+        "rear_wing":       {"lap_time_per_click": 0.03,  "corner_speed": 0.5,  "straight_speed": -1.0, "confidence": 0.65},
+        "front_wing":      {"lap_time_per_click": 0.02,  "corner_speed": 0.3,  "straight_speed": -0.5, "confidence": 0.65},
+        "rear_arb":        {"lap_time_per_click": 0.02,  "corner_speed": 0.25, "confidence": 0.65},
+        "front_arb":       {"lap_time_per_click": 0.02,  "corner_speed": 0.25, "confidence": 0.65},
+        "tire_pressure":   {"lap_time_per_click": 0.05,  "confidence": 0.70},   # GT4 tires very sensitive
+        "rear_spring":     {"lap_time_per_click": 0.025, "confidence": 0.55},
+        "front_spring":    {"lap_time_per_click": 0.025, "confidence": 0.55},
+    },
+    # ── GTP ─────────────────────────────────────────────────────────────────
+    "gtp": {
+        # Massive downforce — wing changes have huge effect; very stiff cars
+        "rear_wing":       {"lap_time_per_click": 0.10,  "corner_speed": 1.8,  "straight_speed": -2.5, "confidence": 0.80},
+        "front_wing":      {"lap_time_per_click": 0.07,  "corner_speed": 1.2,  "straight_speed": -1.5, "confidence": 0.80},
+        "rear_spring":     {"lap_time_per_click": 0.015, "corner_speed": -0.4, "confidence": 0.60},
+        "front_spring":    {"lap_time_per_click": 0.015, "corner_speed": -0.4, "confidence": 0.60},
+        "rear_arb":        {"lap_time_per_click": 0.02,  "corner_speed": 0.3,  "confidence": 0.65},
+        "front_arb":       {"lap_time_per_click": 0.02,  "corner_speed": 0.3,  "confidence": 0.65},
+        "ride_height_rear":{"lap_time_per_click": 0.06,  "corner_speed": 0.6,  "straight_speed": -1.0, "confidence": 0.70},
+        "ride_height_front":{"lap_time_per_click": 0.05, "corner_speed": 0.5,  "straight_speed": -0.8, "confidence": 0.70},
+        "tire_pressure":   {"lap_time_per_click": 0.05,  "confidence": 0.70},
+    },
+    # ── LMP2 ────────────────────────────────────────────────────────────────
+    "lmp2": {
+        "rear_wing":       {"lap_time_per_click": 0.08,  "corner_speed": 1.4,  "straight_speed": -2.0, "confidence": 0.75},
+        "front_wing":      {"lap_time_per_click": 0.05,  "corner_speed": 0.9,  "straight_speed": -1.2, "confidence": 0.75},
+        "rear_spring":     {"lap_time_per_click": 0.015, "confidence": 0.55},
+        "front_spring":    {"lap_time_per_click": 0.015, "confidence": 0.55},
+        "ride_height_rear":{"lap_time_per_click": 0.05,  "corner_speed": 0.5,  "confidence": 0.65},
+        "ride_height_front":{"lap_time_per_click": 0.04, "corner_speed": 0.4,  "confidence": 0.65},
+        "tire_pressure":   {"lap_time_per_click": 0.05,  "confidence": 0.70},
+    },
+    # ── GTE ─────────────────────────────────────────────────────────────────
+    "gte": {
+        # Similar to GT3 but slightly more downforce-sensitive
+        "rear_wing":       {"lap_time_per_click": 0.06,  "corner_speed": 0.9,  "straight_speed": -1.7, "confidence": 0.72},
+        "front_wing":      {"lap_time_per_click": 0.04,  "corner_speed": 0.6,  "straight_speed": -0.9, "confidence": 0.72},
+        "tire_pressure":   {"lap_time_per_click": 0.045, "confidence": 0.68},
+    },
+    # ── Formula / Open Wheel ─────────────────────────────────────────────────
+    "formula": {
+        # Extreme downforce sensitivity; 1 wing step = major lap time swing
+        "rear_wing":       {"lap_time_per_click": 0.12,  "corner_speed": 2.2,  "straight_speed": -3.0, "confidence": 0.85},
+        "front_wing":      {"lap_time_per_click": 0.09,  "corner_speed": 1.8,  "straight_speed": -2.0, "confidence": 0.85},
+        "rear_spring":     {"lap_time_per_click": 0.03,  "corner_speed": -0.5, "confidence": 0.65},
+        "front_spring":    {"lap_time_per_click": 0.03,  "corner_speed": -0.5, "confidence": 0.65},
+        "rear_arb":        {"lap_time_per_click": 0.025, "corner_speed": 0.35, "confidence": 0.70},
+        "front_arb":       {"lap_time_per_click": 0.025, "corner_speed": 0.35, "confidence": 0.70},
+        "ride_height_rear":{"lap_time_per_click": 0.07,  "corner_speed": 0.8,  "straight_speed": -1.2, "confidence": 0.75},
+        "ride_height_front":{"lap_time_per_click": 0.06, "corner_speed": 0.7,  "straight_speed": -1.0, "confidence": 0.75},
+        "tire_pressure":   {"lap_time_per_click": 0.06,  "confidence": 0.75},
+        "brake_bias":      {"lap_time_per_click": 0.015, "confidence": 0.80},
+        "tc_level":        {"lap_time_per_click": 0.10,  "confidence": 0.85},
+    },
+    # ── Porsche Cup (one-make, minimal adjustment range) ────────────────────
+    "porsche_cup": {
+        # No wing adjustment — suspension and tire pressure dominate
+        "rear_wing":       {"lap_time_per_click": 0.0,   "corner_speed": 0.0, "straight_speed": 0.0, "confidence": 0.1},  # fixed
+        "front_wing":      {"lap_time_per_click": 0.0,   "corner_speed": 0.0, "straight_speed": 0.0, "confidence": 0.1},  # fixed
+        "rear_arb":        {"lap_time_per_click": 0.025, "corner_speed": 0.3, "confidence": 0.75},   # very sensitive
+        "front_arb":       {"lap_time_per_click": 0.025, "corner_speed": 0.3, "confidence": 0.75},
+        "tire_pressure":   {"lap_time_per_click": 0.06,  "confidence": 0.80},  # critical in Porsche
+        "rear_spring":     {"lap_time_per_click": 0.03,  "confidence": 0.70},
+        "front_spring":    {"lap_time_per_click": 0.03,  "confidence": 0.70},
+        "brake_bias":      {"lap_time_per_click": 0.012, "confidence": 0.80},
+    },
+    # ── TCR (FWD touring car) ────────────────────────────────────────────────
+    "tcr": {
+        # FWD — front-heavy sensitivity; no rear wing
+        "rear_wing":       {"lap_time_per_click": 0.0,   "corner_speed": 0.0, "straight_speed": 0.0, "confidence": 0.1},  # none
+        "front_wing":      {"lap_time_per_click": 0.02,  "corner_speed": 0.3, "straight_speed": -0.4, "confidence": 0.60},
+        "front_arb":       {"lap_time_per_click": 0.03,  "corner_speed": 0.4, "confidence": 0.75},   # primary balance tool FWD
+        "rear_arb":        {"lap_time_per_click": 0.02,  "corner_speed": 0.3, "confidence": 0.70},
+        "tire_pressure":   {"lap_time_per_click": 0.07,  "confidence": 0.80},  # FWD tires work very hard
+        "front_spring":    {"lap_time_per_click": 0.04,  "confidence": 0.70},  # more sensitive FWD
+        "rear_spring":     {"lap_time_per_click": 0.02,  "confidence": 0.60},
+        "tc_level":        {"lap_time_per_click": 0.06,  "confidence": 0.80},
+        "brake_bias":      {"lap_time_per_click": 0.02,  "confidence": 0.80},  # critical — FWD braking
+    },
+    # ── Stock Car (NASCAR-style oval/road, no aero wings) ───────────────────
+    "stock": {
+        "rear_wing":       {"lap_time_per_click": 0.0,  "corner_speed": 0.0, "straight_speed": 0.0, "confidence": 0.1},
+        "front_wing":      {"lap_time_per_click": 0.0,  "corner_speed": 0.0, "straight_speed": 0.0, "confidence": 0.1},
+        "rear_spring":     {"lap_time_per_click": 0.04, "corner_speed": -0.5, "confidence": 0.65},   # stiffer → less bite
+        "front_spring":    {"lap_time_per_click": 0.04, "corner_speed": -0.5, "confidence": 0.65},
+        "rear_arb":        {"lap_time_per_click": 0.03, "corner_speed": 0.4,  "confidence": 0.70},
+        "front_arb":       {"lap_time_per_click": 0.03, "corner_speed": 0.4,  "confidence": 0.70},
+        "tire_pressure":   {"lap_time_per_click": 0.08, "confidence": 0.80},  # oval tire sensitivity is high
+        "brake_bias":      {"lap_time_per_click": 0.015,"confidence": 0.80},
+        "tc_level":        {"lap_time_per_click": 0.05, "confidence": 0.75},
+    },
+    # ── Road Rookie / Sports Car (entry-level) ───────────────────────────────
+    "road_rookie": {
+        "rear_wing":       {"lap_time_per_click": 0.02,  "corner_speed": 0.3,  "straight_speed": -0.6, "confidence": 0.55},
+        "front_wing":      {"lap_time_per_click": 0.015, "corner_speed": 0.2,  "straight_speed": -0.4, "confidence": 0.55},
+        "tire_pressure":   {"lap_time_per_click": 0.035, "confidence": 0.65},
+        "rear_arb":        {"lap_time_per_click": 0.012, "confidence": 0.55},
+        "front_arb":       {"lap_time_per_click": 0.012, "confidence": 0.55},
+    },
+}
+
+# Aliases for fuzzy car-class name matching
+_CLASS_ALIASES = {
+    "gtp": "gtp", "lmp2": "lmp2", "lmp": "lmp2",
+    "gt3": "gt3", "gt4": "gt4", "gte": "gte",
+    "formula": "formula", "open_wheel": "formula", "f3": "formula",
+    "porsche_cup": "porsche_cup", "cup": "porsche_cup",
+    "tcr": "tcr", "touring": "tcr",
+    "stock": "stock", "nascar": "stock", "oval": "stock",
+    "road_rookie": "road_rookie", "rookie": "road_rookie",
+    "sports_car": "gt3",  # default sports_car to gt3 coefficients
+    "prototype": "lmp2",
+}
+
+
+def _get_model_for_class(car_class: Optional[str]) -> Dict[str, Dict]:
+    """
+    Return a merged _EFFECT_MODELS dict with class-specific overrides applied.
+    Falls back to base GT3 models if class not recognised.
+    """
+    import copy
+    models = copy.deepcopy(_EFFECT_MODELS)
+    if not car_class:
+        return models
+    key = _CLASS_ALIASES.get(car_class.lower().replace(' ', '_'), car_class.lower().replace(' ', '_'))
+    overrides = _CLASS_MODELS.get(key, {})
+    for param, fields in overrides.items():
+        if param in models:
+            models[param].update(fields)
+    return models
+
+
 def predict_impact(changes: List[Dict[str, float]],
                    current_balance: float = 0.0,
-                   issues: Optional[List[str]] = None) -> ImpactReport:
+                   issues: Optional[List[str]] = None,
+                   car_class: Optional[str] = None) -> ImpactReport:
     """
     Predict impact of setup changes.
 
@@ -157,14 +304,15 @@ def predict_impact(changes: List[Dict[str, float]],
     """
     issues = issues or []
     predictions: List[ImpactPrediction] = []
+    effect_models = _get_model_for_class(car_class)
 
     for change in changes:
         param = change.get('parameter', '')
         delta = change.get('delta', 0.0)
-        if param not in _EFFECT_MODELS or delta == 0:
+        if param not in effect_models or delta == 0:
             continue
 
-        model = _EFFECT_MODELS[param]
+        model = effect_models[param]
         direction = "increase" if delta > 0 else "decrease"
         magnitude = abs(delta)
 
