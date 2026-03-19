@@ -182,7 +182,9 @@ class DrivingStyleAnalyzer:
             aggressive = (throttle > self.FULL_THROTTLE) & (np.abs(steering) > 0.25) & (speed > 20)
             pct = float(np.mean(aggressive)) * 100
             if pct > 15:
-                report.findings.append(f"Aggressive throttle-while-turning: {pct:.0f}% of time — risks snap oversteer.")
+                report.findings.append(
+                    f"Full throttle while cornering: {pct:.0f}% of driving time — applying maximum throttle while the wheel is turned significantly. "
+                    "This puts the rear tires near their combined grip limit, risking snap oversteer especially in mid-speed corners.")
                 smooth_score -= 10
 
         return float(np.clip(smooth_score, 30, 98))
@@ -271,7 +273,10 @@ class DrivingStyleAnalyzer:
                             event_type='snap_oversteer',
                             lap_dist_pct=pos,
                             severity=min(1.0, float(np.abs(lat_diff[idx])) / 8.0),
-                            description=f"Snap oversteer at {pos*100:.0f}% track — likely setup or throttle-induced.",
+                            description=f"Snap oversteer at {pos*100:.0f}% track position — "
+                                        "rear lost grip suddenly and required counter-steer. "
+                                        "If recurring at the same position, likely a setup issue (rear ARB too stiff or rear tires overheating). "
+                                        "If random positions, more likely driver-induced (throttle or steering input spike).",
                             is_driver=False  # often setup issue
                         ))
 
@@ -317,10 +322,12 @@ class DrivingStyleAnalyzer:
 
         if report.coast_time_pct > 8:
             report.findings.append(
-                f"Coasting (no throttle or brake) {report.coast_time_pct:.1f}% of the time — grip potential is wasted during these moments.")
+                f"Coasting (no throttle or brake) {report.coast_time_pct:.1f}% of the time — during coasting the tires are generating neither driving nor braking force, leaving the friction circle almost empty.")
             report.recommendations.append(
                 "Reduce dead time between brake release and throttle application. "
-                "Overlap brake and throttle at corner transitions (trail braking into early throttle).")
+                "The ideal transition is a smooth handoff: as you progressively release the brake, simultaneously begin squeezing the throttle — this is the 'overlapping inputs' technique. "
+                "In slow corners, a small amount of coasting is normal, but in medium-speed corners it should be near zero. "
+                "Use the Telemetry tab to overlay Brake and Throttle traces and look for gaps — every gap is a place to find time.")
 
     def _cluster_positions(self, positions: list, threshold: float = 0.03) -> list:
         """Group nearby track positions into clusters."""
@@ -340,27 +347,52 @@ class DrivingStyleAnalyzer:
         r = report.recommendations
 
         if report.brake_consistency < 60:
-            f.append(f"Inconsistent brake points (std: {report.brake_point_std:.4f}) — braking at different points each lap.")
-            r.append("Pick a fixed reference marker (marshal post, curb patch) for every brake zone. Consistency beats perfection.")
+            f.append(f"Inconsistent brake points (std: {report.brake_point_std:.4f}) — braking at different distances each lap, causing variable corner entry speeds.")
+            r.append(
+                "Pick a fixed physical reference for every significant brake zone — a marshal's post, advertising board, or track curb edge. "
+                "Commit to the same marker every lap, even if you arrive at it slightly too fast or slow. "
+                "Brake point consistency is more valuable than the 'optimal' brake point — once it's repeatable, you can move it incrementally. "
+                "In the Telemetry tab, overlay 3–4 laps and look at where the Brake trace rises: the scatter you see is your inconsistency zone.")
 
         if report.throttle_blips > 20:
-            f.append(f"Erratic throttle inputs ({report.throttle_blips} spikes detected) — likely wheel spin or over-correction.")
-            r.append("Reduce TC sensitivity or be smoother on throttle application. Progressive squeeze out of slow corners.")
+            f.append(f"Erratic throttle inputs ({report.throttle_blips} spikes detected) — rapid oscillations indicate wheel spin, traction catch/release, or over-correction.")
+            r.append(
+                "Cause 1 — Wheel spin: reduce TC sensitivity by 1–2 clicks, or apply throttle more progressively out of slow corners (squeeze, don't stab). "
+                "Cause 2 — Over-correction: if you're lifting when the car snaps, practice holding a steady partial throttle through the transition. "
+                "Cause 3 — Setup: a rear ARB that's too stiff can cause twitchy exit behaviour that triggers these corrections. "
+                "Smooth throttle application is almost always faster than aggressive inputs, especially on RWD cars.")
 
         if report.trail_braking_pct < 10:
-            f.append("Minimal trail braking — releasing brake fully before turn-in.")
-            r.append("Experiment with carrying light brake pressure into corner entry — loads the front and improves turn-in.")
+            f.append("Minimal trail braking — releasing the brake fully before turn-in, creating a gap between braking and cornering forces.")
+            r.append(
+                "Trail braking keeps the front tires loaded during corner entry, which improves rotation and allows a later, deeper brake point. "
+                "Start by carrying 10–20% brake pressure (not heavy) into the first 10% of the corner while beginning to steer. "
+                "The brake should be fully released by the apex. "
+                "Caution: trail braking requires a stable rear — if the rear is already oversteering on entry, fix that first before adding trail brake.")
         elif report.trail_braking_pct > 65:
-            f.append("Excessive trail braking — carrying too much brake deep into corners, overloading front tires.")
-            r.append("Release brake earlier — heavy trail braking with full lock can cause front tire overheating.")
+            f.append("Excessive trail braking — carrying too much brake deep into corners, overloading the front tires and risking front lock-up.")
+            r.append(
+                "Heavy brake pressure deep into a corner can cause front-tire overheating and push the nose wide (heavy-throttle understeer). "
+                "Aim to have the brake mostly released by the geometric apex — only a very light feather after that. "
+                "If you're trail braking heavily to keep the car rotating, the underlying issue is likely a setup imbalance (rear too stable, front too understeery) — fix the root cause in setup.")
 
         if report.steering_reversals > 150:
-            f.append("High steering reversal rate — sawing at the wheel, which suggests understeer corrections.")
-            r.append("If sawing at the wheel mid-corner: likely understeer — check front ARB and tire pressures.")
+            f.append("High steering reversal rate — frequent direction changes at the wheel, typical of understeer corrections or a nervous car.")
+            r.append(
+                "Cause 1 — Understeer: if you're adding lock mid-corner to force rotation, the front is pushing. "
+                "Check front ARB, tire pressures, and camber. A car that understeers makes drivers 'saw' at the wheel to force it to turn. "
+                "Cause 2 — Setup snap/nervous: a rear-happy car causes constant counter-steer corrections. Check rear ARB and rear tire temps. "
+                "Cause 3 — Driver: if the car is balanced but reversals are high, practice holding a fixed steering lock through the apex instead of adjusting.")
 
         if report.oversteer_events > 5:
-            f.append(f"{report.oversteer_events} snap oversteer events detected — car stepping out unexpectedly.")
-            r.append("Check rear ARB stiffness, rear tire temperatures, and throttle application point in slow corners.")
+            f.append(f"{report.oversteer_events} snap oversteer events detected — car stepping out suddenly, requiring corrective counter-steer.")
+            r.append(
+                "Common causes in order: "
+                "(1) Throttle-induced: applying full throttle too early in a slow corner — rear breaks away as torque overcomes rear grip. Delay throttle application and squeeze progressively. "
+                "(2) Rear ARB too stiff: a stiff rear ARB reduces rear grip during cornering, especially on bumpy tracks. Soften by one step. "
+                "(3) Rear tire overheating: check rear tire temps — if they're above the optimal window, the tires are giving up suddenly. "
+                "(4) Mechanical grip: check rear tire pressures — too high reduces the rear contact patch. "
+                "If events are concentrated at a specific track position, check the G-G diagram at that point.")
 
     def _classify_style(self, report: DriverStyleReport):
         parts = []
@@ -380,3 +412,137 @@ class DrivingStyleAnalyzer:
             parts.append("rough on throttle")
 
         report.style_profile = ", ".join(parts) if parts else "Balanced driver style"
+
+
+def driving_style_to_setup_hints(report: "DriverStyleReport") -> list:
+    """
+    Translate measured driving-style metrics into concrete, directional setup hints.
+
+    These hints tell the AI setup builder HOW the driver's technique should
+    influence setup decisions — not just what the driver does wrong, but what
+    setup compensation would help or complement their style.
+
+    Returns a list of strings, each a self-contained actionable hint.
+    """
+    hints = []
+
+    # ── Braking consistency ────────────────────────────────────────────────
+    if report.brake_consistency < 55:
+        hints.append(
+            "Brake consistency score is low — the car should be set up for FORGIVENESS on entry. "
+            "Soften front ARB 1 step and increase front slow-bump damping to make the nose "
+            "less sensitive to variable brake pressure; variable brake points will then produce "
+            "less varying corner entry speeds."
+        )
+    elif report.brake_consistency > 85:
+        hints.append(
+            "Excellent brake consistency — setup can prioritize PEAK PERFORMANCE on entry. "
+            "The driver will exploit a sharper, more responsive front end; a stiffer front ARB "
+            "and slightly higher brake bias are appropriate because the consistent inputs won't "
+            "cause random lock-ups."
+        )
+
+    # ── Trail braking ──────────────────────────────────────────────────────
+    if report.trail_braking_pct < 12:
+        hints.append(
+            "Very low trail braking — driver releases brake fully before turning in. "
+            "The front must SELF-LOAD through mechanical means: soften front ARB by 1–2 steps "
+            "so the car rolls into the corner and naturally loads the outer front tire. "
+            "Slightly softer front spring also helps. Avoid high brake bias as the driver "
+            "doesn't use it to rotate the car."
+        )
+    elif 20 <= report.trail_braking_pct <= 55:
+        hints.append(
+            "Good trail braking technique — setup can support an active front end. "
+            "Front ARB can be moderately stiff (the driver loads it via brake input) and "
+            "brake bias slightly higher is appropriate because the driver uses it for rotation."
+        )
+    elif report.trail_braking_pct > 65:
+        hints.append(
+            "Excessive trail braking — driver carries heavy brake pressure deep into corners. "
+            "Soften front slow-rebound damping so the nose doesn't over-rotate under heavy "
+            "late-braking; also check front tire temperatures (overheating risk). "
+            "Slightly rearward brake bias reduces the snap oversteer risk from heavy trail braking."
+        )
+
+    # ── Throttle smoothness ────────────────────────────────────────────────
+    if report.throttle_smoothness < 55:
+        hints.append(
+            "Low throttle smoothness — erratic inputs on exit. "
+            "Soften rear ARB by 1 step and increase diff coast ramp to reduce rear sensitivity "
+            "to throttle snap. The rear needs to be more forgiving of imprecise applications. "
+            "TC sensitivity should be higher than baseline to catch wheelspin."
+        )
+    elif report.throttle_smoothness > 80:
+        hints.append(
+            "Smooth throttle application — rear setup can be more aggressive. "
+            "Rear ARB can be slightly stiffer and diff power ramp slightly lower (more locking) "
+            "because the smooth inputs won't trigger snap oversteer."
+        )
+
+    # ── Coast time (dead pedal time) ──────────────────────────────────────
+    if report.coast_time_pct > 12:
+        hints.append(
+            f"High coasting time ({report.coast_time_pct:.0f}%) — driver spends significant time "
+            "with no input. Setup should be FORGIVING and STABLE during the transition phase. "
+            "A slightly neutral or understeer-biased balance makes the car less reactive during "
+            "these input gaps. Softer ARBs front and rear make the car roll into balance "
+            "naturally rather than requiring active driver management."
+        )
+    elif report.coast_time_pct < 4:
+        hints.append(
+            "Very low coast time — driver maintains active inputs continuously. "
+            "Setup can be sharper and more responsive since driver input doesn't drop out."
+        )
+
+    # ── Steering smoothness / sawing ──────────────────────────────────────
+    if report.steering_reversals > 160:
+        hints.append(
+            f"High steering reversal rate ({report.steering_reversals}/lap) — driver is "
+            "correcting understeer mid-corner. Soften front ARB 1–2 steps to reduce understeer "
+            "and let the front follow the intended line without corrections. Also check front "
+            "tire pressures — over-inflation reduces front grip and causes this behaviour."
+        )
+
+    # ── Oversteer events ───────────────────────────────────────────────────
+    if report.oversteer_events > 5:
+        hints.append(
+            f"{report.oversteer_events} snap oversteer events detected — setup needs MORE REAR "
+            "STABILITY. Soften rear ARB by 1 step, add 0.5–1 step of rear wing (if adjustable), "
+            "and check rear tire temperatures. If the rear is overheating, the snaps are "
+            "tire-driven — more downforce or pressure adjustment helps more than spring changes."
+        )
+
+    # ── Understeer events ──────────────────────────────────────────────────
+    if report.understeer_events > 8:
+        hints.append(
+            f"{report.understeer_events} sustained understeer events detected — setup needs MORE "
+            "FRONT ROTATION. Soften front ARB 1 step, consider reducing front spring rate by "
+            "5–10 N/mm, and check that front tire pressures are not over-inflated (reduces "
+            "contact patch). If trail braking is low, this is likely driver + setup combined."
+        )
+
+    # ── Full throttle percentage ───────────────────────────────────────────
+    if report.full_throttle_pct < 40:
+        hints.append(
+            f"Low full-throttle time ({report.full_throttle_pct:.0f}%) — driver is not extracting "
+            "full power. This may be traction-limited (wheelspin preventing full throttle) or "
+            "gearing-limited. If wheelspin: soften diff power ramp and reduce TC intervention "
+            "threshold. If gearing: check that top gear reaches rev limiter at end of straights."
+        )
+
+    # ── Balance verdict ────────────────────────────────────────────────────
+    if 'UNDERSTEER' in report.balance_verdict.upper():
+        hints.append(
+            "Overall understeer tendency confirmed by balance events. "
+            "Setup should systematically move balance rearward: soften front ARB, "
+            "stiffen rear ARB by 0.5–1 step, or reduce front wing if applicable."
+        )
+    elif 'OVERSTEER' in report.balance_verdict.upper():
+        hints.append(
+            "Overall oversteer tendency confirmed by balance events. "
+            "Setup should systematically move balance forward: stiffen front ARB, "
+            "soften rear ARB, or add rear wing if applicable."
+        )
+
+    return hints

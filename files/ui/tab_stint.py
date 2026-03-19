@@ -20,10 +20,14 @@ class StintTabMixin:
         self._ph_stint.pack(pady=40)
         self._stsc = ctk.CTkScrollableFrame(tab, fg_color="transparent")
         self._stsc.pack(fill='both', expand=True, padx=10, pady=8)
-        self._stpc = EmbedChart(self._stsc, figsize=(10, 2.8)); self._stpc.pack(fill='x', pady=(0, 4))
-        self._stdc = EmbedChart(self._stsc, figsize=(10, 2.8)); self._stdc.pack(fill='x', pady=(0, 4))
-        self._stwc = EmbedChart(self._stsc, figsize=(10, 3.0)); self._stwc.pack(fill='x', pady=(0, 4))
-        self._stdf = ctk.CTkFrame(self._stsc, fg_color="transparent"); self._stdf.pack(fill='x')
+        self._stpc  = EmbedChart(self._stsc, figsize=(10, 2.8)); self._stpc.pack(fill='x', pady=(0, 4))
+        self._stdc  = EmbedChart(self._stsc, figsize=(10, 2.8)); self._stdc.pack(fill='x', pady=(0, 4))
+        self._stwc  = EmbedChart(self._stsc, figsize=(10, 3.0)); self._stwc.pack(fill='x', pady=(0, 4))
+        self._stwear = EmbedChart(self._stsc, figsize=(10, 2.5)); self._stwear.pack(fill='x', pady=(0, 4))
+        self._stshock = EmbedChart(self._stsc, figsize=(10, 2.5)); self._stshock.pack(fill='x', pady=(0, 4))
+        self._strh    = EmbedChart(self._stsc, figsize=(10, 2.5)); self._strh.pack(fill='x', pady=(0, 4))
+        self._steng   = EmbedChart(self._stsc, figsize=(10, 2.5)); self._steng.pack(fill='x', pady=(0, 4))
+        self._stdf  = ctk.CTkFrame(self._stsc, fg_color="transparent"); self._stdf.pack(fill='x')
 
     def _u_stint(self):
         r = self.cur_stint
@@ -66,6 +70,37 @@ class StintTabMixin:
             lbl(cf, corner, 14, bold=True, color=BLUE).pack(pady=(8, 2))
             lbl(cf, f"Cold: {r.pressure_cold_targets.get(corner, 0):.1f} PSI", 12, bold=True, color=GREEN).pack()
             lbl(cf, f"Hot:  {r.pressure_hot_actuals.get(corner, 0):.1f} PSI", 11).pack(pady=(0, 8))
+        # YAML tire data: last hot pressures + tread remaining from CarSetup
+        d = self.cur_data
+        if d:
+            car_setup = d.session_info.get('car_setup', {})
+            tires_yaml = car_setup.get('Tires', {}) if isinstance(car_setup, dict) else {}
+            yaml_tire_map = {
+                'LeftFront': 'LF', 'RightFront': 'RF',
+                'LeftRear':  'LR', 'RightRear':  'RR',
+            }
+            yaml_data = {}
+            for yaml_key, corner in yaml_tire_map.items():
+                tire = tires_yaml.get(yaml_key, {})
+                if isinstance(tire, dict) and tire:
+                    yaml_data[corner] = tire
+            if yaml_data:
+                sec_lbl(self._stdf, "📋 End-of-Session Tire Data (from IBT YAML)")
+                yt = ctk.CTkFrame(self._stdf, fg_color=PANEL, corner_radius=8); yt.pack(fill='x', pady=4)
+                yr = ctk.CTkFrame(yt, fg_color="transparent"); yr.pack(fill='x', padx=12, pady=10)
+                for corner in ['LF', 'RF', 'LR', 'RR']:
+                    tire = yaml_data.get(corner, {})
+                    if not tire: continue
+                    cf = card_frame(yr); cf.pack(side='left', fill='both', expand=True, padx=4)
+                    lbl(cf, corner, 14, bold=True, color=BLUE).pack(pady=(8, 2))
+                    if 'LastHotPressure' in tire:
+                        lbl(cf, f"Hot: {tire['LastHotPressure']}", 11, color=RED).pack()
+                    if 'StartingPressure' in tire:
+                        lbl(cf, f"Cold: {tire['StartingPressure']}", 11, color=GREEN).pack()
+                    if 'TreadRemaining' in tire:
+                        lbl(cf, f"Wear: {tire['TreadRemaining']}", 11, color=YELLOW).pack()
+                    if 'LastTempsOM' in tire:
+                        lbl(cf, f"Temps: {tire['LastTempsOM']}", 10, color=DIM).pack(pady=(0, 8))
         if r.findings:
             sec_lbl(self._stdf, "📋 Pressure Findings")
             for fn in r.findings:
@@ -79,6 +114,9 @@ class StintTabMixin:
             stat_blk(dr, "Optimal Stint", f"{r.optimal_stint_length} laps", GREEN)
             stat_blk(dr, "Cliff Lap", str(r.cliff_lap), RED)
         self._draw_tire_wear_projection(r)
+        self._draw_tire_surface_wear()
+        self._draw_suspension()
+        self._draw_engine_health()
         self._draw_stint_comparison(self._stdf)
 
     def _draw_tire_wear_projection(self, stint_report):
@@ -123,6 +161,201 @@ class StintTabMixin:
                 ff = ctk.CTkFrame(self._stdf, fg_color="#1e2845", corner_radius=6); ff.pack(fill='x', pady=2)
                 lbl(ff, f"•  {fn}", 11, color=TEXT, wraplength=820,
                     justify='left', anchor='w').pack(padx=12, pady=6)
+
+    def _draw_tire_surface_wear(self):
+        """Bar chart: inner/mid/outer tread wear per tire from LFwearL/M/R channels."""
+        d = self.cur_data
+        c = self._stwear; c.clear()
+        if d is None:
+            return
+        corners = ['LF', 'RF', 'LR', 'RR']
+        zones   = ['L', 'M', 'R']
+        zone_labels = ['Inner', 'Mid', 'Outer']
+        corner_colors = [BLUE, RED, GREEN, YELLOW]
+
+        # Collect last-lap average wear per corner per zone
+        # iRacing wear channels: 0 = new tyre, 1 = fully worn (fraction of wear used)
+        data_found = False
+        wear_data = {}
+        for corner in corners:
+            wear_data[corner] = {}
+            for zone in zones:
+                ch = d.get_channel(f'{corner}wear{zone}')
+                if ch is not None and len(ch) > 0:
+                    # Use end-of-session average (last 10% of data) for wear state
+                    tail = ch[int(len(ch) * 0.9):]
+                    wear_data[corner][zone] = float(np.mean(tail)) * 100  # → percent worn
+                    data_found = True
+                else:
+                    wear_data[corner][zone] = None
+
+        if not data_found:
+            ax = c.std_ax("Tire Surface Wear (Inner / Mid / Outer)", xlabel="Zone")
+            ax.text(0.5, 0.5, "No tire wear channels in this IBT\n(LFwearL/M/R etc.)",
+                    transform=ax.transAxes, ha='center', va='center', color=DIM, fontsize=11)
+            c.fig.tight_layout(pad=0.8); c.draw(); return
+
+        ax = c.std_ax("Tire Surface Wear — Inner / Mid / Outer per Corner", xlabel="Tire")
+        n_corners = len(corners)
+        x = np.arange(n_corners)
+        width = 0.22
+        offsets = [-1, 0, 1]
+        for zi, (zone, zlbl, offset) in enumerate(zip(zones, zone_labels, offsets)):
+            vals = [wear_data[corner].get(zone) or 0 for corner in corners]
+            cols = [corner_colors[ci] for ci in range(n_corners)]
+            bars = ax.bar(x + offset * width, vals, width,
+                          label=zlbl, alpha=0.75 + zi * 0.08,
+                          color=[corner_colors[ci] for ci in range(n_corners)],
+                          edgecolor='white', linewidth=0.4)
+            # Add hatching to distinguish zones
+            hatches = ['', '///', 'xxx']
+            for bar in bars:
+                bar.set_hatch(hatches[zi])
+
+        ax.set_xticks(x); ax.set_xticklabels(corners, color=DIM, fontsize=10)
+        ax.set_ylabel("Wear %", color=DIM, fontsize=9)
+        ax.set_ylim(0, max(1, ax.get_ylim()[1]) * 1.05)
+        # Custom legend: zones, not corners
+        from matplotlib.patches import Patch
+        legend_elements = [Patch(facecolor='grey', hatch=h, label=z, alpha=0.8)
+                           for z, h in zip(zone_labels, ['', '///', 'xxx'])]
+        ax.legend(handles=legend_elements, fontsize=9,
+                  facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT)
+        c.fig.tight_layout(pad=0.8); c.draw()
+
+    def _draw_suspension(self):
+        """Two charts: shock velocity (rebound/compression) and ride height per corner."""
+        d = self.cur_data
+        if d is None:
+            for chart in (self._stshock, self._strh):
+                chart.clear()
+                ax = chart.std_ax("No data")
+                ax.text(0.5, 0.5, "No telemetry", transform=ax.transAxes,
+                        ha='center', va='center', color=DIM, fontsize=10)
+                chart.fig.tight_layout(pad=0.8); chart.draw()
+            return
+
+        corners = ['LF', 'RF', 'LR', 'RR']
+        corner_colors = [BLUE, RED, GREEN, YELLOW]
+
+        # ── Shock velocity chart ─────────────────────────────────────────────
+        c = self._stshock; c.clear()
+        shock_found = False
+        shock_means: dict[str, list[float]] = {corner: [] for corner in corners}
+
+        for corner in corners:
+            ch = d.get_channel(f'{corner}shockVel')
+            if ch is None:
+                continue
+            shock_found = True
+            # Per-lap average absolute shock velocity (m/s → mm/s display)
+            for li in range(d.num_laps):
+                s = d.lap_boundaries[li]; e = d.lap_boundaries[li + 1]
+                lap_vel = ch[s:e]
+                shock_means[corner].append(float(np.mean(np.abs(lap_vel))) * 1000)  # mm/s
+
+        if not shock_found:
+            ax = c.std_ax("Shock Velocity — Avg per Lap (mm/s)")
+            ax.text(0.5, 0.5, "No shock velocity channels in this IBT",
+                    transform=ax.transAxes, ha='center', va='center', color=DIM, fontsize=11)
+            c.fig.tight_layout(pad=0.8); c.draw()
+        else:
+            ax = c.std_ax("Shock Velocity — Avg |vel| per Lap", xlabel="Lap")
+            for corner, col in zip(corners, corner_colors):
+                vals = shock_means[corner]
+                if vals:
+                    ax.plot(range(1, len(vals) + 1), vals, 'o-', color=col,
+                            lw=1.5, label=corner, alpha=0.9)
+            ax.set_ylabel("mm/s", color=DIM, fontsize=9)
+            ax.legend(fontsize=9, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT)
+            c.fig.tight_layout(pad=0.8); c.draw()
+
+        # ── Ride height chart ────────────────────────────────────────────────
+        c2 = self._strh; c2.clear()
+        rh_found = False
+        rh_means: dict[str, list[float]] = {corner: [] for corner in corners}
+
+        for corner in corners:
+            ch = d.get_channel(f'{corner}rideHeight')
+            if ch is None:
+                continue
+            rh_found = True
+            for li in range(d.num_laps):
+                s = d.lap_boundaries[li]; e = d.lap_boundaries[li + 1]
+                lap_rh = ch[s:e]
+                rh_means[corner].append(float(np.mean(lap_rh)) * 1000)  # m → mm
+
+        if not rh_found:
+            ax2 = c2.std_ax("Ride Height — Avg per Lap (mm)")
+            ax2.text(0.5, 0.5, "No ride height channels in this IBT",
+                     transform=ax2.transAxes, ha='center', va='center', color=DIM, fontsize=11)
+            c2.fig.tight_layout(pad=0.8); c2.draw()
+        else:
+            ax2 = c2.std_ax("Ride Height — Avg per Lap", xlabel="Lap")
+            for corner, col in zip(corners, corner_colors):
+                vals = rh_means[corner]
+                if vals:
+                    ax2.plot(range(1, len(vals) + 1), vals, 's-', color=col,
+                             lw=1.5, label=corner, alpha=0.9)
+            ax2.set_ylabel("mm", color=DIM, fontsize=9)
+            ax2.legend(fontsize=9, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT)
+            c2.fig.tight_layout(pad=0.8); c2.draw()
+
+    def _draw_engine_health(self):
+        """Engine temps + fuel use rate per lap."""
+        d = self.cur_data
+        c = self._steng; c.clear()
+        if d is None:
+            return
+
+        channels = [
+            ('OilTemp',      'Oil Temp',   RED,    '°C'),
+            ('WaterTemp',    'Water Temp', BLUE,   '°C'),
+        ]
+        ax = c.std_ax("Engine Temperatures per Lap", xlabel="Lap")
+        ax2 = None
+        found = False
+
+        for ch_name, label, col, unit in channels:
+            ch = d.get_channel(ch_name)
+            if ch is None:
+                continue
+            found = True
+            lap_vals = []
+            for li in range(d.num_laps):
+                s = d.lap_boundaries[li]; e = d.lap_boundaries[li + 1]
+                lap_vals.append(float(np.mean(ch[s:e])))
+            ax.plot(range(1, len(lap_vals) + 1), lap_vals, 'o-', color=col,
+                    lw=1.5, label=label, alpha=0.9)
+
+        # Fuel use per hour on secondary axis
+        fph = d.get_channel('FuelUsePerHour')
+        if fph is not None:
+            fph_vals = []
+            for li in range(d.num_laps):
+                s = d.lap_boundaries[li]; e = d.lap_boundaries[li + 1]
+                fph_vals.append(float(np.mean(fph[s:e])))
+            ax2 = ax.twinx()
+            ax2.plot(range(1, len(fph_vals) + 1), fph_vals, 's--', color=GREEN,
+                     lw=1.2, alpha=0.7, label='Fuel/hr (L)')
+            ax2.set_ylabel("L/hr", color=DIM, fontsize=9)
+            ax2.tick_params(colors=DIM)
+            found = True
+
+        if not found:
+            ax.text(0.5, 0.5, "No engine temp channels in this IBT\n(OilTemp, WaterTemp)",
+                    transform=ax.transAxes, ha='center', va='center', color=DIM, fontsize=11)
+        else:
+            ax.set_ylabel("°C", color=DIM, fontsize=9)
+            # Combine legends
+            h1, l1 = ax.get_legend_handles_labels()
+            if ax2:
+                h2, l2 = ax2.get_legend_handles_labels()
+                ax.legend(h1 + h2, l1 + l2, fontsize=9,
+                          facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT)
+            else:
+                ax.legend(fontsize=9, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT)
+        c.fig.tight_layout(pad=0.8); c.draw()
 
     def _draw_stint_comparison(self, parent):
         d = self.cur_data

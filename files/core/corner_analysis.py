@@ -8,6 +8,11 @@ import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 from core.ibt_parser import TelemetryData  # type: ignore[import-unresolved]
+try:
+    from data.track_corners import resolve_corner_name, get_sectors  # type: ignore[import-unresolved]
+except ImportError:
+    def resolve_corner_name(track_name, apex_pct, tolerance=0.06): return ""  # type: ignore[misc]
+    def get_sectors(track_name): return [1/3, 2/3]  # type: ignore[misc]
 
 # ── Detection thresholds ──────────────────────────────────────────────────
 BRAKE_ON_THRESHOLD = 0.15       # brake > this marks start of braking zone
@@ -23,6 +28,7 @@ class CornerData:
     brake_pct: float            # LapDistPct where braking begins
     apex_pct: float             # LapDistPct of minimum speed
     exit_pct: float             # LapDistPct where throttle resumes
+    corner_name: str = ""       # Named corner (e.g. "Eau Rouge / Raidillon") if known
     entry_speed_ms: float = 0.0
     min_speed_ms: float = 0.0
     exit_speed_ms: float = 0.0
@@ -37,6 +43,11 @@ class CornerData:
     lap_exit_speeds: List[float] = field(default_factory=list)
     lap_brake_points: List[float] = field(default_factory=list)
     coaching_note: str = ""
+
+    @property
+    def label(self) -> str:
+        """Human-readable corner label: named corner if available, else 'T<n>'."""
+        return self.corner_name if self.corner_name else f"T{self.corner_num}"
 
     @property
     def best_time(self) -> float:
@@ -161,7 +172,7 @@ class CornerAnalyzer:
     def __init__(self):
         self._detector = CornerDetector()
 
-    def analyze(self, data: TelemetryData) -> CornerAnalysisReport:
+    def analyze(self, data: TelemetryData, track_name: str = "") -> CornerAnalysisReport:
         report = CornerAnalysisReport()
 
         if data.num_laps < 1:
@@ -175,13 +186,16 @@ class CornerAnalyzer:
             return report
 
         # Build CornerData for each detected corner
+        _track = track_name or data.track_name
         corners = []
         for i, (brake_pct, apex_pct, exit_pct) in enumerate(corner_zones):
+            named = resolve_corner_name(_track, apex_pct) if _track else ""
             cd = CornerData(
                 corner_num=i + 1,
                 brake_pct=brake_pct,
                 apex_pct=apex_pct,
                 exit_pct=exit_pct,
+                corner_name=named,
             )
             corners.append(cd)
 
@@ -486,8 +500,9 @@ def format_corner_summary(report: CornerAnalysisReport) -> str:
         entry = f"{np.mean(cd.lap_entry_speeds):.0f}" if cd.lap_entry_speeds else "??"
         apex = f"{np.mean(cd.lap_min_speeds):.0f}" if cd.lap_min_speeds else "??"
         exit_s = f"{np.mean(cd.lap_exit_speeds):.0f}" if cd.lap_exit_speeds else "??"
+        label = cd.label
         lines.append(
-            f"  T{cd.corner_num} ({cd.brake_pct*100:.0f}-{cd.exit_pct*100:.0f}%): "
+            f"  {label} ({cd.brake_pct*100:.0f}-{cd.exit_pct*100:.0f}%): "
             f"entry={entry}km/h, apex={apex}km/h, exit={exit_s}km/h, "
             f"time={cd.time_in_corner_s:.3f}s, delta=+{cd.time_delta:.3f}s, "
             f"peak_lat_G={cd.lat_g_peak:.1f}, consistency={cd.consistency_pct:.0f}%"
@@ -513,6 +528,6 @@ def format_corner_summary(report: CornerAnalysisReport) -> str:
         if issues:
             lines.append(f"    Issues: {', '.join(issues)}")
     worst = report.corners[report.worst_corner]
-    lines.append(f"  Worst corner: T{worst.corner_num} (+{worst.time_delta:.3f}s)")
+    lines.append(f"  Worst corner: {worst.label} (+{worst.time_delta:.3f}s)")
     lines.append(f"  Total time lost in corners: +{report.total_time_lost:.3f}s")
     return "\n".join(lines) + "\n"

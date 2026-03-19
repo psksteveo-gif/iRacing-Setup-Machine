@@ -58,8 +58,8 @@ from core.corner_analysis     import CornerAnalyzer, CornerAnalysisReport, LapDe
 from core.consistency_score   import compute_consistency, ConsistencyBreakdown
 from core.tire_wear_prediction import predict_tire_wear, TireWearPrediction
 from core.track_zones         import classify_zones
-from core.setup_parser        import (SetupParser, SetupExporter, SetupDiffer, ParsedSetup,
-                                       create_demo_setup, parsed_setup_from_ibt)
+from core.setup_parser        import (SetupParser, SetupExporter, SetupDiffer, StoWriter,
+                                       ParsedSetup, create_demo_setup, parsed_setup_from_ibt)
 from core.ai_advisor          import (get_ai_recommendations_sync, get_ai_recommendations_stream,
                                        ask_setup_question_stream, generate_session_note_stream,
                                        generate_tech_legal_setup_stream,
@@ -67,7 +67,7 @@ from core.ai_advisor          import (get_ai_recommendations_sync, get_ai_recomm
                                        _MODEL_HAIKU, _MODEL_SONNET)
 from core.tech_inspector      import (validate_setup, clamp_to_legal, tech_fail_reasons,
                                       get_bounds, bounds_summary_for_prompt)
-from core.live_telemetry      import LiveTelemetryMonitor, LiveSample
+from core.live_telemetry      import LiveTelemetryMonitor, LiveSample, FuelTracker
 from core.reference_lap       import compute_reference_delta
 from data.templates.track_templates import get_setup_template, get_track_info, list_tracks
 from core.lap_overlay         import extract_lap_trace, compare_laps
@@ -92,6 +92,7 @@ from core.setup_recommend     import (find_sto_files, score_sto_matches, copy_ba
 from ui.track_map             import (TrackMapWidget, highlights_from_issues,
                                        highlights_from_corners, highlights_from_sectors,
                                        highlights_from_brakes)
+from ui.obs_overlay           import OBSOverlay
 
 # ── Theme ─────────────────────────────────────────────────────────────────────
 ctk.set_appearance_mode("dark")
@@ -103,15 +104,20 @@ from ui.theme import (DARK, PANEL, CARD, ACCENT, BLUE, TEXT, DIM, GREEN, YELLOW,
 from ui.tab_telemetry import TelemetryTabMixin
 from ui.tab_corners import CornersTabMixin
 from ui.tab_stint import StintTabMixin
+from ui.tab_iracing import IRacingTabMixin
 from core.config import (get_api_key as _get_api_key, set_api_key as _set_api_key,
                           load_cfg, save_cfg)
+from core.race_engineer import DriverProfileManager, RaceEngineer
+from core.telemetry_agent import ask_telemetry_agent
+from core import units
+from core.analysis_engine import set_outlier_factor
 
 MAX_SESSIONS = 20  # LRU eviction when exceeded
 
 # ── Helpers (imported from ui.theme) ──────────────────────────────────────────
 
 # ══════════════════════════════════════════════════════════════════════════════
-class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
+class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title(f"{APP_NAME}  v{VERSION}")
@@ -151,10 +157,17 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self.engine=AnalysisEngine()
         self.history=HistoryTracker()
         self._ai_last_text = ""
+        self._ai_chat_history: list[tuple[str, str]] = []
         self._loading = False
         self._ref_data: TelemetryData | None = None   # external reference IBT
         self._live_monitor: LiveTelemetryMonitor | None = None
         self._live_win = None  # ctk.CTkToplevel for live dashboard
+        self._obs_overlay: OBSOverlay | None = None
+        self._live_fuel_tracker = FuelTracker()
+        self._live_car: str = ""       # car name detected from SDK session info
+        self._live_track: str = ""     # track name detected from SDK session info
+        self._live_last_lap: float = -1.0   # last completed lap time (for Steven coaching)
+        self._steven_coaching_active = False  # rate-limit flag
         self._ml_predictor = LapTimePredictor()
         self._ml_features: list[SessionFeatures] = []
         self._last_opt_result: OptimizationResult | None = None
@@ -162,6 +175,12 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self._batch_queue: list[str] = []
         self._batch_total = 0
         self._file_watcher: FileWatcher | None = None
+        # Race engineer (Steven persona) — unlocks after MIN_SESSIONS_FOR_PERSONA sessions
+        self._profile_mgr = DriverProfileManager()
+        self._driver_profile = self._profile_mgr.load()
+        self._race_engineer: RaceEngineer | None = (
+            RaceEngineer(self._driver_profile) if self._driver_profile.persona_unlocked else None
+        )
         self._build()
         self._bind_shortcuts()
         threading.Thread(target=evict_old_entries, daemon=True).start()
@@ -228,6 +247,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         for t,cmd,bg in [("⚙ Settings",self._settings,"transparent"),
                           ("❓ About",self._about,"transparent"),
                           ("👁 Watch",self._toggle_file_watcher,"transparent"),
+                          ("📺 OBS HUD",self._toggle_obs_overlay,"transparent"),
                           ("🔴 Live",self._toggle_live,CARD),
                           ("📤 Share",self._share_export,CARD),
                           ("Load Demo",self._load_demo,CARD),
@@ -316,7 +336,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self.tv.pack(fill='both',expand=True,padx=6,pady=6)
         tabs=["Dashboard","Telemetry","Issues","Driver","Sectors","Corners",
               "Stint & Tires","Lap Times","Brake Trace","Strategy","Trends",
-              "Impact","Setup Files","AI Advisor","Templates","History","Compare"]
+              "Impact","Setup Files","AI Advisor","Agent","Templates","History","Compare","iRacing"]
         for t in tabs: self.tv.add(t)
         self.tv.configure(command=self._on_tab_change)
         # Lazy tab loading: only build Dashboard + Telemetry on startup.
@@ -330,8 +350,9 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             "Brake Trace": self._t_brake_trace, "Strategy": self._t_strategy,
             "Trends": self._t_trends, "Impact": self._t_impact,
             "Setup Files": self._t_setup, "AI Advisor": self._t_ai,
+            "Agent": self._t_agent,
             "Templates": self._t_templates, "History": self._t_history,
-            "Compare": self._t_compare,
+            "Compare": self._t_compare, "iRacing": self._t_iracing,
         }
         # Build the two most-used tabs immediately
         for name in ("Dashboard", "Telemetry"):
@@ -343,6 +364,27 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
     # ══════════════════════════════════════════════════════════════════════════
     def _t_dashboard(self):
         tab=self.tv.tab("Dashboard"); tab.configure(fg_color=DARK)
+        # ── First-run onboarding banner ───────────────────────────────
+        self._onboarding_banner = None
+        if not self.cfg.get('onboarding_dismissed', False):
+            self._onboarding_banner = ctk.CTkFrame(tab, fg_color='#0d3320', corner_radius=8,
+                                                    border_width=1, border_color='#2ecc71')
+            self._onboarding_banner.pack(fill='x', padx=12, pady=(10, 0))
+            row = ctk.CTkFrame(self._onboarding_banner, fg_color='transparent')
+            row.pack(fill='x', padx=12, pady=8)
+            lbl(row,
+                "Welcome!  Load an IBT telemetry file (Ctrl+O) or try the Demo (Ctrl+D) to get "
+                "started.  Add your Claude API key in Settings (⚙) for AI-powered setup advice.",
+                12, color='#5dca8a', wraplength=750).pack(side='left', fill='x', expand=True)
+            def _dismiss_onboarding():
+                if self._onboarding_banner:
+                    self._onboarding_banner.pack_forget()
+                    self._onboarding_banner = None
+                self.cfg['onboarding_dismissed'] = True
+                save_cfg(self.cfg)
+            ctk.CTkButton(row, text='✕', width=28, height=28,
+                          fg_color='transparent', text_color=DIM, hover_color=PANEL,
+                          command=_dismiss_onboarding).pack(side='right', padx=(6, 0))
         self._dash_ph=lbl(tab,"Load an IBT file or 'Load Demo' to start.",14,color=DIM); self._dash_ph.pack(expand=True)
         self._dash_sc=ctk.CTkScrollableFrame(tab,fg_color="transparent")
         r1=ctk.CTkFrame(self._dash_sc,fg_color="transparent"); r1.pack(fill='x',padx=10,pady=(8,4))
@@ -360,6 +402,9 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         if d is None or r is None:
             return
         self._dash_ph.pack_forget(); self._dash_sc.pack(fill='both',expand=True)
+        if getattr(self, '_onboarding_banner', None):
+            self._onboarding_banner.pack_forget()
+            self._onboarding_banner = None
         for w in self._di.winfo_children(): w.destroy()
         car_class = classify_car(d.car_name)
         car_row = ctk.CTkFrame(self._di, fg_color="transparent"); car_row.pack(fill='x', padx=12, pady=(10,0))
@@ -370,17 +415,52 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 fg_color=PURPLE, text_color="white", corner_radius=4,
                 width=0, height=20, padx=6)
             cls_badge.pack(side='left', padx=(8,0), pady=2)
-        lbl(self._di, d.track_name, 12, color=DIM).pack(anchor='w', padx=12)
-        # Session metadata
+        # Track subtitle: city + country + turns
+        track_sub = d.track_name
         si = d.session_info
+        track_extras = []
+        if si.get('track_city') and si.get('track_country'):
+            track_extras.append(f"{si['track_city']}, {si['track_country']}")
+        elif si.get('track_city'):
+            track_extras.append(si['track_city'])
+        if si.get('track_num_turns'): track_extras.append(f"{si['track_num_turns']} turns")
+        if si.get('track_length_km'): track_extras.append(f"{si['track_length_km']:.3f} km")
+        if si.get('pit_speed_limit'): track_extras.append(f"Pit limit: {si['pit_speed_limit']:.0f} km/h")
+        track_line = track_sub + (f"  —  {' • '.join(track_extras)}" if track_extras else "")
+        lbl(self._di, track_line, 12, color=DIM).pack(anchor='w', padx=12)
+        # Session metadata
         meta_parts = []
-        if si.get('driver_name'): meta_parts.append(si['driver_name'])
+        if si.get('driver_name'):
+            driver_str = si['driver_name']
+            if si.get('irating'): driver_str += f"  iR {si['irating']:,}"
+            if si.get('license_string'): driver_str += f"  {si['license_string']}"
+            if si.get('car_number'): driver_str += f"  #{si['car_number']}"
+            meta_parts.append(driver_str)
         if si.get('session_type'): meta_parts.append(si['session_type'])
-        if si.get('track_length_km'): meta_parts.append(f"{si['track_length_km']:.2f} km")
+        if si.get('event_type') and si.get('event_type') != si.get('session_type'):
+            meta_parts.append(si['event_type'])
         if si.get('weather_type') or si.get('skies'):
             meta_parts.append(si.get('skies', si.get('weather_type', '')))
         if meta_parts:
             lbl(self._di, '  •  '.join(meta_parts), 12, color=DIM).pack(anchor='w', padx=12)
+        # Field ranking from ResultsPositions
+        results = si.get('results_positions', [])
+        if results:
+            # Find player's entry (lowest position = winner)
+            player_result = next(
+                (r for r in results if r.get('car_idx') == 0), None
+            ) or (results[0] if results else None)
+            if player_result:
+                pos = player_result.get('position', 0)
+                total = len(results)
+                ft = player_result.get('fastest_time', 0)
+                rpos_col = GREEN if pos == 1 else YELLOW if pos <= 3 else TEXT
+                rpos_str = f"P{pos}/{total}"
+                if ft > 0: rpos_str += f"  —  Best {format_laptime(ft)}"
+                rpos_f = ctk.CTkFrame(self._di, fg_color="#1e2845", corner_radius=6)
+                rpos_f.pack(fill='x', padx=12, pady=(2, 4))
+                lbl(rpos_f, f"Field: {rpos_str}", 12, bold=True, color=rpos_col).pack(
+                    side='left', padx=10, pady=5)
         sr=ctk.CTkFrame(self._di,fg_color="transparent"); sr.pack(fill='x',padx=12,pady=6)
         stat_blk(sr,"Best Lap",format_laptime(r.best_lap),GREEN,tooltip="Fastest valid lap time in session")
         stat_blk(sr,"Avg Lap",format_laptime(r.avg_lap),tooltip="Average of all valid (non-outlier) laps")
@@ -393,8 +473,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                      tooltip=f"Composite consistency rating: lap times ({cs.lap_time_score:.0f}), sectors ({cs.sector_score:.0f}), corners ({cs.corner_score:.0f}), brakes ({cs.brake_point_score:.0f}), speed ({cs.speed_score:.0f})")
         at=d.session_info.get('air_temp_c')
         tt=d.session_info.get('track_temp_c')
-        if at: stat_blk(sr,"Air Temp",f"{at:.1f}°C / {at*9/5+32:.1f}°F",tooltip="Ambient air temperature")
-        if tt: stat_blk(sr,"Track Temp",f"{tt:.1f}°C / {tt*9/5+32:.1f}°F",YELLOW,tooltip="Track surface temperature")
+        if at: stat_blk(sr,"Air Temp",units.fmt_temp(at),tooltip="Ambient air temperature")
+        if tt: stat_blk(sr,"Track Temp",units.fmt_temp(tt),YELLOW,tooltip="Track surface temperature")
         ws=d.session_info.get('wind_speed_ms')
         if ws: stat_blk(sr,"Wind",f"{ws:.1f} m/s",tooltip="Wind speed")
         lbl(self._di,f"🔴 {r.critical_count} Critical  🟡 {r.warning_count} Warning  🔵 {r.info_count} Info",12,color=DIM).pack(anchor='w',padx=12,pady=(0,2))
@@ -407,6 +487,58 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         if st and st.coast_time_pct>0: stat_blk(sr2,"Coast Time",f"{st.coast_time_pct:.1f}%",YELLOW,tooltip="% of lap with no throttle or brake (wasted time)")
         if st and st.full_throttle_pct>0: stat_blk(sr2,"Full Throt.",f"{st.full_throttle_pct:.0f}%",GREEN,tooltip="% of lap at 100% throttle")
         if r.outlier_count>0: stat_blk(sr2,"Outliers",f"{r.outlier_count} laps",YELLOW,tooltip="Laps excluded from averages (pit laps, incidents, etc.)")
+        # ── Live-channel extra stats ──────────────────────────────────────────
+        sr3=ctk.CTkFrame(self._di,fg_color="transparent"); sr3.pack(fill='x',padx=12,pady=(0,6))
+        inc_ch=d.get_channel('PlayerIncidents')
+        if inc_ch is not None and len(inc_ch)>0:
+            total_inc=int(inc_ch[-1])
+            inc_col=GREEN if total_inc==0 else YELLOW if total_inc<=4 else RED
+            stat_blk(sr3,"Incidents",str(total_inc),inc_col,tooltip="Total incident points in session (from IBT PlayerIncidents channel)")
+        wet_ch=d.get_channel('TrackWetness')
+        if wet_ch is not None and len(wet_ch)>0:
+            _wetness_labels={0:"Dry",1:"Damp",2:"Wet",3:"Wet",4:"Wet",5:"Flooded",6:"Flooded"}
+            wval=int(wet_ch[-1])
+            wet_col=GREEN if wval==0 else YELLOW if wval==1 else BLUE
+            stat_blk(sr3,"Track",_wetness_labels.get(wval,"Wet"),wet_col,tooltip=f"Track wetness level {wval}/6 from IBT")
+        oil_ch=d.get_channel('OilTemp')
+        if oil_ch is not None and len(oil_ch)>0:
+            oil_avg=float(np.mean(oil_ch))
+            oil_col=GREEN if oil_avg<115 else YELLOW if oil_avg<125 else RED
+            stat_blk(sr3,"Oil Temp",units.fmt_temp(oil_avg),oil_col,tooltip="Average oil temperature during session")
+        water_ch=d.get_channel('WaterTemp')
+        if water_ch is not None and len(water_ch)>0:
+            water_avg=float(np.mean(water_ch))
+            water_col=GREEN if water_avg<100 else YELLOW if water_avg<110 else RED
+            stat_blk(sr3,"Water Temp",units.fmt_temp(water_avg),water_col,tooltip="Average water/coolant temperature")
+        wdir_ch=d.get_channel('WindDir'); wvel_ch=d.get_channel('WindVel')
+        if wvel_ch is not None and len(wvel_ch)>0:
+            wvel=float(np.mean(wvel_ch))
+            wdir=float(np.mean(wdir_ch)) if wdir_ch is not None else None
+            wind_txt=f"{wvel:.1f} m/s"
+            if wdir is not None:
+                dirs=["N","NE","E","SE","S","SW","W","NW"]
+                wind_txt+=f" {dirs[int((wdir*180/3.14159+22.5)//45)%8]}"
+            stat_blk(sr3,"Wind (IBT)",wind_txt,tooltip="Wind speed and direction from IBT channels")
+        # Per-lap incident delta
+        inc_ch2=d.get_channel('PlayerIncidents')
+        if inc_ch2 is not None and d.num_laps >= 1 and len(d.lap_boundaries) > d.num_laps:
+            inc_laps=[]
+            for li in range(d.num_laps):
+                s=d.lap_boundaries[li]; e=d.lap_boundaries[li+1]
+                lap_inc=inc_ch2[s:e]
+                if len(lap_inc)>0:
+                    delta=int(round(float(lap_inc[-1])-float(lap_inc[0])))
+                    inc_laps.append(delta)
+                else:
+                    inc_laps.append(0)
+            if any(x>0 for x in inc_laps):
+                inc_f=ctk.CTkFrame(self._di,fg_color="#1e2845",corner_radius=6)
+                inc_f.pack(fill='x',padx=12,pady=(0,4))
+                lbl(inc_f,"Incidents per lap:",12,bold=True,color=YELLOW).pack(anchor='w',padx=10,pady=(6,2))
+                inc_row=ctk.CTkFrame(inc_f,fg_color="transparent"); inc_row.pack(fill='x',padx=10,pady=(0,6))
+                for li,delta in enumerate(inc_laps):
+                    col=RED if delta>=4 else YELLOW if delta>0 else DIM
+                    lbl(inc_row,f"L{li+1}:{delta}x",11,bold=(delta>0),color=col).pack(side='left',padx=3)
         self._draw_balance(r.balance_score)
         if r.tire_summary: self._draw_tires(r.tire_summary)
         self._draw_balance_timeline(r)
@@ -535,7 +667,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
 
     def _draw_tires(self,ts):
         c=self._dth; c.clear(); ax=c.fig.add_subplot(111,facecolor=PANEL)
-        ax.set_title("Tire Temps (°C / °F)",color=TEXT,fontsize=13); ax.set_xlim(0,4); ax.set_ylim(0,3); ax.axis('off')
+        ax.set_title(f"Tire Temps ({units.temp_label()})",color=TEXT,fontsize=13); ax.set_xlim(0,4); ax.set_ylim(0,3); ax.axis('off')
         pos={'LF':(0.5,2.2),'RF':(2.5,2.2),'LR':(0.5,0.2),'RR':(2.5,0.2)}
         for corner,(cx,cy) in pos.items():
             t=ts.get(corner,{})
@@ -547,8 +679,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 ax.add_patch(rect)
                 ax.text(cx+i*0.28-0.28,cy+0.25,f"{tv:.0f}",ha='center',va='center',fontsize=9,color='white',fontweight='bold')
             ax.text(cx,cy+0.72,corner,ha='center',fontsize=13,color=TEXT,fontweight='bold')
-            avg_c=t.get('avg',0); avg_f=avg_c*9/5+32
-            ax.text(cx,cy-0.18,f"avg {avg_c:.1f}°C / {avg_f:.1f}°F",ha='center',fontsize=10,color=DIM)
+            avg_c=t.get('avg',0)
+            ax.text(cx,cy-0.18,f"avg {units.fmt_temp(avg_c)}",ha='center',fontsize=10,color=DIM)
         c.fig.tight_layout(pad=0.3); c.draw()
 
     def _compute_consistency_score(self) -> ConsistencyBreakdown | None:
@@ -612,9 +744,9 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         for f in ["All","Critical","Warning","Info"]:
             ctk.CTkButton(fbar,text=f,width=75,height=28,fg_color=CARD,
                 hover_color="#1a5a8a",command=lambda v=f:self._pop_issues(v)).pack(side='left',padx=3)
-        # Track map — shows which zones of the track have issues
+        # Track map — shows which zones of the track have issues (hidden until data loads)
         self._issues_map = TrackMapWidget(tab, figsize=(10, 2.8))
-        self._issues_map.pack(fill='x', padx=10, pady=(0, 4))
+        # Not packed yet — shown only when track data is available
         self._is=ctk.CTkScrollableFrame(tab,fg_color="transparent")
         self._is.pack(fill='both',expand=True,padx=10,pady=(4,8))
         lbl(self._is,"Load a session to see diagnostic issues.",14,color=DIM).pack(pady=40)
@@ -630,6 +762,11 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         hl = highlights_from_issues(issues, self.cur_data)
         self._issues_map.update(self.cur_data, highlights=hl,
                                 title="Track Map — highlighted zones correspond to issue categories")
+        # Show the map only when a racing line was successfully reconstructed
+        if self._issues_map._rl is not None:
+            self._issues_map.pack(fill='x', padx=10, pady=(0, 4), before=self._is)
+        else:
+            self._issues_map.pack_forget()
 
     # ══════════════════════════════════════════════════════════════════════════
     # DRIVER ANALYSIS
@@ -652,15 +789,15 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                                 ("Throttle",r.throttle_smoothness,GREEN),("Steering",r.steering_smoothness,YELLOW),
                                 ("Trail Brake",r.trail_braking_score,PURPLE),("Stability",r.oversteer_management,RED)]:
             sc=card_frame(row); sc.pack(side='left',fill='both',expand=True,padx=3)
-            lbl(sc,name,11,color=DIM).pack(pady=(8,0))
-            lbl(sc,f"{score:.0f}",22,bold=True,color=col).pack()
-            lbl(sc,"/100",11,color=DIM).pack()
-            pb=ctk.CTkProgressBar(sc,width=70,height=5,progress_color=col,fg_color="#1e2845")
+            lbl(sc,name,13,color=DIM).pack(pady=(8,0))
+            lbl(sc,f"{score:.0f}",26,bold=True,color=col).pack()
+            lbl(sc,"/100",12,color=DIM).pack()
+            pb=ctk.CTkProgressBar(sc,width=70,height=6,progress_color=col,fg_color="#1e2845")
             pb.set(score/100); pb.pack(pady=(2,8))
         if r.style_profile:
             pf=ctk.CTkFrame(f,fg_color=PANEL,corner_radius=8); pf.pack(fill='x',pady=4)
-            lbl(pf,f"🏁 Profile: {r.style_profile}",12,bold=True,color=BLUE).pack(anchor='w',padx=12,pady=(8,2))
-            if r.balance_verdict: lbl(pf,f"⚖ Balance Verdict: {r.balance_verdict}",11,color=YELLOW).pack(anchor='w',padx=12,pady=(0,8))
+            lbl(pf,f"🏁 Profile: {r.style_profile}",14,bold=True,color=BLUE).pack(anchor='w',padx=12,pady=(8,2))
+            if r.balance_verdict: lbl(pf,f"⚖ Balance Verdict: {r.balance_verdict}",13,color=YELLOW).pack(anchor='w',padx=12,pady=(0,8))
         sec_lbl(f,"📊 Key Metrics")
         mf=ctk.CTkFrame(f,fg_color=PANEL,corner_radius=8); mf.pack(fill='x',pady=2)
         for lab,val in [("Brake Point Consistency",f"{r.brake_point_std*100:.3f}% std"),
@@ -669,18 +806,18 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                         ("Trail Braking Usage",f"{r.trail_braking_pct:.1f}% of zones"),
                         ("Oversteer Events",str(r.oversteer_events)),
                         ("Understeer Events",str(r.understeer_events))]:
-            rw=ctk.CTkFrame(mf,fg_color="transparent"); rw.pack(fill='x',padx=12,pady=3)
-            lbl(rw,lab,11,color=DIM).pack(side='left'); lbl(rw,val,11,bold=True).pack(side='right')
+            rw=ctk.CTkFrame(mf,fg_color="transparent"); rw.pack(fill='x',padx=12,pady=4)
+            lbl(rw,lab,13,color=DIM).pack(side='left'); lbl(rw,val,13,bold=True).pack(side='right')
         if r.findings:
             sec_lbl(f,"🔍 Findings")
             for fn in r.findings:
                 ff=ctk.CTkFrame(f,fg_color="#1e2845",corner_radius=6); ff.pack(fill='x',pady=2)
-                lbl(ff,f"•  {fn}",11,color=TEXT,wraplength=780,justify='left',anchor='w').pack(padx=12,pady=6)
+                lbl(ff,f"•  {fn}",13,color=TEXT,wraplength=780,justify='left',anchor='w').pack(padx=12,pady=6)
         if r.recommendations:
             sec_lbl(f,"💡 Technique Tips")
             for rec in r.recommendations:
                 rf=ctk.CTkFrame(f,fg_color="#0f2a1a",corner_radius=6); rf.pack(fill='x',pady=2)
-                lbl(rf,f"→  {rec}",11,color=GREEN,wraplength=780,justify='left',anchor='w').pack(padx=12,pady=6)
+                lbl(rf,f"→  {rec}",13,color=GREEN,wraplength=780,justify='left',anchor='w').pack(padx=12,pady=6)
 
     # ══════════════════════════════════════════════════════════════════════════
     # SECTORS
@@ -692,9 +829,10 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         ctrl=ctk.CTkFrame(tab,fg_color=PANEL,height=46,corner_radius=8)
         ctrl.pack(fill='x',padx=10,pady=(8,4)); ctrl.pack_propagate(False)
         lbl(ctrl,"Sectors:",color=DIM).pack(side='left',padx=10)
-        self._sn=ctk.StringVar(value="3")
-        ctk.CTkOptionMenu(ctrl,values=["3","4","5","6"],variable=self._sn,
-            fg_color=CARD,button_color=ACCENT,width=70,command=lambda _:self._u_sectors()).pack(side='left',padx=8)
+        self._sn=ctk.StringVar(value="iRacing")
+        ctk.CTkOptionMenu(ctrl,values=["iRacing","3","4","5","6"],variable=self._sn,
+            fg_color=CARD,button_color=ACCENT,width=90,command=lambda _:self._u_sectors()).pack(side='left',padx=8)
+        self._sec_src_lbl=lbl(ctrl,"",11,color=DIM); self._sec_src_lbl.pack(side='left',padx=4)
         self._secsc=ctk.CTkScrollableFrame(tab,fg_color="transparent")
         self._secsc.pack(fill='both',expand=True,padx=10,pady=(4,8))
         self._sec_map=TrackMapWidget(self._secsc,figsize=(10,2.8))
@@ -705,8 +843,17 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
 
     def _u_sectors(self):
         if not self.cur_data: return
-        n=int(self._sn.get())
-        self.cur_sec=SectorAnalyzer().analyze(self.cur_data,n)
+        choice=self._sn.get()
+        iracing_splits=self.cur_data.session_info.get('iracing_sector_splits')
+        if choice=="iRacing" and iracing_splits:
+            self.cur_sec=SectorAnalyzer().analyze(self.cur_data,
+                                                   num_sectors=len(iracing_splits),
+                                                   sector_splits=iracing_splits)
+            self._sec_src_lbl.configure(text=f"Official iRacing splits ({len(iracing_splits)} sectors)")
+        else:
+            n=int(choice) if choice.isdigit() else 3
+            self.cur_sec=SectorAnalyzer().analyze(self.cur_data,n)
+            self._sec_src_lbl.configure(text="Equal splits" if not iracing_splits else "")
         self._draw_sectors()
 
     def _draw_sectors(self):
@@ -765,7 +912,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         tb=ctk.CTkFrame(tab,fg_color=PANEL,height=50,corner_radius=8)
         tb.pack(fill='x',padx=10,pady=(8,4)); tb.pack_propagate(False)
         for t,cmd,bg in [("📂 Load Setup (.htm)",self._load_setup,ACCENT),
-                          ("💾 Export Setup",self._export_setup,CARD),
+                          ("💾 Export .htm",self._export_setup,CARD),
+                          ("💾 Export .sto",self._export_sto,CARD),
                           ("🏁 Recommend to iRacing",self._recommend_to_iracing,CARD),
                           ("🔄 Demo Setup",self._demo_setup,CARD),
                           ("📊 Compare Setups",self._cmp_setups,CARD)]:
@@ -803,6 +951,32 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         except Exception as e:
             logger.exception("Failed to export setup")
             messagebox.showerror("Error","Failed to export setup file.")
+
+    def _export_sto(self):
+        """Export the current setup as a native iRacing .sto file."""
+        if not self.cur_setup:
+            messagebox.showwarning("No Setup", "Load a setup first."); return
+        writer = StoWriter()
+        default_path = writer.default_sto_path(self.cur_setup)
+        path = filedialog.asksaveasfilename(
+            title="Export iRacing .sto Setup",
+            defaultextension=".sto",
+            filetypes=[("iRacing Setup", "*.sto"), ("All Files", "*.*")],
+            initialdir=os.path.dirname(default_path),
+            initialfile=os.path.basename(default_path),
+        )
+        if not path:
+            return
+        try:
+            writer.write(self.cur_setup, path)
+            messagebox.showinfo(
+                "Exported",
+                f"Setup saved as .sto:\n{path}\n\n"
+                "Place this file in your iRacing setups folder to use it in-game.",
+            )
+        except Exception:
+            logger.exception("Failed to export .sto")
+            messagebox.showerror("Error", "Failed to write .sto file.")
 
     def _find_iracing_setups_dir(self) -> str | None:
         """Locate the iRacing setups directory."""
@@ -1165,12 +1339,54 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             self._u_history()
 
     def _render_diff(self,a:ParsedSetup,b:ParsedSetup):
+        import re as _re
         f=self._sdf
         for w in f.winfo_children(): w.destroy()
         lbl(f,"Setup Diff",12,bold=True,color=ACCENT).pack(pady=(10,6))
         changes=SetupDiffer().diff(a,b)
         if not changes: lbl(f,"Setups are identical.",color=DIM).pack(pady=10); return
         lbl(f,f"{len(changes)} differences",12,color=DIM).pack(anchor='w',padx=8)
+
+        # ── Visual diff chart for numeric parameters ──────────────────────────
+        def _to_num(s):
+            try: return float(_re.search(r'[-+]?\d*\.?\d+', str(s)).group())
+            except Exception: return None
+
+        numeric = [(c['param'], _to_num(c['before']), _to_num(c['after']))
+                   for c in changes
+                   if _to_num(c['before']) is not None and _to_num(c['after']) is not None]
+        if numeric:
+            # Limit to 20 most significant (largest relative change)
+            def _rel(t):
+                a_v, b_v = t[1], t[2]
+                denom = max(abs(a_v), abs(b_v), 0.001)
+                return abs(b_v - a_v) / denom
+            numeric = sorted(numeric, key=_rel, reverse=True)[:20]
+            n = len(numeric)
+            fig_h = max(2.0, 0.32 * n + 0.6)
+            ch = EmbedChart(f, figsize=(9, fig_h)); ch.pack(fill='x', padx=4, pady=(4, 0))
+            ax = ch.fig.add_subplot(111, facecolor='#0d1b2a')
+            ax.tick_params(colors=DIM, labelsize=8)
+            for spine in ax.spines.values(): spine.set_color('#2a3050')
+            ax.grid(True, axis='x', alpha=0.08, color='#3a4a6a')
+            labels = [t[0][:28] for t in numeric]
+            y = list(range(n))
+            a_vals = [t[1] for t in numeric]
+            b_vals = [t[2] for t in numeric]
+            # Horizontal lollipop: line A→B + marker on each end
+            for i, (av, bv) in enumerate(zip(a_vals, b_vals)):
+                ax.plot([av, bv], [i, i], color='#4a5a7a', lw=1.5, zorder=2)
+            ax.scatter(a_vals, y, color=RED,   s=40, zorder=3, label='A (before)')
+            ax.scatter(b_vals, y, color=GREEN, s=40, zorder=3, label='B (after)')
+            ax.set_yticks(y); ax.set_yticklabels(labels, fontsize=7)
+            ax.set_xlabel("Value", color=DIM, fontsize=8)
+            ax.set_title("Numeric Changes (A → B)", color=TEXT, fontsize=10, pad=4)
+            ax.legend(fontsize=7, facecolor='#1e2845', edgecolor='#2a3050',
+                      labelcolor=TEXT, loc='lower right')
+            ax.set_facecolor('#0d1b2a'); ch.fig.patch.set_facecolor('#0d1b2a')
+            ch.fig.tight_layout(pad=0.5); ch.draw()
+
+        # ── Text list for all changes ─────────────────────────────────────────
         for ch in changes:
             rw=ctk.CTkFrame(f,fg_color="#1e2845",corner_radius=5); rw.pack(fill='x',pady=2,padx=4)
             lbl(rw,ch['param'],11,bold=True).pack(anchor='w',padx=8,pady=(5,0))
@@ -1185,10 +1401,17 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         hdr=ctk.CTkFrame(tab,fg_color=PANEL,height=50,corner_radius=8)
         hdr.pack(fill='x',padx=10,pady=(8,4)); hdr.pack_propagate(False)
         lbl(hdr,"🤖  Claude AI Setup Recommendations",13,bold=True).pack(side='left',padx=14)
+        # Steven persona badge (hidden until persona unlocks)
+        self._alex_badge = lbl(hdr,"🏁 Steven Mode",11,color="#2ecc71")
+        if self._race_engineer is not None:
+            self._alex_badge.pack(side='left',padx=(4,0))
         self._ais=lbl(hdr,"",11,color=DIM); self._ais.pack(side='right',padx=8)
         self._aib=ctk.CTkButton(hdr,text="Get Recommendations",width=170,height=32,
             fg_color=ACCENT,hover_color="#c0392b",command=self._get_ai)
         self._aib.pack(side='right',padx=8)
+        self._ai_evo_btn = ctk.CTkButton(hdr, text="📈 Evolution", width=110, height=32,
+            fg_color=CARD, hover_color=ACCENT, command=self._get_evolution_summary)
+        self._ai_evo_btn.pack(side='right', padx=4)
         # ── Quick setup question bar ──────────────────────────────────────────
         qf=ctk.CTkFrame(tab,fg_color=PANEL,height=40,corner_radius=8)
         qf.pack(fill='x',padx=10,pady=(0,4)); qf.pack_propagate(False)
@@ -1201,12 +1424,9 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self._ai_qb=ctk.CTkButton(qf,text="Ask",width=60,height=28,
             fg_color=BLUE,hover_color="#1a5a8a",command=self._ask_setup_question)
         self._ai_qb.pack(side='right',padx=(0,8))
-        # ── Answer box (quick question replies) ──────────────────────────────
-        self._ai_ans=ctk.CTkTextbox(tab,fg_color=CARD,text_color=TEXT,
-            font=ctk.CTkFont(family="Helvetica",size=14),wrap='word',height=200)
-        self._ai_ans.pack(fill='x',padx=10,pady=(0,4))
-        self._ai_ans.insert('1.0',"Type a question above and press Ask or Enter.")
-        self._ai_ans.configure(state='disabled')
+        # ── Conversation chat log ─────────────────────────────────────────────
+        self._ai_chat_sc = ctk.CTkScrollableFrame(tab, fg_color=CARD, corner_radius=8, height=220)
+        self._ai_chat_sc.pack(fill='x', padx=10, pady=(0, 4))
         # ── Main recommendations box ──────────────────────────────────────────
         self._ait=ctk.CTkTextbox(tab,fg_color=PANEL,text_color=TEXT,
             font=ctk.CTkFont(family="Helvetica",size=15),wrap='word')
@@ -1249,7 +1469,12 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 return
             setup_flat = self.cur_setup.flat if self.cur_setup else None
             try:
-                for chunk in get_ai_recommendations_stream(
+                stream_fn = (
+                    self._race_engineer.get_recommendations_stream
+                    if self._race_engineer is not None
+                    else get_ai_recommendations_stream
+                )
+                for chunk in stream_fn(
                         self.cur_rpt, self.cur_data.car_name, self.cur_data.track_name, key,
                         setup_data=setup_flat,
                         sector_report=self.cur_sec,
@@ -1305,6 +1530,54 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self._ait.configure(state='disabled')
         self._ais.configure(text="⚠ Incomplete")
 
+    def _get_evolution_summary(self):
+        """Stream a session-vs-history evolution debrief from Steven."""
+        if not self.cur_data or not self.cur_rpt:
+            messagebox.showwarning("No Session", "Load a session first."); return
+        if self._race_engineer is None:
+            messagebox.showinfo("Steven not ready",
+                f"Steven needs {3} sessions analyzed before generating evolution reports.\n"
+                f"Current: {self._driver_profile.total_sessions_analyzed} session(s)."); return
+        key = _get_api_key().strip()
+        if not key:
+            messagebox.showwarning("API Key Needed", "Set your key in Settings.")
+            self._settings(); return
+
+        self._aib.configure(state='disabled')
+        self._ai_evo_btn.configure(state='disabled', text="Analyzing…")
+        self._ais.configure(text="⏳ Steven reviewing your progress…")
+        self._ait.configure(state='normal'); self._ait.delete('1.0', 'end')
+        self._ai_last_text = ""
+        cancel = threading.Event()
+        self._ai_cancel = cancel
+
+        def worker():
+            try:
+                for chunk in self._race_engineer.generate_evolution_summary(
+                        self.cur_data.car_name or "",
+                        self.cur_data.track_name or "",
+                        key):
+                    if cancel.is_set(): return
+                    self.after(0, lambda c=chunk: self._on_ai_chunk(c))
+            except Exception as ex:
+                logger.warning("Evolution summary failed: %s", ex)
+            if not cancel.is_set():
+                self.after(0, lambda: (
+                    self._aib.configure(state='normal'),
+                    self._ai_evo_btn.configure(state='normal', text="📈 Evolution"),
+                    self._ais.configure(text="✅ Done"),
+                ))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _update_alex_badge(self):
+        """Show the Alex persona badge in the AI tab header when persona unlocks."""
+        if hasattr(self, '_alex_badge'):
+            try:
+                self._alex_badge.pack(side='left', padx=(4, 0))
+            except Exception:
+                pass
+
     def _ask_setup_question(self):
         """Stream an answer to the quick natural-language setup question."""
         question = self._ai_q.get().strip()
@@ -1318,16 +1591,18 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             messagebox.showwarning("API Key Needed", "Set your key in Settings.")
             self._settings(); return
         self._ai_qb.configure(state='disabled', text="…")
-        self._ai_ans.configure(state='normal')
-        self._ai_ans.delete('1.0', 'end')
-        self._ai_ans.configure(state='disabled')
+        self._ai_chat_history.append(('user', question))
+        self._render_chat()
+        self._ai_q.delete(0, 'end')
+        self._ai_q_response = ""
         cancel = threading.Event()
         self._ai_q_cancel = cancel
 
         def worker():
             setup_flat = self.cur_setup.flat if self.cur_setup else None
             try:
-                for chunk in ask_setup_question_stream(
+                if self._race_engineer is not None:
+                    stream_iter = self._race_engineer.ask_question_stream(
                         question,
                         self.cur_rpt,
                         self.cur_data.car_name if self.cur_data else "",
@@ -1335,7 +1610,18 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                         key,
                         setup_data=setup_flat,
                         sector_report=self.cur_sec,
-                        session_info=self.cur_data.session_info if self.cur_data else None):
+                        session_info=self.cur_data.session_info if self.cur_data else None)
+                else:
+                    stream_iter = ask_setup_question_stream(
+                        question,
+                        self.cur_rpt,
+                        self.cur_data.car_name if self.cur_data else "",
+                        self.cur_data.track_name if self.cur_data else "",
+                        key,
+                        setup_data=setup_flat,
+                        sector_report=self.cur_sec,
+                        session_info=self.cur_data.session_info if self.cur_data else None)
+                for chunk in stream_iter:
                     if cancel.is_set():
                         return
                     self.after(0, lambda c=chunk: self._on_q_chunk(c))
@@ -1349,13 +1635,171 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                                     self._ai_qb.configure(state='normal', text="Ask")))
 
     def _on_q_chunk(self, chunk: str):
-        self._ai_ans.configure(state='normal')
-        self._ai_ans.insert('end', chunk)
-        self._ai_ans.see('end')
-        self._ai_ans.configure(state='disabled')
+        self._ai_q_response = getattr(self, '_ai_q_response', '') + chunk
+        # Update the last assistant bubble if one exists, otherwise add placeholder
+        if self._ai_chat_history and self._ai_chat_history[-1][0] == 'assistant':
+            self._ai_chat_history[-1] = ('assistant', self._ai_q_response)
+        else:
+            self._ai_chat_history.append(('assistant', self._ai_q_response))
+        self._render_chat()
 
     def _on_q_done(self):
         self._ai_qb.configure(state='normal', text="Ask")
+        self._ai_q_response = ""
+
+    def _render_chat(self):
+        """Re-render the conversation log in _ai_chat_sc."""
+        for w in self._ai_chat_sc.winfo_children():
+            w.destroy()
+        for role, text in self._ai_chat_history:
+            is_user = (role == 'user')
+            bg = '#1e3a5f' if is_user else '#1e2845'
+            anchor = 'e' if is_user else 'w'
+            outer = ctk.CTkFrame(self._ai_chat_sc, fg_color="transparent")
+            outer.pack(fill='x', pady=2, padx=4)
+            bubble = ctk.CTkFrame(outer, fg_color=bg, corner_radius=8)
+            bubble.pack(anchor=anchor, padx=4)
+            ctk.CTkLabel(bubble, text=text, text_color=TEXT,
+                         font=ctk.CTkFont(family="Helvetica", size=11),
+                         wraplength=700, justify='left',
+                         anchor='w').pack(padx=10, pady=6)
+        try:
+            self._ai_chat_sc._parent_canvas.yview_moveto(1.0)
+        except Exception:
+            pass
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # TELEMETRY AGENT
+    # ══════════════════════════════════════════════════════════════════════════
+    def _t_agent(self):
+        tab = self.tv.tab("Agent"); tab.configure(fg_color=DARK)
+        hdr = ctk.CTkFrame(tab, fg_color=PANEL, height=50, corner_radius=8)
+        hdr.pack(fill='x', padx=10, pady=(8, 4)); hdr.pack_propagate(False)
+        lbl(hdr, "🔬  Telemetry Agent", 13, bold=True).pack(side='left', padx=14)
+        lbl(hdr, "Ask anything about the raw channel data — the agent queries it live",
+            11, color=DIM).pack(side='left', padx=4)
+        self._agent_status = lbl(hdr, "", 11, color=DIM)
+        self._agent_status.pack(side='right', padx=8)
+
+        # Example prompts
+        examples = ctk.CTkFrame(tab, fg_color=CARD, corner_radius=8)
+        examples.pack(fill='x', padx=10, pady=(0, 4))
+        lbl(examples, "Examples:", 10, color=DIM).pack(side='left', padx=(8, 4), pady=4)
+        for ex_text in [
+            "Where am I losing time vs my best lap?",
+            "Compare throttle in T1 between lap 3 and 7",
+            "What's my average brake pressure in the hairpin?",
+            "Show speed trace for the last sector of lap 5",
+        ]:
+            ctk.CTkButton(examples, text=ex_text, height=24, fg_color=PANEL,
+                          hover_color=ACCENT, font=ctk.CTkFont(size=10),
+                          command=lambda q=ex_text: self._agent_set_question(q)
+                          ).pack(side='left', padx=3, pady=4)
+
+        # Chat log
+        self._agent_chat_sc = ctk.CTkScrollableFrame(tab, fg_color=PANEL, corner_radius=8)
+        self._agent_chat_sc.pack(fill='both', expand=True, padx=10, pady=(0, 4))
+        self._agent_chat_history: list[tuple[str, str]] = []
+
+        # Input bar
+        bar = ctk.CTkFrame(tab, fg_color=PANEL, height=42, corner_radius=8)
+        bar.pack(fill='x', padx=10, pady=(0, 8)); bar.pack_propagate(False)
+        self._agent_entry = ctk.CTkEntry(
+            bar, placeholder_text="Ask about the telemetry data…",
+            fg_color=CARD, border_color="#2a3050", height=30)
+        self._agent_entry.pack(side='left', fill='x', expand=True, padx=(8, 6), pady=6)
+        self._agent_entry.bind('<Return>', lambda e: self._agent_ask())
+        self._agent_btn = ctk.CTkButton(
+            bar, text="Ask", width=70, height=30,
+            fg_color=ACCENT, hover_color="#c0392b",
+            command=self._agent_ask)
+        self._agent_btn.pack(side='right', padx=(0, 8))
+
+    def _agent_set_question(self, text: str):
+        if hasattr(self, '_agent_entry'):
+            self._agent_entry.delete(0, 'end')
+            self._agent_entry.insert(0, text)
+
+    def _agent_ask(self):
+        if not hasattr(self, '_agent_entry'):
+            return
+        question = self._agent_entry.get().strip()
+        if not question:
+            return
+        if not self.cur_rpt or not self.cur_data:
+            messagebox.showwarning("No Session", "Load a session first.")
+            return
+        key = _get_api_key().strip()
+        if not key:
+            messagebox.showwarning("API Key Needed", "Set your key in Settings.")
+            self._settings(); return
+
+        self._agent_entry.delete(0, 'end')
+        self._agent_chat_history.append(('user', question))
+        self._agent_render_chat()
+        self._agent_btn.configure(state='disabled', text="…")
+        self._agent_status.configure(text="⏳ Thinking…")
+
+        response_acc = ""
+        cancel = threading.Event()
+        self._agent_cancel = cancel
+
+        def worker():
+            nonlocal response_acc
+            try:
+                for chunk in ask_telemetry_agent(
+                        question, self.cur_data, self.cur_rpt, key,
+                        car_name=self.cur_data.car_name or "",
+                        track_name=self.cur_data.track_name or ""):
+                    if cancel.is_set():
+                        return
+                    response_acc += chunk
+                    self.after(0, lambda c=response_acc: self._agent_on_chunk(c))
+            except Exception as ex:
+                logger.warning("Telemetry agent error: %s", ex)
+                self.after(0, lambda: self._agent_on_chunk(
+                    f"\n⚠ Agent error: {ex}"))
+            if not cancel.is_set():
+                self.after(0, self._agent_on_done)
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(120_000, lambda: (cancel.set(),
+                                     self._agent_btn.configure(state='normal', text="Ask"),
+                                     self._agent_status.configure(text="⚠ Timed out")))
+
+    def _agent_on_chunk(self, full_text: str):
+        if self._agent_chat_history and self._agent_chat_history[-1][0] == 'assistant':
+            self._agent_chat_history[-1] = ('assistant', full_text)
+        else:
+            self._agent_chat_history.append(('assistant', full_text))
+        self._agent_render_chat()
+
+    def _agent_on_done(self):
+        self._agent_btn.configure(state='normal', text="Ask")
+        self._agent_status.configure(text="✅ Done")
+
+    def _agent_render_chat(self):
+        if not hasattr(self, '_agent_chat_sc'):
+            return
+        for w in self._agent_chat_sc.winfo_children():
+            w.destroy()
+        for role, text in self._agent_chat_history:
+            is_user = (role == 'user')
+            bg = '#1e3a5f' if is_user else '#1a2535'
+            anchor = 'e' if is_user else 'w'
+            outer = ctk.CTkFrame(self._agent_chat_sc, fg_color="transparent")
+            outer.pack(fill='x', pady=2, padx=4)
+            bubble = ctk.CTkFrame(outer, fg_color=bg, corner_radius=8)
+            bubble.pack(anchor=anchor, padx=4, fill='x' if not is_user else None)
+            prefix = "You: " if is_user else "🔬 Agent: "
+            ctk.CTkLabel(bubble, text=prefix + text, text_color=TEXT,
+                         font=ctk.CTkFont(family="Helvetica", size=11),
+                         wraplength=860, justify='left',
+                         anchor='w').pack(padx=10, pady=6, fill='x')
+        try:
+            self._agent_chat_sc._parent_canvas.yview_moveto(1.0)
+        except Exception:
+            pass
 
     # ══════════════════════════════════════════════════════════════════════════
     # TEMPLATES
@@ -1449,6 +1893,36 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         _note_lookup: dict[tuple, int] = {}
         for si, (sd, _) in enumerate(self.sessions):
             _note_lookup[(sd.car_name, sd.track_name)] = si
+
+        # Per car/track pace history charts
+        from collections import defaultdict
+        _groups: dict[str, list] = defaultdict(list)
+        for entry in entries[:30]:
+            key = f"{entry.car}@{entry.track}"
+            _groups[key].append(entry)
+        for group_key, group_entries in _groups.items():
+            if len(group_entries) >= 2:
+                car_part, track_part = group_key.split('@', 1)
+                best_laps = [e.best_lap for e in group_entries]
+                best_ever_idx = int(np.argmin(best_laps))
+                ch = EmbedChart(f, figsize=(10, 2.2))
+                ch.pack(fill='x', pady=(4, 0))
+                ax = ch.fig.add_subplot(111, facecolor='#0d1b2a')
+                ax.tick_params(colors=DIM, labelsize=8)
+                for sp in ax.spines.values(): sp.set_color('#2a3050')
+                ax.grid(True, alpha=0.08, color='#3a4a6a')
+                x_idx = list(range(len(group_entries)))
+                ax.plot(x_idx, best_laps, 'o-', color=GREEN, lw=1.8, label='Best Lap')
+                ax.scatter([best_ever_idx], [best_laps[best_ever_idx]], color=ACCENT,
+                           marker='*', s=120, zorder=5, label='Best Ever')
+                ax.set_xticks(x_idx)
+                ax.set_xticklabels([str(i + 1) for i in x_idx], fontsize=8)
+                ax.set_xlabel("Session", color=DIM, fontsize=9)
+                ax.set_ylabel("Lap (s)", color=DIM, fontsize=9)
+                ax.set_title(f"Pace History — {car_part} @ {track_part}", color=TEXT, fontsize=10, pad=3)
+                ax.legend(fontsize=8, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT)
+                ch.fig.patch.set_facecolor('#0d1b2a')
+                ch.fig.tight_layout(pad=0.5); ch.draw()
 
         for entry in entries[:30]:
             ec=ctk.CTkFrame(f,fg_color=PANEL,corner_radius=8); ec.pack(fill='x',pady=3)
@@ -1570,7 +2044,22 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         ax.set_xlabel("Track Position (%)", color=DIM, fontsize=10)
         ax.set_ylabel(ch_name, color=DIM, fontsize=11)
         ax.legend(fontsize=10, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT)
-        ch.fig.tight_layout(pad=1.0); ch.draw()
+        ch.fig.tight_layout(pad=1.0)
+        # Mini track map inset from session A best lap
+        try:
+            rl = reconstruct_racing_line(da, int(np.argmin(da.lap_times)) if da.lap_times else 0)
+            if rl is not None:
+                iax = ch.fig.add_axes([0.785, 0.55, 0.20, 0.40])
+                iax.set_facecolor('#06101a')
+                iax.set_aspect('equal', adjustable='datalim')
+                iax.tick_params(left=False, bottom=False, labelleft=False, labelbottom=False)
+                for sp in iax.spines.values(): sp.set_color('#2a3050')
+                cols = speed_colormap(rl.speed)
+                for j in range(len(rl.x) - 1):
+                    iax.plot(rl.x[j:j+2], rl.y[j:j+2], color=cols[j], lw=1.0, solid_capstyle='round')
+        except Exception:
+            pass
+        ch.draw()
 
     def _export_cmp_csv(self):
         """Export comparison results for both sessions to CSV."""
@@ -1625,6 +2114,43 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             w.writerow(["Session B Issues"])
             for iss in rb.issues:
                 w.writerow([iss.severity.value, iss.title, iss.description])
+            w.writerow([])
+            # Best-lap channel data (resampled to 500 common track-% points)
+            _channels = ['Speed', 'Throttle', 'Brake', 'LatAccel', 'LongAccel',
+                         'RPM', 'SteeringWheelAngle']
+            def _best_slice(data):
+                if not data.lap_times or len(data.lap_boundaries) < 2:
+                    return None, None
+                bi = int(np.argmin(data.lap_times))
+                if bi + 1 >= len(data.lap_boundaries): return None, None
+                return data.lap_boundaries[bi], data.lap_boundaries[bi + 1]
+            sa2, ea2 = _best_slice(da); sb2, eb2 = _best_slice(db)
+            ld_a = da.get_channel('LapDistPct'); ld_b = db.get_channel('LapDistPct')
+            if sa2 is not None and sb2 is not None and ld_a is not None and ld_b is not None:
+                grid = np.linspace(0.001, 0.999, 500)
+                header = ['track_pct']
+                for ch_name in _channels:
+                    header += [f'A_{ch_name}', f'B_{ch_name}', f'delta_{ch_name}']
+                w.writerow(["Best Lap Channel Data (500-point track-% grid)"])
+                w.writerow(header)
+                rows = []
+                ch_data = {}
+                for ch_name in _channels:
+                    arr_a = da.get_channel(ch_name); arr_b = db.get_channel(ch_name)
+                    if arr_a is not None and arr_b is not None:
+                        a_interp = np.interp(grid, ld_a[sa2:ea2], arr_a[sa2:ea2])
+                        b_interp = np.interp(grid, ld_b[sb2:eb2], arr_b[sb2:eb2])
+                        ch_data[ch_name] = (a_interp, b_interp)
+                for i, pct in enumerate(grid):
+                    row = [f"{pct*100:.2f}"]
+                    for ch_name in _channels:
+                        if ch_name in ch_data:
+                            av = ch_data[ch_name][0][i]; bv = ch_data[ch_name][1][i]
+                            row += [f"{av:.4f}", f"{bv:.4f}", f"{bv-av:+.4f}"]
+                        else:
+                            row += ["", "", ""]
+                    rows.append(row)
+                w.writerows(rows)
         messagebox.showinfo("Exported", f"Comparison saved to:\n{path}")
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -1732,7 +2258,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
     # SETTINGS / PDF
     # ══════════════════════════════════════════════════════════════════════════
     def _settings(self):
-        win=ctk.CTkToplevel(self); win.title("Settings"); win.geometry("540x440")
+        win=ctk.CTkToplevel(self); win.title("Settings"); win.geometry("560x660")
         win.configure(fg_color=DARK); win.grab_set()
         lbl(win,"Settings",16,bold=True).pack(pady=14)
         # API Key
@@ -1758,6 +2284,79 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         ctk.CTkRadioButton(mrow, text="Sonnet  (thorough, ~$0.02/call)",
             variable=model_var, value='sonnet',
             fg_color=ACCENT).pack(side='left')
+        # Font Size
+        frow = ctk.CTkFrame(win, fg_color="transparent"); frow.pack(fill='x', padx=24, pady=4)
+        lbl(frow, "Font Size:", color=DIM, width=150).pack(side='left')
+        _fscale = round(float(self.cfg.get('font_scale', 1.0)), 1)
+        font_scale_var = ctk.DoubleVar(value=_fscale)
+        scale_lbl = lbl(frow, f"{int(_fscale * 100)}%", width=46)
+        scale_lbl.pack(side='left')
+        def _dec():
+            v = max(0.7, round(font_scale_var.get() - 0.1, 1))
+            font_scale_var.set(v); scale_lbl.configure(text=f"{int(v * 100)}%")
+        def _inc():
+            v = min(1.5, round(font_scale_var.get() + 0.1, 1))
+            font_scale_var.set(v); scale_lbl.configure(text=f"{int(v * 100)}%")
+        ctk.CTkButton(frow, text="−", width=28, height=26, fg_color=CARD,
+            hover_color=BLUE, command=_dec).pack(side='left', padx=2)
+        ctk.CTkButton(frow, text="+", width=28, height=26, fg_color=CARD,
+            hover_color=BLUE, command=_inc).pack(side='left', padx=2)
+        lbl(frow, "takes effect on next launch", 9, color=DIM).pack(side='left', padx=10)
+        # Theme
+        thr = ctk.CTkFrame(win, fg_color="transparent"); thr.pack(fill='x', padx=24, pady=4)
+        lbl(thr, "Theme:", color=DIM, width=150).pack(side='left')
+        theme_var = ctk.StringVar(value=self.cfg.get('theme', 'dark'))
+        ctk.CTkRadioButton(thr, text="Dark", variable=theme_var, value='dark',
+            fg_color=ACCENT).pack(side='left', padx=(0, 16))
+        ctk.CTkRadioButton(thr, text="Light", variable=theme_var, value='light',
+            fg_color=ACCENT).pack(side='left')
+        lbl(thr, "applies immediately", 9, color=GREEN).pack(side='left', padx=10)
+        # Speed units
+        sur = ctk.CTkFrame(win, fg_color="transparent"); sur.pack(fill='x', padx=24, pady=4)
+        lbl(sur, "Speed Units:", color=DIM, width=150).pack(side='left')
+        speed_unit_var = ctk.StringVar(value=self.cfg.get('units_speed', 'kmh'))
+        ctk.CTkRadioButton(sur, text="km/h", variable=speed_unit_var, value='kmh',
+            fg_color=ACCENT).pack(side='left', padx=(0, 16))
+        ctk.CTkRadioButton(sur, text="mph", variable=speed_unit_var, value='mph',
+            fg_color=ACCENT).pack(side='left')
+        # Temperature units
+        utr = ctk.CTkFrame(win, fg_color="transparent"); utr.pack(fill='x', padx=24, pady=4)
+        lbl(utr, "Temperature:", color=DIM, width=150).pack(side='left')
+        temp_unit_var = ctk.StringVar(value=self.cfg.get('units_temp', 'c'))
+        ctk.CTkRadioButton(utr, text="°C", variable=temp_unit_var, value='c',
+            fg_color=ACCENT).pack(side='left', padx=(0, 16))
+        ctk.CTkRadioButton(utr, text="°F", variable=temp_unit_var, value='f',
+            fg_color=ACCENT).pack(side='left')
+        # Default chart
+        dcr = ctk.CTkFrame(win, fg_color="transparent"); dcr.pack(fill='x', padx=24, pady=4)
+        lbl(dcr, "Default Chart:", color=DIM, width=150).pack(side='left')
+        default_chart_var = ctk.StringVar(value=self.cfg.get('default_chart', 'Speed + Throttle + Brake'))
+        ctk.CTkOptionMenu(dcr, values=list(self.CDEFS.keys()), variable=default_chart_var,
+            fg_color=CARD, button_color=ACCENT, width=260).pack(side='left')
+        # Outlier threshold
+        otr = ctk.CTkFrame(win, fg_color="transparent"); otr.pack(fill='x', padx=24, pady=4)
+        lbl(otr, "Outlier Threshold:", color=DIM, width=150).pack(side='left')
+        _otv = round(float(self.cfg.get('outlier_threshold', 1.07)), 2)
+        outlier_var = ctk.DoubleVar(value=_otv)
+        outlier_lbl = lbl(otr, f"+{int((_otv - 1) * 100)}% of median", width=110)
+        outlier_lbl.pack(side='left')
+        def _odec():
+            v = max(1.03, round(outlier_var.get() - 0.01, 2))
+            outlier_var.set(v); outlier_lbl.configure(text=f"+{int((v - 1) * 100)}% of median")
+        def _oinc():
+            v = min(1.20, round(outlier_var.get() + 0.01, 2))
+            outlier_var.set(v); outlier_lbl.configure(text=f"+{int((v - 1) * 100)}% of median")
+        ctk.CTkButton(otr, text="−", width=28, height=26, fg_color=CARD,
+            hover_color=BLUE, command=_odec).pack(side='left', padx=2)
+        ctk.CTkButton(otr, text="+", width=28, height=26, fg_color=CARD,
+            hover_color=BLUE, command=_oinc).pack(side='left', padx=2)
+        lbl(otr, "laps slower than this % excluded", 9, color=DIM).pack(side='left', padx=8)
+        # Corner labels
+        clr = ctk.CTkFrame(win, fg_color="transparent"); clr.pack(fill='x', padx=24, pady=4)
+        lbl(clr, "Charts:", color=DIM, width=150).pack(side='left')
+        corner_labels_var = ctk.BooleanVar(value=bool(self.cfg.get('show_corner_labels', True)))
+        ctk.CTkCheckBox(clr, text="Show corner name labels on charts",
+            variable=corner_labels_var, fg_color=ACCENT, hover_color=BLUE).pack(side='left')
         # Toggles
         trow = ctk.CTkFrame(win, fg_color="transparent"); trow.pack(fill='x', padx=24, pady=6)
         auto_notes_var = ctk.BooleanVar(value=bool(self.cfg.get('auto_notes', True)))
@@ -1781,7 +2380,23 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             _set_api_key(e.get().strip())
             self.cfg['auto_notes'] = auto_notes_var.get()
             self.cfg['ai_model'] = model_var.get()
+            self.cfg['font_scale'] = round(font_scale_var.get(), 1)
+            self.cfg['theme'] = theme_var.get()
+            self.cfg['units_speed'] = speed_unit_var.get()
+            self.cfg['units_temp'] = temp_unit_var.get()
+            self.cfg['default_chart'] = default_chart_var.get()
+            self.cfg['outlier_threshold'] = round(outlier_var.get(), 2)
+            self.cfg['show_corner_labels'] = corner_labels_var.get()
             save_cfg(self.cfg)
+            # Apply immediately — no restart needed
+            units.configure(speed_unit_var.get(), temp_unit_var.get())
+            set_outlier_factor(outlier_var.get())
+            ctk.set_appearance_mode(theme_var.get())
+            if not self.cur_data:
+                self._tv.set(default_chart_var.get())
+            # Re-render current session with new units
+            if self.cur_data and self.cur_rpt:
+                self._refresh()
             win.destroy()
         ctk.CTkButton(br,text="Save",fg_color=ACCENT,command=save,width=120).pack(side='right',padx=4)
         ctk.CTkButton(br,text="Cancel",fg_color=CARD,command=win.destroy,width=100).pack(side='right',padx=4)
@@ -1876,6 +2491,10 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self._brake_map.pack(fill='x', pady=(0, 4))
         self._brake_chart = EmbedChart(self._brake_sc, figsize=(10, 3.5))
         self._brake_chart.pack(fill='x', pady=(0, 4))
+        self._brake_linepress = EmbedChart(self._brake_sc, figsize=(10, 2.8))
+        self._brake_linepress.pack(fill='x', pady=(0, 4))
+        self._brake_abs = EmbedChart(self._brake_sc, figsize=(10, 2.2))
+        self._brake_abs.pack(fill='x', pady=(0, 4))
         self._brake_cards = ctk.CTkFrame(self._brake_sc, fg_color="transparent")
         self._brake_cards.pack(fill='x')
 
@@ -1883,11 +2502,22 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         d = self.cur_data
         if not d or d.num_laps < 1:
             return
+        try:
+            report = analyze_braking(d)
+        except Exception as ex:
+            logger.exception("Brake analysis failed")
+            report = None
+        if not report:
+            try: self._ph_brake.pack_forget()
+            except Exception: pass
+            for w in self._brake_cards.winfo_children(): w.destroy()
+            lbl(self._brake_cards,
+                "No brake zones detected.\n"
+                "This requires a 'Brake' channel with sustained braking > 10%.",
+                13, color=DIM).pack(pady=30)
+            return
         try: self._ph_brake.pack_forget()
         except Exception: pass
-        report = analyze_braking(d)
-        if not report:
-            return
         # Track map with brake zones highlighted
         hl = highlights_from_brakes(report)
         self._brake_map.update(d, highlights=hl,
@@ -1935,6 +2565,54 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 nf.pack(fill='x', padx=12, pady=(4, 8))
                 lbl(nf, p.coaching_note, 10, color=TEXT, wraplength=800,
                     justify='left', anchor='w').pack(fill='x', padx=8, pady=6)
+        # ── Brake line pressure per corner ──────────────────────────────────
+        clp = self._brake_linepress; clp.clear()
+        lp_corners = ['LF', 'RF', 'LR', 'RR']
+        lp_colors   = [BLUE, RED, GREEN, YELLOW]
+        lp_channels = [d.get_channel(f'{c}brakeLinePress') for c in lp_corners]
+        ld_ch = d.get_channel('LapDistPct')
+        if any(ch is not None for ch in lp_channels) and ld_ch is not None:
+            ax_lp = clp.std_ax("Brake Line Pressure per Corner — Lap 1", xlabel="Track %")
+            ax_lp.set_ylabel("Pa", color=DIM, fontsize=9)
+            s0 = d.lap_boundaries[0]; e0 = d.lap_boundaries[1]
+            lap_ld = ld_ch[s0:e0]
+            for ch, corner, col in zip(lp_channels, lp_corners, lp_colors):
+                if ch is None: continue
+                ax_lp.plot(lap_ld * 100, ch[s0:e0], lw=1.2, alpha=0.85, color=col, label=corner)
+            ax_lp.legend(fontsize=9, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT)
+        else:
+            ax_lp = clp.std_ax("Brake Line Pressure")
+            ax_lp.text(0.5, 0.5, "No brake line pressure channels in this IBT",
+                       transform=ax_lp.transAxes, ha='center', va='center', color=DIM, fontsize=11)
+        clp.fig.tight_layout(pad=0.8); clp.draw()
+
+        # ── ABS engagement ────────────────────────────────────────────────
+        cabs = self._brake_abs; cabs.clear()
+        abs_ch  = d.get_channel('BrakeABSactive')
+        abscut  = d.get_channel('BrakeABScutPct')
+        brk_ch  = d.get_channel('Brake')
+        if abs_ch is not None and ld_ch is not None:
+            ax_abs = cabs.std_ax("ABS Engagement — Lap 1", xlabel="Track %")
+            s0 = d.lap_boundaries[0]; e0 = d.lap_boundaries[1]
+            lap_ld = ld_ch[s0:e0]
+            if brk_ch is not None:
+                ax_abs.plot(lap_ld * 100, brk_ch[s0:e0], lw=1.2, color=DIM, alpha=0.5, label='Brake input')
+            ax_abs.fill_between(lap_ld * 100, abs_ch[s0:e0].astype(float),
+                                color=RED, alpha=0.35, label='ABS active')
+            if abscut is not None:
+                ax_abs2 = ax_abs.twinx()
+                ax_abs2.plot(lap_ld * 100, abscut[s0:e0] * 100, '--', color=YELLOW,
+                             lw=1, alpha=0.7, label='ABS cut %')
+                ax_abs2.set_ylabel("Cut %", color=DIM, fontsize=9)
+                ax_abs2.tick_params(colors=DIM)
+            ax_abs.set_ylabel("Brake", color=DIM, fontsize=9)
+            ax_abs.legend(fontsize=9, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT)
+        else:
+            ax_abs = cabs.std_ax("ABS Engagement")
+            ax_abs.text(0.5, 0.5, "No ABS channels in this IBT  (BrakeABSactive)",
+                        transform=ax_abs.transAxes, ha='center', va='center', color=DIM, fontsize=11)
+        cabs.fig.tight_layout(pad=0.8); cabs.draw()
+
         if report.findings:
             sec_lbl(self._brake_cards, "📋 Findings")
             for fn in report.findings:
@@ -1967,6 +2645,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self._strat_sc.pack(fill='both', expand=True, padx=10, pady=4)
         self._strat_chart = EmbedChart(self._strat_sc, figsize=(10, 3))
         self._strat_chart.pack(fill='x', pady=(0, 4))
+        self._strat_gantt = EmbedChart(self._strat_sc, figsize=(10, 1.4))
+        self._strat_gantt.pack(fill='x', pady=(0, 4))
         self._strat_cards = ctk.CTkFrame(self._strat_sc, fg_color="transparent")
         self._strat_cards.pack(fill='x')
 
@@ -2016,6 +2696,26 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         ax.set_ylabel("Lap time (s)", color=DIM, fontsize=10)
         ax.legend(fontsize=9, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT)
         c.fig.tight_layout(pad=0.8); c.draw()
+        # Gantt-style race timeline chart
+        g = self._strat_gantt; g.clear()
+        gax = g.fig.add_subplot(111, facecolor='#0d1b2a')
+        gax.tick_params(colors=DIM, labelsize=8)
+        for sp in gax.spines.values(): sp.set_color('#2a3050')
+        for si, stint in enumerate(report.stints):
+            col = stint_colors[si % len(stint_colors)]
+            gax.barh(0, width=stint.num_laps, left=stint.start_lap - 1, height=0.5,
+                     color=col, label=f"Stint {si+1}", edgecolor='white', linewidth=0.5)
+        for ni, stop in enumerate(report.pit_stops):
+            gax.axvline(stop.lap - 0.5, color='white', lw=1.2, alpha=0.7)
+            gax.text(stop.lap - 0.5, 0.32, f"P{ni+1}\n+{stop.fuel_to_add_l:.0f}L",
+                     color=TEXT, fontsize=7, ha='center', va='bottom')
+        gax.set_xlabel("Lap", color=DIM, fontsize=9)
+        gax.set_yticks([])
+        gax.set_title("Race Timeline", color=TEXT, fontsize=10, pad=3)
+        gax.legend(fontsize=8, facecolor='#1e2845', edgecolor='#2a3050',
+                   labelcolor=TEXT, loc='lower right')
+        g.fig.patch.set_facecolor('#0d1b2a')
+        g.fig.tight_layout(pad=0.4); g.draw()
         # Summary cards
         for w in self._strat_cards.winfo_children(): w.destroy()
         sf = ctk.CTkFrame(self._strat_cards, fg_color=PANEL, corner_radius=8); sf.pack(fill='x', pady=4)
@@ -2065,17 +2765,60 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             return
         # Best lap trend chart
         c = self._trends_chart; c.clear()
-        ax = c.std_ax("Session Trends", xlabel="Session #")
+        ax = c.std_ax("Session Trends — Lap Times & Consistency")
         x = list(range(1, report.num_sessions + 1))
+        xlabels = [f"S{s.index+1}\n{s.car_name[:10]}\n{s.track_name[:10]}"
+                   for s in report.summaries]
         ax.plot(x, report.best_lap_trend, 'o-', color=GREEN, lw=2, label='Best Lap')
         ax.plot(x, report.avg_lap_trend, 's--', color=BLUE, lw=1.5, alpha=0.7, label='Avg Lap')
         ax.set_ylabel("Lap time (s)", color=DIM, fontsize=10)
+        ax.set_xticks(x); ax.set_xticklabels(xlabels, fontsize=7, color=DIM)
         ax2 = ax.twinx()
         ax2.bar(x, report.consistency_trend, alpha=0.15, color=YELLOW, label='Consistency %')
-        ax2.set_ylabel("Consistency (lower = better)", color=DIM, fontsize=10)
+        ax2.set_ylabel("Consistency % (lower = better)", color=DIM, fontsize=9)
         ax2.tick_params(colors=DIM)
         ax.legend(fontsize=9, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT, loc='upper left')
         c.fig.tight_layout(pad=0.8); c.draw()
+
+        # Tire temp + fuel trend (small chart between main and balance)
+        tire_temps = [s.avg_tire_temp for s in report.summaries]
+        fuel_laps  = [s.fuel_per_lap for s in report.summaries]
+        has_temp = any(t > 0 for t in tire_temps)
+        has_fuel = any(f > 0 for f in fuel_laps)
+        if has_temp or has_fuel:
+            tt = self._balance_trends_chart if not hasattr(self, '_tire_trends_chart') else self._tire_trends_chart
+            # Reuse the pre-existing chart slot for tire/fuel, push balance down
+            if not hasattr(self, '_tire_trends_chart'):
+                self._tire_trends_chart = EmbedChart(self._trends_sc, figsize=(10, 2.0))
+                self._tire_trends_chart.pack(fill='x', pady=(0, 4))
+                # Re-pack balance chart after tire chart
+                self._balance_trends_chart.pack_forget()
+                self._balance_trends_chart.pack(fill='x', pady=(0, 4))
+            tt = self._tire_trends_chart; tt.clear()
+            fig_ax = tt.fig.add_subplot(111, facecolor='#0d1b2a')
+            fig_ax.tick_params(colors=DIM, labelsize=8)
+            for sp in fig_ax.spines.values(): sp.set_color('#2a3050')
+            if has_temp:
+                fig_ax.plot(x, tire_temps, 'o-', color='#e74c3c', lw=1.8,
+                            label=f'Avg Tire Temp (°C)')
+                fig_ax.set_ylabel("Temp (°C)", color=DIM, fontsize=9)
+            if has_fuel:
+                ax_f = fig_ax.twinx()
+                ax_f.plot(x, fuel_laps, 's--', color=YELLOW, lw=1.5, alpha=0.85,
+                          label='Fuel/lap (L)')
+                ax_f.set_ylabel("Fuel/lap (L)", color=DIM, fontsize=9)
+                ax_f.tick_params(colors=DIM)
+            fig_ax.set_xticks(x); fig_ax.set_xticklabels(xlabels, fontsize=7, color=DIM)
+            fig_ax.grid(True, alpha=0.08, color='#3a4a6a')
+            fig_ax.set_title("Tire Temp & Fuel Consumption Trend", color=TEXT, fontsize=10, pad=3)
+            lines1, lbls1 = fig_ax.get_legend_handles_labels()
+            if has_fuel:
+                lines2, lbls2 = ax_f.get_legend_handles_labels()
+                lines1 += lines2; lbls1 += lbls2
+            fig_ax.legend(lines1, lbls1, fontsize=8, facecolor='#1e2845',
+                          edgecolor='#2a3050', labelcolor=TEXT)
+            tt.fig.patch.set_facecolor('#0d1b2a')
+            tt.fig.tight_layout(pad=0.6); tt.draw()
         # Summary
         for w in self._trends_cards.winfo_children(): w.destroy()
         sf = ctk.CTkFrame(self._trends_cards, fg_color=PANEL, corner_radius=8); sf.pack(fill='x', pady=4)
@@ -2229,8 +2972,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             mr = ctk.CTkFrame(cf, fg_color="transparent"); mr.pack(fill='x', padx=8, pady=4)
             lt_col = GREEN if p.lap_time_delta_s < 0 else RED
             stat_blk(mr, "Lap Time", f"{p.lap_time_delta_s:+.3f}s", lt_col)
-            stat_blk(mr, "Straight", f"{p.straight_speed_delta_kmh:+.1f} km/h", BLUE)
-            stat_blk(mr, "Corner", f"{p.corner_speed_delta_kmh:+.1f} km/h", YELLOW)
+            stat_blk(mr, "Straight", units.fmt_speed_from_kmh(p.straight_speed_delta_kmh, 1), BLUE)
+            stat_blk(mr, "Corner", units.fmt_speed_from_kmh(p.corner_speed_delta_kmh, 1), YELLOW)
             stat_blk(mr, "Balance", p.balance_shift.title(), PURPLE)
             stat_blk(mr, "Tire Wear", p.tire_wear_impact.title())
             nf = ctk.CTkFrame(cf, fg_color="#0d1b2a", corner_radius=6); nf.pack(fill='x', padx=12, pady=(4, 8))
@@ -2454,8 +3197,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 mr = ctk.CTkFrame(cf, fg_color="transparent"); mr.pack(fill='x', padx=8, pady=4)
                 lt_col = GREEN if pred.lap_time_delta_s <= 0 else RED
                 stat_blk(mr, "Lap Time", f"{pred.lap_time_delta_s:+.3f}s", lt_col)
-                stat_blk(mr, "Corner", f"{pred.corner_speed_delta_kmh:+.1f} km/h", YELLOW)
-                stat_blk(mr, "Straight", f"{pred.straight_speed_delta_kmh:+.1f} km/h", BLUE)
+                stat_blk(mr, "Corner", units.fmt_speed_from_kmh(pred.corner_speed_delta_kmh, 1), YELLOW)
+                stat_blk(mr, "Straight", units.fmt_speed_from_kmh(pred.straight_speed_delta_kmh, 1), BLUE)
                 stat_blk(mr, "Balance", pred.balance_shift.title(), PURPLE)
                 stat_blk(mr, "Tire Wear", pred.tire_wear_impact.title())
                 nf = ctk.CTkFrame(cf, fg_color="#0d1b2a", corner_radius=6)
@@ -2636,6 +3379,50 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
     # ══════════════════════════════════════════════════════════════════════════
     # LIVE TELEMETRY
     # ══════════════════════════════════════════════════════════════════════════
+    def _toggle_obs_overlay(self):
+        """Show or hide the floating OBS HUD overlay."""
+        if self._obs_overlay is None:
+            ref_delta = None
+            if self.cur_best is not None:
+                try:
+                    from core.corner_analysis import LapDeltaAnalyzer
+                    if self.cur_data and self.cur_best:
+                        best_idx = 0
+                        if self.cur_data.lap_times:
+                            import numpy as np
+                            best_idx = int(np.argmin(self.cur_data.lap_times))
+                        second_idx = 1 if len(self.cur_data.lap_times) > 1 else 0
+                        result = LapDeltaAnalyzer().analyze(self.cur_data, best_idx, second_idx)
+                        if result:
+                            ref_delta = list(zip(result.dist_pct, result.delta_s))
+                except Exception:
+                    pass
+            self._obs_overlay = OBSOverlay(self, self._live_monitor, ref_delta)
+        if self._obs_overlay.is_visible():
+            self._obs_overlay.hide()
+        else:
+            # Ensure the live monitor is running
+            if self._live_monitor is None:
+                self._live_monitor = LiveTelemetryMonitor(poll_hz=10.0)
+                self._live_monitor.add_callback(
+                    lambda s: self.after(0, lambda sample=s: self._on_live_sample(sample)))
+                self._live_monitor.start()
+                self._status_lbl.configure(text="🔴 Live — waiting for iRacing…")
+            self._obs_overlay._monitor = self._live_monitor
+            # Update ref delta if a session is loaded
+            if self.cur_data:
+                try:
+                    from core.corner_analysis import LapDeltaAnalyzer
+                    import numpy as np
+                    best_idx = int(np.argmin(self.cur_data.lap_times)) if self.cur_data.lap_times else 0
+                    second_idx = 1 if len(self.cur_data.lap_times) > 1 else 0
+                    result = LapDeltaAnalyzer().analyze(self.cur_data, best_idx, second_idx)
+                    if result:
+                        self._obs_overlay.set_ref_delta(list(zip(result.dist_pct, result.delta_s)))
+                except Exception:
+                    pass
+            self._obs_overlay.show()
+
     def _toggle_live(self):
         """Start or stop the live iRacing telemetry monitor and dashboard window."""
         if self._live_monitor and self._live_monitor.is_running:
@@ -2644,6 +3431,11 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             if self._live_win and self._live_win.winfo_exists():
                 self._live_win.destroy()
             self._live_win = None
+            self._live_car = ""
+            self._live_track = ""
+            self._live_fuel_tracker.reset()
+            if hasattr(self, 'ir_set_live_session'):
+                self.ir_set_live_session("", "")
             self._status_lbl.configure(text="🔴 Live telemetry stopped")
             self.after(3000, lambda: self._status_lbl.configure(text=""))
         else:
@@ -2726,8 +3518,21 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         fl.pack(fill='x', padx=10, pady=4)
         win._fuel_lbl = lbl(fl, "Fuel: --L  (-- %)", 12, color=BLUE)
         win._fuel_lbl.pack(side='left', padx=16, pady=6)
+        win._fuel_laps_lbl = lbl(fl, "", 11, color=GREEN)
+        win._fuel_laps_lbl.pack(side='left', padx=4)
         win._pos_lbl = lbl(fl, "Track: --%", 11, color=DIM)
-        win._pos_lbl.pack(side='left', padx=12)
+        win._pos_lbl.pack(side='right', padx=12)
+
+        # Steven live coaching panel
+        sc = ctk.CTkFrame(win, fg_color=PANEL, corner_radius=8)
+        sc.pack(fill='x', padx=10, pady=4)
+        steven_hdr = ctk.CTkFrame(sc, fg_color="transparent")
+        steven_hdr.pack(fill='x', padx=10, pady=(6, 2))
+        lbl(steven_hdr, "Steven", 11, bold=True, color=ACCENT).pack(side='left')
+        win._steven_status = lbl(steven_hdr, "— waiting for lap completion…", 10, color=DIM)
+        win._steven_status.pack(side='left', padx=6)
+        win._steven_tip = lbl(sc, "", 11, color=TEXT, justify='left', wraplength=460)
+        win._steven_tip.pack(fill='x', padx=10, pady=(0, 8))
 
         # Tire temps grid
         tg_outer = ctk.CTkFrame(win, fg_color=PANEL, corner_radius=8)
@@ -2754,6 +3559,12 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
 
     def _on_live_sample(self, sample: LiveSample):
         """Receive a live sample and update the dashboard window."""
+        # Always update fuel tracker and check for session/lap events
+        self._live_fuel_tracker.update(sample)
+        if sample.is_connected:
+            self._check_live_session_change(sample)
+            self._check_live_lap_complete(sample)
+
         if self._live_win is None or not self._live_win.winfo_exists():
             return
         win = self._live_win
@@ -2777,7 +3588,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             win._car_lbl.configure(text=f"{sample.car_name}  •  {sample.track_name}")
 
         spd_color = GREEN if sample.speed_kph > 10 else DIM
-        win._spd_lbl.configure(text=f"{sample.speed_kph:.0f} km/h", text_color=spd_color)
+        win._spd_lbl.configure(text=units.fmt_speed_from_kmh(sample.speed_kph, 0), text_color=spd_color)
         win._gear_lbl.configure(text=f"G{sample.gear}")
         win._rpm_lbl.configure(text=f"RPM: {sample.rpm:.0f}")
 
@@ -2792,16 +3603,126 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         win._lap_num_lbl.configure(text=f"Lap {sample.lap}")
 
         win._fuel_lbl.configure(text=f"Fuel: {sample.fuel_level:.1f}L  ({sample.fuel_pct * 100:.0f}%)")
+        laps_left = self._live_fuel_tracker.laps_remaining(sample.fuel_level)
+        if laps_left > 0:
+            lr_col = GREEN if laps_left > 3 else YELLOW if laps_left > 1 else RED
+            win._fuel_laps_lbl.configure(text=f"~{laps_left:.1f} laps", text_color=lr_col)
+        else:
+            win._fuel_laps_lbl.configure(text="")
         win._pos_lbl.configure(text=f"Track: {sample.lap_dist_pct * 100:.1f}%")
 
-        self._status_lbl.configure(text=f"🔴 Live  {sample.speed_kph:.0f} km/h  Lap {sample.lap}")
+        self._status_lbl.configure(text=f"🔴 Live  {units.fmt_speed_from_kmh(sample.speed_kph, 0)}  Lap {sample.lap}")
 
         for corner, t_lbl in win._tire_lbls.items():
             temps = sample.tire_temps.get(corner, {})
             avg_t = (temps.get('inner', 0) + temps.get('mid', 0) + temps.get('outer', 0)) / 3
             if avg_t > 0:
                 col = RED if avg_t > 105 else YELLOW if avg_t > 95 else GREEN if avg_t > 70 else BLUE
-                t_lbl.configure(text=f"{avg_t:.0f}°C\n{avg_t*9/5+32:.0f}°F", text_color=col)
+                t_lbl.configure(text=units.fmt_temp(avg_t, 0), text_color=col)
+
+    def _check_live_session_change(self, sample: LiveSample):
+        """Detect when the iRacing session changes (new car or track) and auto-tag."""
+        car = sample.car_name or ""
+        track = sample.track_name or ""
+        if not car and not track:
+            return
+        if car == self._live_car and track == self._live_track:
+            return
+        # Session changed — update stored values and react
+        self._live_car = car
+        self._live_track = track
+        self._live_last_lap = -1.0        # reset lap detection
+        self._live_fuel_tracker.reset()   # fresh fuel data for new session
+        logger.info("Live session detected: %s @ %s", car, track)
+        self._status_lbl.configure(text=f"🔴 Live: {car}  @  {track}")
+        # Update iRacing tab live badge and auto-fetch leaderboard
+        if hasattr(self, 'ir_set_live_session'):
+            self.ir_set_live_session(car, track)
+        # Update the live dashboard car label
+        if self._live_win and self._live_win.winfo_exists():
+            self._live_win._car_lbl.configure(text=f"{car}  •  {track}")
+
+    def _check_live_lap_complete(self, sample: LiveSample):
+        """Detect a completed lap and trigger Steven coaching if active."""
+        last = sample.last_lap
+        if last <= 0 or last == self._live_last_lap:
+            return
+        self._live_last_lap = last
+        # Trigger Steven tip in background (non-blocking, rate-limited)
+        if self._race_engineer and not self._steven_coaching_active:
+            best = sample.best_lap
+            laps_left = self._live_fuel_tracker.laps_remaining(sample.fuel_level)
+            tyre_avgs = {
+                k: sum(v.values()) / len(v)
+                for k, v in sample.tire_temps.items() if v
+            }
+            threading.Thread(
+                target=self._run_steven_live_tip,
+                args=(last, best, sample.lap, laps_left, tyre_avgs),
+                daemon=True,
+            ).start()
+
+    def _run_steven_live_tip(
+        self,
+        lap_time: float,
+        best_lap: float,
+        lap_num: int,
+        laps_left: float,
+        tyre_avgs: dict,
+    ):
+        """Background: ask Steven for a one-sentence post-lap coaching tip."""
+        self._steven_coaching_active = True
+        try:
+            api_key = _get_api_key()
+            if not api_key:
+                return
+            self.after(0, lambda: self._live_win and self._live_win.winfo_exists() and
+                       self._live_win._steven_status.configure(
+                           text="— thinking…", text_color=YELLOW))
+
+            delta = lap_time - best_lap if best_lap > 0 else 0.0
+            tyre_str = "  ".join(
+                f"{k}:{v:.0f}°C" for k, v in sorted(tyre_avgs.items()) if v > 0
+            ) or "no data"
+            fuel_str = f"~{laps_left:.1f} laps remaining" if laps_left > 0 else "unknown"
+
+            prompt = (
+                f"Lap {lap_num} just completed in {format_laptime(lap_time)} "
+                f"(delta vs best: {delta:+.3f}s). "
+                f"Tyre temps: {tyre_str}. Fuel: {fuel_str}. "
+                f"Give ONE very specific, actionable coaching tip in a single sentence. "
+                f"Be direct — no preamble."
+            )
+
+            import anthropic
+            client = anthropic.Anthropic(api_key=api_key)
+            tip_parts: list[str] = []
+            with client.messages.stream(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=120,
+                system=(
+                    "You are Steven, a professional iRacing race engineer. "
+                    "Give ultra-brief, specific, technical coaching after each lap."
+                ),
+                messages=[{"role": "user", "content": prompt}],
+            ) as stream:
+                for chunk in stream.text_stream:
+                    tip_parts.append(chunk)
+
+            tip = "".join(tip_parts).strip()
+            def _update():
+                if self._live_win and self._live_win.winfo_exists():
+                    self._live_win._steven_tip.configure(text=tip)
+                    self._live_win._steven_status.configure(
+                        text=f"— after lap {lap_num}", text_color=DIM)
+            self.after(0, _update)
+        except Exception as exc:
+            logger.debug("Steven live tip failed: %s", exc)
+            self.after(0, lambda: self._live_win and self._live_win.winfo_exists() and
+                       self._live_win._steven_status.configure(
+                           text="— unavailable", text_color=DIM))
+        finally:
+            self._steven_coaching_active = False
 
     # ══════════════════════════════════════════════════════════════════════════
     # REFERENCE LAP LOADING
@@ -2877,66 +3798,157 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
     # COMMAND PALETTE  (Ctrl+K)
     # ══════════════════════════════════════════════════════════════════════════
     def _open_command_palette(self):
-        """Open a fuzzy-search command palette popup (VS Code style)."""
-        # All addressable commands
+        """Open an improved fuzzy-search command palette (VS Code style) with recently used."""
+        import difflib
+
+        _ALL_TABS = ["Dashboard","Telemetry","Issues","Driver","Sectors","Corners",
+                     "Stint & Tires","Lap Times","Brake Trace","Strategy","Trends",
+                     "Impact","Setup Files","AI Advisor","Agent","Templates","History",
+                     "Compare","iRacing"]
+
         _COMMANDS = [
-            ("Load IBT File",              self._load_ibt),
-            ("Load Demo Session",          self._load_demo),
-            ("Batch Load IBT Files",       self._batch_load),
-            ("Export CSV",                 self._export_csv),
-            ("Export PDF Report",          self._export_pdf),
-            ("Export Motec i2 CSV",        self._export_motec),
-            ("Share / Export Summary",     self._share_export),
-            ("Send to Discord",            self._discord_share),
-            ("Load Reference Lap",         self._load_ref_ibt),
-            ("Toggle Live Telemetry",      self._toggle_live),
-            ("Toggle File Watcher",        self._toggle_file_watcher),
-            ("Settings",                   self._settings),
-            ("About",                      self._about),
-        ] + [(f"Go to: {tab}", lambda t=tab: self.tv.set(t))
-             for tab in ["Dashboard","Telemetry","Issues","Driver","Sectors","Corners",
-                         "Stint & Tires","Lap Times","Brake Trace","Strategy","Trends",
-                         "Impact","Setup Files","AI Advisor","Templates","History","Compare"]]
+            ("Load IBT File",              "file",    self._load_ibt),
+            ("Load Demo Session",          "file",    self._load_demo),
+            ("Batch Load IBT Files",       "file",    self._batch_load),
+            ("Export CSV",                 "export",  self._export_csv),
+            ("Export PDF Report",          "export",  self._export_pdf),
+            ("Export Motec i2 CSV",        "export",  self._export_motec),
+            ("Share / Export Summary",     "export",  self._share_export),
+            ("Send to Discord",            "export",  self._discord_share),
+            ("Load Reference Lap",         "file",    self._load_ref_ibt),
+            ("Toggle OBS HUD Overlay",     "view",    self._toggle_obs_overlay),
+            ("Toggle Live Telemetry",      "view",    self._toggle_live),
+            ("Toggle File Watcher",        "view",    self._toggle_file_watcher),
+            ("Get AI Recommendations",     "ai",      self._get_ai),
+            ("Evolution Summary (Steven)", "ai",      self._get_evolution_summary),
+            ("Settings",                   "general", self._settings),
+            ("About",                      "general", self._about),
+        ] + [(f"Go to: {tab}", "navigate", lambda t=tab: self.tv.set(t))
+             for tab in _ALL_TABS]
+
+        # Recently used (stored in cfg, most-recent first, capped at 8)
+        recent_labels: list[str] = self.cfg.get("palette_recent", [])
+
+        def _record_use(label: str):
+            rec = [l for l in recent_labels if l != label]
+            rec.insert(0, label)
+            self.cfg["palette_recent"] = rec[:8]
+            save_cfg(self.cfg)
+
+        def _fuzzy_score(query: str, label: str) -> float:
+            """Higher = better match. 0 = no match."""
+            if not query:
+                return 1.0
+            q = query.lower(); l = label.lower()
+            if q == l:         return 10.0
+            if l.startswith(q): return 8.0
+            if q in l:          return 6.0
+            # Word-start matching (e.g. "loi" matches "Load IBT")
+            words = l.split()
+            if any(w.startswith(q) for w in words): return 4.0
+            # Difflib ratio as fallback
+            ratio = difflib.SequenceMatcher(None, q, l).ratio()
+            return ratio if ratio > 0.4 else 0.0
 
         win = ctk.CTkToplevel(self)
-        win.title("Command Palette")
-        win.geometry("540x380")
+        win.title("Command Palette  (Ctrl+K)")
+        win.geometry("580x420")
         win.configure(fg_color=DARK)
         win.resizable(False, True)
         win.transient(self)
         win.grab_set()
 
         search_var = ctk.StringVar()
-        entry = ctk.CTkEntry(win, textvariable=search_var,
-                              placeholder_text="Type a command…",
-                              fg_color=PANEL, border_color=ACCENT,
-                              font=ctk.CTkFont(size=14), height=40)
-        entry.pack(fill='x', padx=10, pady=(10, 4))
+
+        # Header
+        hdr = ctk.CTkFrame(win, fg_color=PANEL, corner_radius=0, height=52)
+        hdr.pack(fill='x'); hdr.pack_propagate(False)
+        entry = ctk.CTkEntry(hdr, textvariable=search_var,
+                              placeholder_text="Search commands, tabs, sessions…",
+                              fg_color=CARD, border_color=ACCENT,
+                              font=ctk.CTkFont(size=14), height=36)
+        entry.pack(fill='x', padx=10, pady=8)
         entry.focus_set()
 
         sc = ctk.CTkScrollableFrame(win, fg_color="transparent")
-        sc.pack(fill='both', expand=True, padx=10, pady=(0, 10))
+        sc.pack(fill='both', expand=True, padx=6, pady=(0, 6))
 
         _btns: list[ctk.CTkButton] = []
+        _category_icons = {
+            "file": "📂", "export": "📤", "view": "👁",
+            "ai": "🤖", "navigate": "→", "general": "⚙",
+        }
+
+        def _run_cmd(label: str, cmd):
+            _record_use(label)
+            win.destroy()
+            cmd()
 
         def _refresh_list(*_):
             for b in _btns: b.destroy()
             _btns.clear()
-            q = search_var.get().lower()
-            for label, cmd in _COMMANDS:
-                if q and q not in label.lower():
-                    continue
-                b = ctk.CTkButton(sc, text=label, anchor='w', height=34,
+            q = search_var.get().strip()
+
+            if not q and recent_labels:
+                # Show "Recently used" section first
+                lbl(sc, "RECENTLY USED", 9, color=DIM, bold=True).pack(
+                    anchor='w', padx=8, pady=(6, 2))
+                cmd_map = {lab: (cat, cmd) for lab, cat, cmd in _COMMANDS}
+                for rl in recent_labels[:5]:
+                    if rl in cmd_map:
+                        cat, cmd = cmd_map[rl]
+                        icon = _category_icons.get(cat, "")
+                        b = ctk.CTkButton(sc, text=f"{icon}  {rl}", anchor='w', height=34,
+                                          fg_color=CARD, hover_color=PANEL,
+                                          text_color=TEXT, font=ctk.CTkFont(size=12),
+                                          command=lambda la=rl, c=cmd: _run_cmd(la, c))
+                        b.pack(fill='x', pady=1)
+                        _btns.append(b)
+                lbl(sc, "ALL COMMANDS", 9, color=DIM, bold=True).pack(
+                    anchor='w', padx=8, pady=(8, 2))
+
+            # Score and sort matches
+            scored = []
+            for label, cat, cmd in _COMMANDS:
+                score = _fuzzy_score(q, label)
+                if score > 0:
+                    scored.append((score, label, cat, cmd))
+            scored.sort(key=lambda x: x[0], reverse=True)
+
+            for score, label, cat, cmd in scored[:20]:
+                icon = _category_icons.get(cat, "")
+                # Highlight matching chars
+                b = ctk.CTkButton(sc, text=f"{icon}  {label}", anchor='w', height=34,
                                   fg_color="transparent", hover_color=PANEL,
-                                  text_color=TEXT,
-                                  font=ctk.CTkFont(size=12),
-                                  command=lambda c=cmd: (win.destroy(), c()))
+                                  text_color=TEXT, font=ctk.CTkFont(size=12),
+                                  command=lambda la=label, c=cmd: _run_cmd(la, c))
                 b.pack(fill='x', pady=1)
                 _btns.append(b)
+
+        def _on_up_down(event):
+            # Keyboard navigation through results
+            focused = win.focus_get()
+            if not _btns: return
+            if focused == entry:
+                _btns[0].focus_set(); return
+            try:
+                idx = _btns.index(focused)
+            except ValueError:
+                _btns[0].focus_set(); return
+            if event.keysym == "Down":
+                _btns[min(idx + 1, len(_btns) - 1)].focus_set()
+            else:
+                if idx == 0:
+                    entry.focus_set()
+                else:
+                    _btns[idx - 1].focus_set()
 
         search_var.trace_add('write', _refresh_list)
         win.bind('<Escape>', lambda e: win.destroy())
         win.bind('<Return>', lambda e: (_btns[0].invoke() if _btns else None))
+        win.bind('<Down>', _on_up_down)
+        win.bind('<Up>', _on_up_down)
+        entry.bind('<Down>', _on_up_down)
         _refresh_list()
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -3147,7 +4159,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             try:
                 self.cur_setup = parsed_setup_from_ibt(
                     car_setup, data.car_name, data.track_name)
-                self._render_setup(self.cur_setup)
+                if hasattr(self, '_svf'):
+                    self._render_setup(self.cur_setup)
             except Exception as e:
                 logger.warning("Could not extract setup from IBT: %s", e)
         self._add_sess_card(data,rpt)
@@ -3219,6 +4232,42 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self.cur_stint=stint; self.cur_style=style
         self.cur_fuel=fuel
         self._status_lbl.configure(text="")
+        # Update race engineer driver profile in background
+        if self.cur_rpt and self.cur_data:
+            def _update_profile():
+                try:
+                    car_class = classify_car(self.cur_data.car_name) if self.cur_data.car_name else "default"
+                    self._profile_mgr.update_from_session(
+                        self._driver_profile,
+                        self.cur_rpt,
+                        style_report=style,
+                        stint_report=stint,
+                        corner_report=getattr(self, 'cur_corner_report', None),
+                        car_name=self.cur_data.car_name or "",
+                        track_name=self.cur_data.track_name or "",
+                        car_class=car_class,
+                    )
+                    self._profile_mgr.save(self._driver_profile)
+                    if self._driver_profile.persona_unlocked and self._race_engineer is None:
+                        self._race_engineer = RaceEngineer(self._driver_profile)
+                        self.after(0, self._update_alex_badge)
+                    elif self._race_engineer is not None:
+                        self._race_engineer = RaceEngineer(self._driver_profile)
+                except Exception:
+                    logger.exception("Driver profile update failed")
+            threading.Thread(target=_update_profile, daemon=True).start()
+        # Refresh OBS overlay ref delta if visible
+        if self._obs_overlay and self._obs_overlay.is_visible() and self.cur_data:
+            try:
+                from core.corner_analysis import LapDeltaAnalyzer
+                import numpy as np
+                best_idx = int(np.argmin(self.cur_data.lap_times)) if self.cur_data.lap_times else 0
+                second_idx = 1 if len(self.cur_data.lap_times) > 1 else 0
+                result = LapDeltaAnalyzer().analyze(self.cur_data, best_idx, second_idx)
+                if result:
+                    self._obs_overlay.set_ref_delta(list(zip(result.dist_pct, result.delta_s)))
+            except Exception:
+                pass
         self._refresh()
 
     def _refresh(self):
@@ -3263,6 +4312,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 self._built_tabs.add(tab)
         if hasattr(self, '_stale_tabs') and tab in self._stale_tabs:
             self._refresh_active_tab()
+        if tab == "iRacing":
+            self._ir_on_tab_selected()
 
     def _u_cmp_menus(self):
         if not hasattr(self, '_cam'):
@@ -3275,6 +4326,11 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
 
 if __name__ == "__main__":
     try:
+        _cfg = load_cfg()
+        ctk.set_widget_scaling(max(0.7, min(1.5, float(_cfg.get('font_scale', 1.0)))))
+        ctk.set_appearance_mode(_cfg.get('theme', 'dark'))
+        units.configure(_cfg.get('units_speed', 'kmh'), _cfg.get('units_temp', 'c'))
+        set_outlier_factor(float(_cfg.get('outlier_threshold', 1.07)))
         App().mainloop()
     except Exception:
         crash_msg = traceback.format_exc()

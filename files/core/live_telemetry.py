@@ -210,3 +210,58 @@ class LiveTelemetryMonitor:
                 fn(sample)
             except Exception as e:
                 logger.debug("Live callback error: %s", e)
+
+
+# ── Fuel tracker ──────────────────────────────────────────────────────────────
+
+class FuelTracker:
+    """
+    Tracks per-lap fuel consumption from live SDK samples and estimates
+    how many laps of fuel remain.
+
+    Feed every LiveSample into update(); call laps_remaining() whenever needed.
+    """
+
+    _MAX_HISTORY = 5      # rolling window of lap fuel readings
+
+    def __init__(self):
+        self._lap_fuel: list[float] = []   # per-lap fuel consumed (litres)
+        self._prev_fuel: float = -1.0
+        self._prev_lap: int = -1
+
+    def update(self, sample: LiveSample) -> None:
+        """Call with every incoming LiveSample."""
+        if not sample.is_connected:
+            return
+        lap = sample.lap
+        fuel = sample.fuel_level
+        # Detect lap crossing: lap number incremented
+        if self._prev_lap > 0 and lap > self._prev_lap and self._prev_fuel > 0:
+            used = self._prev_fuel - fuel
+            if 0.05 < used < 25.0:     # sanity bounds (litres)
+                self._lap_fuel.append(used)
+                if len(self._lap_fuel) > self._MAX_HISTORY:
+                    self._lap_fuel.pop(0)
+        self._prev_lap = lap
+        self._prev_fuel = fuel
+
+    @property
+    def avg_per_lap(self) -> float:
+        """Average fuel consumption per lap (litres). 0.0 if not enough data."""
+        return sum(self._lap_fuel) / len(self._lap_fuel) if self._lap_fuel else 0.0
+
+    @property
+    def laps_recorded(self) -> int:
+        return len(self._lap_fuel)
+
+    def laps_remaining(self, fuel_level: float) -> float:
+        """Estimated laps remaining at current consumption rate."""
+        avg = self.avg_per_lap
+        if avg <= 0 or fuel_level <= 0:
+            return 0.0
+        return fuel_level / avg
+
+    def reset(self) -> None:
+        self._lap_fuel.clear()
+        self._prev_fuel = -1.0
+        self._prev_lap = -1

@@ -34,7 +34,8 @@ def _sanitize(text: str, max_len: int = 200) -> str:
 
 def _build_prompt(report, car_name, track_name, setup_data, sector_report,
                   style_report, stint_report, best_report,
-                  session_info=None, corner_report=None) -> str:
+                  session_info=None, corner_report=None,
+                  incident_report=None, evolution_report=None) -> str:
     """Build the full prompt string shared by sync and stream paths."""
     car_name = _sanitize(car_name, 120)
     track_name = _sanitize(track_name, 120)
@@ -118,6 +119,12 @@ def _build_prompt(report, car_name, track_name, setup_data, sector_report,
         for corner, s in report.suspension_summary.items():
             susp_text += f"  {corner}: range={s['range']:.1f}mm, bottoming={s['bottoming_pct']:.1f}%\n"
 
+    quality_text = ""
+    if incident_report is not None:
+        quality_text = f"\nSession Quality: {incident_report.summary_text()}\n"
+    if evolution_report is not None and evolution_report.detected:
+        quality_text += f"{evolution_report.for_prompt()}\n"
+
     conditions_text = ""
     if si.get('air_temp_c') is not None or si.get('track_temp_c') is not None:
         parts = []
@@ -141,8 +148,7 @@ Track: {track_name}
 Best Lap: {format_laptime(report.best_lap)}
 Average Lap: {format_laptime(report.avg_lap)}
 Balance Score: {report.balance_score:.2f} (-1=understeer, +1=oversteer)
-{conditions_text}
-
+{conditions_text}{quality_text}
 Issues Found:
 {issues_text if issues_text else "No major issues detected."}
 
@@ -150,7 +156,7 @@ Tire Temperatures:
 {tire_text if tire_text else "No tire data available."}
 {setup_text}{sector_text}{style_text}{stint_text}{fuel_text}{grip_text}{phase_text}{susp_text}
 {corner_text}
-For EACH corner with issues, provide a specific setup change recommendation that addresses the problem at that corner. For example: "T3 entry understeer → soften front ARB 1 click, add 0.1° front camber" or "T7 exit oversteer → stiffen rear springs 50 N/m, raise rear ride height 1mm".
+For EACH corner with issues, provide a specific setup change recommendation that addresses the problem at that corner. Reference corners by name (e.g. "Eau Rouge entry" or "T3 Andretti Hairpin") where names are available.
 
 Provide 3-5 specific setup changes with expected impact, prioritizing the worst corners. Reference actual current values when available. Distinguish between driver technique issues (brake point, throttle timing) and car setup issues (balance, springs, ARB, aero). Be concise and practical."""
 
@@ -285,7 +291,9 @@ def get_ai_recommendations_sync(report: AnalysisReport, car_name: str,
                                  stint_report=None,
                                  best_report=None,
                                  session_info: dict | None = None,
-                                 corner_report=None) -> str:
+                                 corner_report=None,
+                                 incident_report=None,
+                                 evolution_report=None) -> str:
     """
     Get AI-generated setup recommendations based on analysis report.
     Uses the Anthropic Claude API if available, otherwise returns rule-based advice.
@@ -302,7 +310,8 @@ def get_ai_recommendations_sync(report: AnalysisReport, car_name: str,
 
         prompt = _build_prompt(report, car_name, track_name, setup_data,
                                sector_report, style_report, stint_report, best_report,
-                               session_info=session_info, corner_report=corner_report)
+                               session_info=session_info, corner_report=corner_report,
+                               incident_report=incident_report, evolution_report=evolution_report)
 
         message = client.messages.create(
             model=_MODEL_SONNET,
@@ -327,7 +336,9 @@ def get_ai_recommendations_stream(report: AnalysisReport, car_name: str,
                                    stint_report=None,
                                    best_report=None,
                                    session_info: dict | None = None,
-                                   corner_report=None) -> Generator[str, None, None]:
+                                   corner_report=None,
+                                   incident_report=None,
+                                   evolution_report=None) -> Generator[str, None, None]:
     """
     Streaming variant — yields text chunks as they arrive from Claude.
     Falls back to a single-yield rule-based response on error.
@@ -346,7 +357,8 @@ def get_ai_recommendations_stream(report: AnalysisReport, car_name: str,
 
         prompt = _build_prompt(report, car_name, track_name, setup_data,
                                sector_report, style_report, stint_report, best_report,
-                               session_info=session_info, corner_report=corner_report)
+                               session_info=session_info, corner_report=corner_report,
+                               incident_report=incident_report, evolution_report=evolution_report)
 
         with client.messages.stream(
             model=_MODEL_SONNET,
@@ -515,6 +527,360 @@ Answer directly and specifically. If the question concerns a setup parameter cha
         yield "Anthropic package not installed. Run: pip install anthropic"
     except Exception:
         yield "AI request failed. Check your API key and internet connection."
+
+
+def generate_tech_legal_setup_stream(
+        report: AnalysisReport,
+        car_name: str,
+        track_name: str,
+        api_key: str,
+        car_class_str: str = "gt3",
+        style_report=None,
+        stint_report=None,
+        sector_report=None,
+        corner_report=None,
+        current_setup: dict | None = None,
+        session_info: dict | None = None,
+        track_info=None,
+) -> "Generator[str, None, None]":
+    """
+    Generate a complete, tech-inspection-passing iRacing setup tailored to
+    the driver's telemetry, balance issues, and driving style.
+
+    Requires a valid Anthropic API key.  Falls back to a rule-based summary
+    if the key is missing or the call fails.
+
+    Yields text chunks as they stream from Claude.
+
+    Why setups can fail tech inspection
+    ------------------------------------
+    The genetic-algorithm optimizer previously worked only in delta-space
+    (±clicks) without validating whether the resulting absolute value stayed
+    inside the car's legal garage range.  This function solves that by:
+
+    1. Including the full legal bounds table in the prompt so Claude knows
+       exactly what values are allowed.
+    2. Instructing Claude to emit a structured parameter table that can be
+       validated and clamped by ``tech_inspector.clamp_to_legal()``.
+    3. Explaining *why* the setup is built the way it is — connecting every
+       change to a specific telemetry finding or driving-style observation.
+    """
+    from typing import Generator  # local import avoids circular at module level
+
+    if not api_key or api_key.strip() == "":
+        yield _rule_based_recommendations(report, car_name, track_name)
+        return
+
+    if not _check_rate_limit():
+        yield "Please wait a few seconds between AI requests."
+        return
+
+    # ── Resolve car class ──────────────────────────────────────────────────
+    try:
+        from core.car_classifier import CarClass, car_class_profile_text
+        try:
+            car_class = CarClass(car_class_str.lower())
+        except ValueError:
+            car_class = CarClass.DEFAULT
+    except Exception:
+        car_class = None
+
+    # ── Legal bounds ───────────────────────────────────────────────────────
+    try:
+        from core.tech_inspector import bounds_summary_for_prompt
+        bounds_text = bounds_summary_for_prompt(car_class) if car_class else \
+            "(parameter bounds unavailable — stay within iRacing garage slider limits)"
+    except Exception:
+        bounds_text = "(parameter bounds unavailable — stay within iRacing garage slider limits)"
+
+    # ── Car class personality ──────────────────────────────────────────────
+    try:
+        car_profile = car_class_profile_text(car_class) if car_class else ""
+    except Exception:
+        car_profile = ""
+
+    # ── Baseline setup (grounded starting point) ───────────────────────────
+    try:
+        from data.templates.track_templates import get_baseline_setup_text
+        baseline_text = get_baseline_setup_text(
+            car_class_str.lower() if car_class_str else "gt3",
+            track_name)
+    except Exception:
+        baseline_text = "(baseline unavailable)"
+
+    # ── Driving style → setup hints ────────────────────────────────────────
+    style_hints: list = []
+    if style_report is not None:
+        try:
+            from core.driving_style import driving_style_to_setup_hints
+            style_hints = driving_style_to_setup_hints(style_report)
+        except Exception:
+            pass
+
+    # ── Build prompt sections ──────────────────────────────────────────────
+    car_name    = _sanitize(car_name, 120)
+    track_name  = _sanitize(track_name, 120)
+    si          = session_info or {}
+
+    # Telemetry overview
+    telem_lines = [
+        f"Car: {car_name}",
+        f"Track: {track_name}",
+        f"Best Lap: {format_laptime(report.best_lap)}",
+        f"Avg Lap:  {format_laptime(report.avg_lap)}",
+        f"Overall Balance: {report.balance_score:+.2f}  (-1=full understeer, +1=full oversteer)",
+    ]
+    if report.balance_entry != 0 or report.balance_mid != 0 or report.balance_exit != 0:
+        telem_lines += [
+            f"Entry balance (trail-brake): {report.balance_entry:+.2f}",
+            f"Mid-corner balance (coast):  {report.balance_mid:+.2f}",
+            f"Exit balance (power-on):     {report.balance_exit:+.2f}",
+        ]
+    if report.grip_utilization_pct > 0:
+        telem_lines.append(
+            f"Grip utilisation: {report.grip_utilization_pct:.0f}%  "
+            f"(max lateral {report.max_lat_g:.1f}G, longitudinal {report.max_long_g:.1f}G)"
+        )
+    if report.avg_upshift_rpm_pct > 0:
+        telem_lines.append(f"Avg upshift: {report.avg_upshift_rpm_pct:.0f}% of max RPM")
+    if report.rev_limiter_pct > 0:
+        telem_lines.append(f"Rev limiter: {report.rev_limiter_pct:.1f}% of session")
+    telem_text = "\n".join(telem_lines)
+
+    # Issues
+    issues_text = ""
+    for issue in report.issues:
+        issues_text += (
+            f"  [{issue.severity.value.upper()}] {issue.category.value} — "
+            f"{issue.title}: {issue.description}\n"
+        )
+    if not issues_text:
+        issues_text = "  No major issues detected.\n"
+
+    # Tire temperatures
+    tire_text = ""
+    if report.tire_summary:
+        for corner, temps in report.tire_summary.items():
+            spread = temps['inner'] - temps['outer']
+            tire_text += (
+                f"  {corner}: inner={temps['inner']:.1f}°C  mid={temps['mid']:.1f}°C  "
+                f"outer={temps['outer']:.1f}°C  avg={temps['avg']:.1f}°C  "
+                f"spread(in-out)={spread:+.1f}°C\n"
+            )
+
+    # Suspension
+    susp_text = ""
+    if report.suspension_summary:
+        for corner, s in report.suspension_summary.items():
+            susp_text += (
+                f"  {corner}: travel range={s['range']:.1f}mm  "
+                f"bottoming={s['bottoming_pct']:.1f}%\n"
+            )
+
+    # Driving style
+    style_text = ""
+    if style_report:
+        style_text = (
+            f"Driving style (scores 0–100, higher=better):\n"
+            f"  Overall {style_report.overall_score:.0f} | "
+            f"Braking {style_report.brake_consistency:.0f} | "
+            f"Throttle smoothness {style_report.throttle_smoothness:.0f} | "
+            f"Steering smoothness {style_report.steering_smoothness:.0f}\n"
+            f"  Trail braking: {style_report.trail_braking_pct:.1f}% of brake zones\n"
+            f"  Coast (no input) time: {style_report.coast_time_pct:.1f}%\n"
+            f"  Full throttle: {style_report.full_throttle_pct:.1f}%\n"
+        )
+        if style_report.balance_verdict:
+            style_text += f"  Balance verdict: {style_report.balance_verdict}\n"
+        if style_report.style_profile:
+            style_text += f"  Driver profile: {style_report.style_profile}\n"
+        if style_report.findings:
+            style_text += "  Findings:\n"
+            for f_ in style_report.findings[:5]:
+                style_text += f"    • {f_}\n"
+
+    # Sector / corner
+    sector_text = ""
+    if sector_report and getattr(sector_report, 'sectors', None):
+        sector_text = "Sector times:\n"
+        for i, s in enumerate(sector_report.sectors):
+            if getattr(s, 'lap_times', None):
+                sector_text += (
+                    f"  S{i+1}: best={s.best_time:.3f}s  avg={s.avg_time:.3f}s  "
+                    f"delta=+{s.avg_time - s.best_time:.3f}s\n"
+                )
+        tbl = getattr(sector_report, 'time_left_on_table', 0)
+        ws  = getattr(sector_report, 'worst_sector', None)
+        if tbl > 0:
+            sector_text += f"  Time left on table: +{tbl:.3f}s  (worst: S{(ws or 0)+1})\n"
+
+    corner_text = ""
+    if corner_report is not None:
+        try:
+            from core.corner_analysis import format_corner_summary
+            corner_text = "Corner analysis:\n" + format_corner_summary(corner_report)
+        except Exception:
+            pass
+
+    # Stint / degradation
+    stint_text = ""
+    if stint_report:
+        if getattr(stint_report, 'deg_rate', 0) > 0:
+            stint_text = (
+                f"Tire degradation: +{stint_report.deg_rate:.3f}s/lap"
+            )
+            if getattr(stint_report, 'optimal_stint_length', 0) > 0:
+                stint_text += f"  (optimal stint: {stint_report.optimal_stint_length} laps)"
+            stint_text += "\n"
+        if getattr(stint_report, 'findings', None):
+            stint_text += "Pressure findings: " + "; ".join(stint_report.findings[:3]) + "\n"
+
+    # Current setup
+    setup_text = ""
+    if current_setup:
+        lines = [
+            f"  {_sanitize(str(k), 60)}: {_sanitize(str(v), 80)}"
+            for k, v in list(current_setup.items())[:60]
+        ]
+        setup_text = "Current setup values:\n" + "\n".join(lines) + "\n"
+
+    # Conditions
+    cond_text = ""
+    cond_parts = []
+    if si.get('air_temp_c') is not None:
+        cond_parts.append(f"Air {si['air_temp_c']:.1f}°C")
+    if si.get('track_temp_c') is not None:
+        cond_parts.append(f"Track {si['track_temp_c']:.1f}°C")
+    if si.get('skies'):
+        cond_parts.append(_sanitize(str(si['skies']), 30))
+    if si.get('weather_type'):
+        cond_parts.append(_sanitize(str(si['weather_type']), 30))
+    if si.get('wind_speed_ms') is not None:
+        cond_parts.append(f"Wind {si['wind_speed_ms']:.1f} m/s")
+    if cond_parts:
+        cond_text = "Conditions: " + ", ".join(cond_parts) + "\n"
+
+    # Track character
+    track_text = ""
+    if track_info:
+        track_text = (
+            f"Track character: downforce demand={getattr(track_info,'downforce_demand','?')}, "
+            f"tire stress={getattr(track_info,'tire_stress','?')}, "
+            f"surface={getattr(track_info,'surface','?')}, "
+            f"type={getattr(track_info,'track_type','?')}\n"
+        )
+        if getattr(track_info, 'notes', None):
+            track_text += f"  Notes: {track_info.notes}\n"
+
+    # ── Style hints section ────────────────────────────────────────────────
+    hints_text = ""
+    if style_hints:
+        hints_text = "DRIVER-SPECIFIC SETUP IMPLICATIONS (from measured technique):\n"
+        for h in style_hints:
+            hints_text += f"  • {h}\n"
+
+    # ── Assemble prompt ────────────────────────────────────────────────────
+    trail_pct_str = (f"{style_report.trail_braking_pct:.0f}%"
+                     if style_report else "unknown")
+
+    prompt = f"""You are a professional iRacing setup engineer building a PERSONALISED, TECH-INSPECTION-PASSING setup.
+
+Your job is to START from the validated baseline below and ADJUST it to suit:
+  1. The specific challenges of {track_name}
+  2. This driver's measured technique and weaknesses
+  3. The telemetry findings from their session
+
+Every final value MUST fall within the legal parameter ranges. Do not invent values from scratch — adjust the baseline with specific, data-driven reasoning.
+
+═══════════════════════════════════════════════════════
+CAR CHARACTER — {car_name} ({car_class_str.upper()})
+═══════════════════════════════════════════════════════
+{car_profile}
+
+═══════════════════════════════════════════════════════
+VALIDATED BASELINE  (start here, adjust as needed)
+═══════════════════════════════════════════════════════
+{baseline_text}
+
+═══════════════════════════════════════════════════════
+TELEMETRY — what this driver's session shows
+═══════════════════════════════════════════════════════
+{telem_text}
+{cond_text}{track_text}
+DETECTED ISSUES:
+{issues_text}
+TIRE TEMPERATURES:
+{tire_text if tire_text else "  No tire data.\n"}
+SUSPENSION TRAVEL:
+{susp_text if susp_text else "  No suspension data.\n"}
+{style_text}
+{sector_text}
+{corner_text}
+{stint_text}
+{setup_text}
+═══════════════════════════════════════════════════════
+DRIVER TECHNIQUE → SETUP IMPLICATIONS
+═══════════════════════════════════════════════════════
+{hints_text if hints_text else "  No driving style data available.\n"}
+═══════════════════════════════════════════════════════
+LEGAL PARAMETER RANGES  (values outside these FAIL tech inspection)
+═══════════════════════════════════════════════════════
+{bounds_text}
+
+═══════════════════════════════════════════════════════
+YOUR DELIVERABLE
+═══════════════════════════════════════════════════════
+Structure your response in four sections:
+
+**1. DIAGNOSIS** (3–5 bullets)
+  Identify the primary performance deficits. Quote specific numbers
+  (e.g. "entry understeer −0.42, RF inner 8°C hotter than outer").
+  Distinguish setup issues from driver technique issues.
+
+**2. TRACK-SPECIFIC REASONING**
+  Explain which track challenges from the setup guidance above drive
+  which parameter decisions. Reference specific corners by name.
+
+**3. COMPLETE SETUP TABLE**
+  Adjust the baseline values. Format as:
+
+  PARAMETER              | VALUE        | CHANGED FROM BASELINE? | REASON
+  -----------------------|--------------|------------------------|-------
+  LF Camber              | -3.2 deg     | Yes (was -3.0)         | RF inner +8°C → reduce camber
+  Brake Bias             | 54.0%        | Yes (was 55.0%)        | Entry understeer phase −0.42
+  LF Cold Pressure       | 27.0 psi     | No                     | Within target range
+
+  Include ALL parameters: camber ×4, toe (F/R), cold pressures ×4,
+  springs ×4, ARBs (F/R), ride heights ×4, slow bump ×4, fast bump ×4,
+  slow rebound ×4, fast rebound ×4, wing angles (F/R), brake bias,
+  brake pressure, TC, ABS, diff (preload, power ramp, coast ramp).
+
+**4. DRIVER STYLE NOTES**
+  Explain 2–3 choices that are specifically adapted to this driver's
+  measured technique (trail braking {trail_pct_str}, consistency scores, etc.).
+  Tell the driver what they will feel differently and why it helps them.
+
+Keep reasons on one line per parameter. Every value must be within the legal ranges."""
+
+    # ── Stream from Claude ─────────────────────────────────────────────────
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key, timeout=90.0)
+
+        with client.messages.stream(
+            model="claude-sonnet-4-6",
+            max_tokens=2500,
+            messages=[{"role": "user", "content": prompt}],
+        ) as stream:
+            for text in stream.text_stream:
+                yield text
+
+    except ImportError:
+        yield "Anthropic package not installed. Run: pip install anthropic\n\n"
+        yield _rule_based_recommendations(report, car_name, track_name)
+    except Exception as exc:
+        yield f"AI request failed ({exc}). Check your API key and internet connection.\n\n"
+        yield _rule_based_recommendations(report, car_name, track_name)
 
 
 def _rule_based_recommendations(report: AnalysisReport, car_name: str, track_name: str) -> str:

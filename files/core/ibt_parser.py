@@ -343,6 +343,106 @@ class IBTParser:
         except Exception as e:
             logger.debug("CarSetup extraction skipped: %s", e)
 
+        # Extract WeekendInfo (track city, country, turns, pit speed)
+        try:
+            wi = self._extract_yaml_block(text, 'WeekendInfo')
+            if wi:
+                if 'TrackCity' in wi:       info['track_city']       = wi['TrackCity']
+                if 'TrackCountry' in wi:    info['track_country']    = wi['TrackCountry']
+                if 'TrackNumTurns' in wi:
+                    try: info['track_num_turns'] = int(wi['TrackNumTurns'])
+                    except (ValueError, TypeError): pass
+                if 'TrackPitSpeedLimit' in wi:
+                    raw_ps = str(wi['TrackPitSpeedLimit']).split()[0]
+                    try: info['pit_speed_limit'] = float(raw_ps)
+                    except ValueError: pass
+                if 'EventType' in wi:       info['event_type']       = wi['EventType']
+                if 'Season' in wi:          info['season']           = wi['Season']
+                if 'RaceWeek' in wi:
+                    try: info['race_week'] = int(wi['RaceWeek'])
+                    except (ValueError, TypeError): pass
+        except Exception as e:
+            logger.debug("WeekendInfo extraction skipped: %s", e)
+
+        # Extract SplitTimeInfo → real iRacing sector boundaries
+        try:
+            sti = self._extract_yaml_block(text, 'SplitTimeInfo')
+            if sti and 'Sectors' in sti and isinstance(sti['Sectors'], list):
+                splits = []
+                for sec in sti['Sectors']:
+                    if isinstance(sec, dict) and 'SectorStartPct' in sec:
+                        try: splits.append(float(sec['SectorStartPct']))
+                        except (ValueError, TypeError): pass
+                if splits:
+                    info['iracing_sector_splits'] = sorted(splits)
+        except Exception as e:
+            logger.debug("SplitTimeInfo extraction skipped: %s", e)
+
+        # Extract DriverInfo → player iRating, license, car number
+        try:
+            di = self._extract_yaml_block(text, 'DriverInfo')
+            if di:
+                driver_car_idx = di.get('DriverCarIdx', _driver_car_idx)
+                drivers_list = di.get('Drivers', [])
+                if isinstance(drivers_list, list):
+                    player = next(
+                        (d for d in drivers_list
+                         if isinstance(d, dict) and d.get('CarIdx') == driver_car_idx),
+                        drivers_list[0] if drivers_list else None
+                    )
+                    if player and isinstance(player, dict):
+                        if 'IRating' in player:
+                            try: info['irating'] = int(player['IRating'])
+                            except (ValueError, TypeError): pass
+                        if 'LicString' in player:
+                            info['license_string'] = str(player['LicString'])
+                        if 'LicLevel' in player:
+                            try: info['lic_level'] = int(player['LicLevel'])
+                            except (ValueError, TypeError): pass
+                        if 'CarNumber' in player:
+                            info['car_number'] = str(player['CarNumber'])
+                        if 'TeamName' in player and player['TeamName']:
+                            info['team_name'] = str(player['TeamName'])
+                        if 'IsSpectator' in player:
+                            info['is_spectator'] = bool(int(player.get('IsSpectator', 0)))
+        except Exception as e:
+            logger.debug("DriverInfo extraction skipped: %s", e)
+
+        # Extract SessionInfo → ResultsPositions for the active session
+        try:
+            si = self._extract_yaml_block(text, 'SessionInfo')
+            if si and 'Sessions' in si and isinstance(si['Sessions'], list):
+                # Find the last session that has results
+                results = None
+                for sess in reversed(si['Sessions']):
+                    if isinstance(sess, dict) and 'ResultsPositions' in sess:
+                        rp = sess['ResultsPositions']
+                        if isinstance(rp, list) and rp:
+                            results = rp
+                            info['results_session_type'] = sess.get('SessionType', '')
+                            break
+                if results:
+                    parsed_results = []
+                    for entry in results:
+                        if not isinstance(entry, dict): continue
+                        try:
+                            parsed_results.append({
+                                'position':       int(entry.get('Position', 0)),
+                                'class_position': int(entry.get('ClassPosition', 0)),
+                                'car_idx':        int(entry.get('CarIdx', -1)),
+                                'fastest_time':   float(entry.get('FastestTime', 0)),
+                                'last_time':      float(entry.get('LastTime', 0)),
+                                'laps':           int(entry.get('Laps', 0)),
+                                'laps_complete':  int(entry.get('LapsComplete', 0)),
+                                'reason_out':     str(entry.get('ReasonOutStr', 'Running')),
+                            })
+                        except (TypeError, ValueError):
+                            continue
+                    if parsed_results:
+                        info['results_positions'] = parsed_results
+        except Exception as e:
+            logger.debug("SessionInfo results extraction skipped: %s", e)
+
         # Resolve player car name from collected drivers
         if 'car_name' not in info and _drivers:
             # Priority: DriverCarIdx match → first non-pace non-AI → first non-pace
@@ -359,6 +459,32 @@ class IBTParser:
                 info['car_name'] = candidate['screen_name'] or candidate['path'] or 'Unknown Car'
         return info
 
+
+    def _extract_yaml_block(self, text: str, key: str) -> Optional[Dict[str, Any]]:
+        """
+        Extract any top-level YAML block by key name.
+        Returns the parsed dict for that block, or None if not found.
+        """
+        import yaml
+        marker = f'\n{key}:'
+        start = text.find(marker)
+        if start == -1:
+            if text.startswith(f'{key}:'):
+                start = -1
+            else:
+                return None
+        start = start + 1 if start >= 0 else 0
+        lines = text[start:].splitlines()
+        block = [lines[0]]
+        for line in lines[1:]:
+            if line and not line[0].isspace() and ':' in line:
+                break
+            block.append(line)
+        try:
+            parsed = yaml.safe_load('\n'.join(block))
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
 
     def _extract_car_setup(self, text: str) -> Optional[Dict[str, Any]]:
         """

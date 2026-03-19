@@ -32,7 +32,7 @@ def _normalize(x: np.ndarray, y: np.ndarray):
     """Centre and scale X/Y so the track fits in a unit square."""
     cx, cy = x.mean(), y.mean()
     x, y = x - cx, y - cy
-    scale = max(np.ptp(x), np.ptp(y))
+    scale = max(x.max() - x.min(), y.max() - y.min())
     if scale < 1e-6:
         scale = 1.0
     return x / scale, y / scale
@@ -148,8 +148,8 @@ class TrackMapWidget(EmbedChart):
             if len(hx) < 2:
                 continue
             # Normalize using the same origin/scale as full track
-            hx = (hx - rl.x.mean()) / max(np.ptp(rl.x), np.ptp(rl.y), 1e-6)
-            hy = (hy - rl.y.mean()) / max(np.ptp(rl.x), np.ptp(rl.y), 1e-6)
+            hx = (hx - rl.x.mean()) / max(rl.x.max() - rl.x.min(), rl.y.max() - rl.y.min(), 1e-6)
+            hy = (hy - rl.y.mean()) / max(rl.x.max() - rl.x.min(), rl.y.max() - rl.y.min(), 1e-6)
 
             lbl_arg = label if label and label not in seen_labels else '_nolegend_'
             ax.plot(hx, hy, color=col, lw=lw, alpha=alpha,
@@ -167,8 +167,8 @@ class TrackMapWidget(EmbedChart):
                                                   min(1, pct + 0.002))
                 if len(cx_arr):
                     # normalize
-                    px = (cx_arr.mean() - rl.x.mean()) / max(np.ptp(rl.x), np.ptp(rl.y), 1e-6)
-                    py = (cy_arr.mean() - rl.y.mean()) / max(np.ptp(rl.x), np.ptp(rl.y), 1e-6)
+                    px = (cx_arr.mean() - rl.x.mean()) / max(rl.x.max() - rl.x.min(), rl.y.max() - rl.y.min(), 1e-6)
+                    py = (cy_arr.mean() - rl.y.mean()) / max(rl.x.max() - rl.x.min(), rl.y.max() - rl.y.min(), 1e-6)
                     ax.scatter(px, py, s=60, color=col, zorder=6, edgecolors='white', lw=0.5)
                     if txt:
                         ax.annotate(txt, (px, py), textcoords='offset points',
@@ -176,8 +176,8 @@ class TrackMapWidget(EmbedChart):
                                     fontweight='bold', zorder=7)
 
         # ── 5. Start/finish marker ────────────────────────────────────────
-        x0 = (rl.x[0] - rl.x.mean()) / max(np.ptp(rl.x), np.ptp(rl.y), 1e-6)
-        y0 = (rl.y[0] - rl.y.mean()) / max(np.ptp(rl.x), np.ptp(rl.y), 1e-6)
+        x0 = (rl.x[0] - rl.x.mean()) / max(rl.x.max() - rl.x.min(), rl.y.max() - rl.y.min(), 1e-6)
+        y0 = (rl.y[0] - rl.y.mean()) / max(rl.x.max() - rl.x.min(), rl.y.max() - rl.y.min(), 1e-6)
         ax.scatter(x0, y0, s=80, color='white', zorder=8, marker='D')
 
         # ── 6. Title & legend ─────────────────────────────────────────────
@@ -195,7 +195,7 @@ class TrackMapWidget(EmbedChart):
 
 def _norm_pts(hx, hy, ref_x, ref_y):
     """Normalise a subset of points using the same scale as the full track."""
-    denom = max(np.ptp(ref_x), np.ptp(ref_y), 1e-6)
+    denom = max(ref_x.max() - ref_x.min(), ref_y.max() - ref_y.min(), 1e-6)
     return (hx - ref_x.mean()) / denom, (hy - ref_y.mean()) / denom
 
 

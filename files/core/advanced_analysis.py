@@ -6,6 +6,10 @@ import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
 from core.ibt_parser import TelemetryData
+try:
+    from data.track_corners import get_sectors as _get_track_sectors  # type: ignore[import-unresolved]
+except ImportError:
+    def _get_track_sectors(track_name): return [1/3, 2/3]  # type: ignore[misc]
 
 # ── Analysis thresholds (tunable) ─────────────────────────────────────────
 DEG_OUTLIER_S = 3.0              # lap time seconds from median → outlier for deg calc
@@ -64,7 +68,9 @@ class SectorAnalysisReport:
 
 class SectorAnalyzer:
 
-    def analyze(self, data: TelemetryData, num_sectors: int = 3) -> SectorAnalysisReport:
+    def analyze(self, data: TelemetryData, num_sectors: int = 3,
+                track_name: str = "",
+                sector_splits: list = None) -> SectorAnalysisReport:
         """Divide each lap into sectors, compute per-sector times and speeds, find the worst sector."""
         report = SectorAnalysisReport(num_sectors=num_sectors)
 
@@ -74,9 +80,22 @@ class SectorAnalyzer:
         if lap_dist is None or data.num_laps < 1:
             return report
 
-        # Build sector boundaries
-        boundaries = np.linspace(0, 1, num_sectors + 1)
-        sectors = [SectorData(i, boundaries[i], boundaries[i+1]) for i in range(num_sectors)]
+        # Priority: explicit sector_splits arg → track DB → equal split
+        if sector_splits and len(sector_splits) >= 1:
+            # sector_splits is a list of start-pct values (first is always 0.0)
+            splits = [s for s in sector_splits if 0.0 < s < 1.0]
+            boundaries = np.array([0.0] + sorted(splits) + [1.0])
+            num_sectors = len(boundaries) - 1
+            report = SectorAnalysisReport(num_sectors=num_sectors)
+        else:
+            _track = track_name or data.track_name
+            real_splits = _get_track_sectors(_track) if _track else []
+            if len(real_splits) == num_sectors - 1:
+                boundaries = np.array([0.0] + real_splits + [1.0])
+            else:
+                boundaries = np.linspace(0, 1, num_sectors + 1)
+        sectors = [SectorData(i, float(boundaries[i]), float(boundaries[i+1]))
+                   for i in range(num_sectors)]
 
         # Process each lap
         for lap_idx in range(data.num_laps):

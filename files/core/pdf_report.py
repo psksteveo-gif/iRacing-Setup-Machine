@@ -370,6 +370,82 @@ def _make_sector_chart(sector_report: SectorAnalysisReport) -> Optional[RLImage]
         fig.clear()
 
 
+def _make_track_map_image(data, best_lap_idx: int = 0) -> Optional[RLImage]:
+    """Render a speed-coloured racing line for the best lap."""
+    try:
+        from core.racing_line import reconstruct_racing_line, speed_colormap
+        from matplotlib.collections import LineCollection
+        rl = reconstruct_racing_line(data, best_lap_idx)
+        if rl is None:
+            return None
+        fig = Figure(figsize=(3.5, 2.5), facecolor='#1a1a2e')
+        ax = fig.add_subplot(111, facecolor='#1a1a2e')
+        # Build (N-1, 2, 2) segments for LineCollection
+        pts = np.column_stack([rl.x, rl.y]).reshape(-1, 1, 2)
+        segs = np.concatenate([pts[:-1], pts[1:]], axis=1)
+        lc = LineCollection(segs, colors=speed_colormap(rl.speed[:-1]),
+                            linewidths=1.8, capstyle='round')
+        ax.add_collection(lc)
+        ax.autoscale()
+        ax.set_aspect('equal', 'datalim')
+        ax.axis('off')
+        src = rl.source.upper()
+        ax.set_title(f"Racing Line  [{src}]", fontsize=8, color='#cccccc', pad=3)
+        fig.tight_layout(pad=0.3)
+        buf = BytesIO()
+        fig.savefig(buf, format='png', dpi=120, facecolor='#1a1a2e')
+        buf.seek(0)
+        return RLImage(buf, width=3.2*inch, height=2.3*inch)
+    except Exception:
+        logger.warning("Failed to generate track map image", exc_info=True)
+        return None
+    finally:
+        try: fig.clear()
+        except Exception: pass
+
+
+def _make_lap_delta_image(data, best_lap_idx: int = 0,
+                          second_lap_idx: int = 1) -> Optional[RLImage]:
+    """Render a cumulative lap delta chart (best vs 2nd-best)."""
+    if data.num_laps < 2:
+        return None
+    try:
+        from core.corner_analysis import LapDeltaAnalyzer
+        result = LapDeltaAnalyzer().analyze(data, best_lap_idx, second_lap_idx)
+        if result is None:
+            return None
+        fig = Figure(figsize=(5.5, 1.8), facecolor='white')
+        ax = fig.add_subplot(111)
+        ax.set_facecolor('#f8f9fa')
+        x = result.dist_pct * 100
+        y = result.delta_s
+        ax.fill_between(x, y, 0, where=(y >= 0),
+                        color='#e74c3c', alpha=0.55, label='Cmp slower')
+        ax.fill_between(x, y, 0, where=(y < 0),
+                        color='#2ecc71', alpha=0.55, label='Cmp faster')
+        ax.plot(x, y, color='#333333', linewidth=0.8, alpha=0.6)
+        ax.axhline(0, color='#555555', linewidth=0.8)
+        ax.set_xlabel("Track %", fontsize=8)
+        ax.set_ylabel("Delta (s)", fontsize=8)
+        ax.set_title(
+            f"Lap Delta — Lap {best_lap_idx+1} (ref) vs Lap {second_lap_idx+1}",
+            fontsize=9)
+        ax.legend(fontsize=7, loc='upper right')
+        ax.tick_params(labelsize=7)
+        ax.grid(True, alpha=0.25)
+        fig.tight_layout(pad=0.4)
+        buf = BytesIO()
+        fig.savefig(buf, format='png', dpi=120)
+        buf.seek(0)
+        return RLImage(buf, width=5.2*inch, height=1.6*inch)
+    except Exception:
+        logger.warning("Failed to generate lap delta image", exc_info=True)
+        return None
+    finally:
+        try: fig.clear()
+        except Exception: pass
+
+
 def generate_pdf_report(
     output_path: str,
     data: TelemetryData,
@@ -387,6 +463,14 @@ def generate_pdf_report(
 
     styles, custom = _make_styles()
     story = []
+
+    # Pre-compute best / 2nd-best lap indices for chart helpers
+    _best_lap_idx = 0
+    _second_lap_idx = 1
+    if report.lap_times and len(report.lap_times) >= 2:
+        _sorted = sorted(range(len(report.lap_times)), key=lambda i: report.lap_times[i])
+        _best_lap_idx = _sorted[0]
+        _second_lap_idx = _sorted[1]
 
     # ── Header ────────────────────────────────────────────────────────
     story.append(_header_table(data.car_name, data.track_name, data.session_info))
@@ -470,6 +554,11 @@ def generate_pdf_report(
 
     story.append(_lap_table(report, best_report, styles, custom))
 
+    delta_img = _make_lap_delta_image(data, _best_lap_idx, _second_lap_idx)
+    if delta_img:
+        story.append(Spacer(1, 6))
+        story.append(delta_img)
+
     if best_report.improvement_trend:
         trend_str = (f"Improving {abs(best_report.improvement_trend):.3f}s/lap ✓"
                      if best_report.improvement_trend < -0.05
@@ -494,6 +583,15 @@ def generate_pdf_report(
         chart = _make_sector_chart(sector_report)
         if chart:
             story.append(chart)
+
+    # ── Track Map ─────────────────────────────────────────────────────
+    track_map_img = _make_track_map_image(data, _best_lap_idx)
+    if track_map_img:
+        story.append(Spacer(1, 8))
+        story.append(Paragraph("Track Map — Best Lap Racing Line", custom['SectionHead']))
+        story.append(HRFlowable(width="100%", thickness=0.5, color=ACCENT))
+        story.append(Spacer(1, 4))
+        story.append(track_map_img)
 
     # ── Balance Analysis ──────────────────────────────────────────────
     story.append(Spacer(1, 10))

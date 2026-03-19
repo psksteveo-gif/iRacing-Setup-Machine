@@ -67,3 +67,45 @@ def save_cfg(c):
             json.dump(to_save, f)
     except (IOError, OSError) as e:
         logger.warning("Could not save config: %s", e)
+
+
+# ── iRacing SSO credentials ───────────────────────────────────────────────
+
+_KEYRING_IR_EMAIL = "iracing_email"
+_KEYRING_IR_PASS  = "iracing_password"
+
+
+def get_iracing_credentials() -> tuple[str, str]:
+    """Return (email, password) from OS keyring, or ('', '') if not set."""
+    try:
+        import keyring
+        email = keyring.get_password(_KEYRING_SERVICE, _KEYRING_IR_EMAIL) or ""
+        pw    = keyring.get_password(_KEYRING_SERVICE, _KEYRING_IR_PASS)  or ""
+        return email, pw
+    except Exception:
+        return "", ""
+
+
+def set_iracing_credentials(email: str, password: str) -> None:
+    """Store iRacing credentials in OS keyring. Never written to config file."""
+    try:
+        import keyring
+        if email:
+            keyring.set_password(_KEYRING_SERVICE, _KEYRING_IR_EMAIL, email)
+        if password:
+            keyring.set_password(_KEYRING_SERVICE, _KEYRING_IR_PASS, password)
+    except Exception as e:
+        logger.warning("Failed to store iRacing credentials: %s", e)
+
+
+def clear_iracing_credentials() -> None:
+    """Remove stored iRacing credentials from OS keyring."""
+    try:
+        import keyring
+        for user in (_KEYRING_IR_EMAIL, _KEYRING_IR_PASS):
+            try:
+                keyring.delete_password(_KEYRING_SERVICE, user)
+            except Exception:
+                pass
+    except Exception:
+        pass
