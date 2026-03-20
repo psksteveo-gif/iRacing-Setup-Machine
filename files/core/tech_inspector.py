@@ -272,6 +272,50 @@ _ROAD_ROOKIE: Dict[str, ParamBounds] = {
     "arb_rear":     ParamBounds(1, 5, 1, "step", "Rear ARB"),
 }
 
+# ── Oval (NASCAR short track / intermediate / superspeedway) ──────────────────
+_OVAL: Dict[str, ParamBounds] = {
+    **_STOCK,
+    # Oval-specific parameters
+    "stagger":       ParamBounds(0.0,  4.0,  0.25,  "in",      "Stagger (R−L circumference)"),
+    "wedge":         ParamBounds(48.0, 54.0, 0.5,   "%",       "Cross Weight (Wedge)"),
+    "track_bar":     ParamBounds(1,    10,   1,      "clicks",  "Track Bar Height"),
+    "shock_rf_bump": ParamBounds(1,    14,   1,      "clicks",  "RF Shock Bump"),
+    "shock_lf_bump": ParamBounds(1,    14,   1,      "clicks",  "LF Shock Bump"),
+    "shock_rr_bump": ParamBounds(1,    14,   1,      "clicks",  "RR Shock Bump"),
+    "shock_lr_bump": ParamBounds(1,    14,   1,      "clicks",  "LR Shock Bump"),
+    "front_tape":    ParamBounds(0,    10,   1,      "strips",  "Front Grill Tape"),
+}
+
+# ── Dirt Oval (late models, sprint cars, modifieds) ───────────────────────────
+_DIRT_OVAL: Dict[str, ParamBounds] = {
+    # Alignment
+    "camber_lf":         ParamBounds(-5.0,  2.0,  0.1,  "deg",    "LF Camber"),
+    "camber_rf":         ParamBounds(-5.0,  2.0,  0.1,  "deg",    "RF Camber"),
+    "camber_lr":         ParamBounds(-4.0,  2.0,  0.1,  "deg",    "LR Camber"),
+    "camber_rr":         ParamBounds(-4.0,  2.0,  0.1,  "deg",    "RR Camber"),
+    "toe_front":         ParamBounds(-6.0,  6.0,  0.1,  "mm",     "Front Toe"),
+    "toe_rear":          ParamBounds(-6.0,  6.0,  0.1,  "mm",     "Rear Toe"),
+    # Tire pressures — dirt runs much lower pressures
+    "pressure_lf":       ParamBounds(8.0,  22.0,  0.5,  "psi",    "LF Cold Pressure"),
+    "pressure_rf":       ParamBounds(8.0,  22.0,  0.5,  "psi",    "RF Cold Pressure"),
+    "pressure_lr":       ParamBounds(8.0,  22.0,  0.5,  "psi",    "LR Cold Pressure"),
+    "pressure_rr":       ParamBounds(8.0,  22.0,  0.5,  "psi",    "RR Cold Pressure"),
+    # Springs
+    "spring_lf":         ParamBounds(100.0, 1200.0, 50.0, "lb/in", "LF Spring Rate"),
+    "spring_rf":         ParamBounds(100.0, 1200.0, 50.0, "lb/in", "RF Spring Rate"),
+    "spring_lr":         ParamBounds(100.0, 1200.0, 50.0, "lb/in", "LR Spring Rate"),
+    "spring_rr":         ParamBounds(100.0, 1200.0, 50.0, "lb/in", "RR Spring Rate"),
+    # Dirt-specific
+    "bite_bar":          ParamBounds(0,    10,    1,     "notches", "Bite Bar"),
+    "wedge":             ParamBounds(48.0, 56.0,  0.5,   "%",       "Cross Weight (Wedge)"),
+    "nose_weight":       ParamBounds(0.0,  50.0,  1.0,   "lb",      "Nose Weight"),
+    "wing_angle":        ParamBounds(0.0,  30.0,  1.0,   "deg",     "Rear Wing Angle"),
+    "shock_compression": ParamBounds(1,    14,    1,     "clicks",  "Shock Compression"),
+    # Brakes
+    "brake_bias":        ParamBounds(50.0, 70.0,  0.5,   "%",       "Brake Bias (front)"),
+    "brake_pressure":    ParamBounds(80.0, 110.0, 1.0,   "%",       "Max Brake Pressure"),
+}
+
 # Map CarClass → bounds dict
 BOUNDS: Dict[CarClass, Dict[str, ParamBounds]] = {
     CarClass.GT3:          _GT3,
@@ -285,10 +329,11 @@ BOUNDS: Dict[CarClass, Dict[str, ParamBounds]] = {
     CarClass.PORSCHE_CUP:  _PORSCHE_CUP,
     CarClass.TCR:          _TCR,
     CarClass.V8_SUPERCAR:  _STOCK,
-    CarClass.STOCK:        _STOCK,
+    CarClass.STOCK:        _OVAL,
     CarClass.ROAD_ROOKIE:  _ROAD_ROOKIE,
     CarClass.SPORTS_CAR:   _GT4,
     CarClass.RALLY_CROSS:  _ROAD_ROOKIE,
+    CarClass.DIRT_OVAL:    _DIRT_OVAL,
     CarClass.DEFAULT:      _GT3,
 }
 
@@ -561,6 +606,40 @@ _CLAUDE_NAME_MAP: Dict[str, str] = {
     "coast ramp":               "diff_coast",
     "diff power":               "diff_power",
     "diff coast":               "diff_coast",
+
+    # ── Oval parameters ───────────────────────────────────────────────────
+    "stagger":                  "stagger",
+    "tire stagger":             "stagger",
+    "wedge":                    "wedge",
+    "cross weight":             "wedge",
+    "cross weight %":           "wedge",
+    "track bar":                "track_bar",
+    "track bar height":         "track_bar",
+    "panhard bar":              "track_bar",
+    "panhard bar height":       "track_bar",
+    "watts link":               "track_bar",
+    "rf shock bump":            "shock_rf_bump",
+    "rf bump":                  "shock_rf_bump",
+    "right front bump":         "shock_rf_bump",
+    "lf shock bump":            "shock_lf_bump",
+    "lf bump":                  "shock_lf_bump",
+    "left front bump":          "shock_lf_bump",
+    "rr shock bump":            "shock_rr_bump",
+    "lr shock bump":            "shock_lr_bump",
+    "front tape":               "front_tape",
+    "grill tape":               "front_tape",
+    "tape":                     "front_tape",
+
+    # ── Dirt parameters ───────────────────────────────────────────────────
+    "bite bar":                 "bite_bar",
+    "bite":                     "bite_bar",
+    "wing angle":               "wing_angle",
+    "rear wing angle":          "wing_angle",
+    "dirt wing":                "wing_angle",
+    "shock compression":        "shock_compression",
+    "compression":              "shock_compression",
+    "nose weight":              "nose_weight",
+    "front nose weight":        "nose_weight",
 }
 
 

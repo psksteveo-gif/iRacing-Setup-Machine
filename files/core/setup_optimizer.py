@@ -12,7 +12,7 @@ import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict
 
-from core.setup_impact import _EFFECT_MODELS, _get_model_for_class, predict_impact, ImpactReport
+from core.setup_impact import _EFFECT_MODELS, _CLASS_ALIASES, _get_model_for_class, predict_impact, ImpactReport
 
 
 # ── Data types ────────────────────────────────────────────────────────────────
@@ -38,8 +38,59 @@ class OptimizationResult:
 
 # ── GA core ───────────────────────────────────────────────────────────────────
 
-_PARAMS = list(_EFFECT_MODELS.keys())
+# Road course parameters (default)
+_ROAD_PARAMS = [
+    "rear_wing", "front_wing", "rear_spring", "front_spring",
+    "rear_arb", "front_arb", "tire_pressure", "ride_height_rear",
+    "ride_height_front", "brake_bias", "tc_level", "abs_level",
+]
+
+# Oval parameters (replaces road params for oval classes)
+_OVAL_PARAMS = [
+    "stagger", "wedge", "track_bar", "tire_pressure",
+    "brake_bias", "rear_spring", "front_spring",
+    "shock_rf_bump", "shock_lf_bump", "front_tape", "tc_level",
+]
+
+# Superspeedway parameters
+_SUPERSPEEDWAY_PARAMS = [
+    "stagger", "wedge", "track_bar", "tire_pressure",
+    "front_tape", "rear_spring", "front_spring", "brake_bias",
+]
+
+# Dirt oval parameters
+_DIRT_OVAL_PARAMS = [
+    "bite_bar", "nose_weight", "wing_angle", "shock_compression",
+    "tire_pressure", "rear_spring", "front_spring", "wedge",
+]
+
+# Dirt road parameters
+_DIRT_ROAD_PARAMS = [
+    "shock_compression", "tire_pressure", "rear_spring", "front_spring",
+    "rear_arb", "front_arb", "brake_bias",
+    "ride_height_rear", "ride_height_front",
+]
+
+# Default fallback (all road params)
+_PARAMS = _ROAD_PARAMS
 _N = len(_PARAMS)
+
+
+def _get_class_params(car_class: Optional[str]) -> List[str]:
+    """Return the appropriate parameter list for the given car class."""
+    if not car_class:
+        return _ROAD_PARAMS
+    key = _CLASS_ALIASES.get(car_class.lower().replace(' ', '_'),
+                              car_class.lower().replace(' ', '_'))
+    if key == "superspeedway":
+        return _SUPERSPEEDWAY_PARAMS
+    if key == "oval":
+        return _OVAL_PARAMS
+    if key == "dirt_oval":
+        return _DIRT_OVAL_PARAMS
+    if key == "dirt_road":
+        return _DIRT_ROAD_PARAMS
+    return _ROAD_PARAMS
 
 # Map balance strings → numeric delta for scoring
 _BAL_DELTA = {'oversteer': 0.35, 'understeer': -0.35, 'neutral': 0.0,
@@ -94,21 +145,22 @@ def optimize_setup(
     if current_issues is None:
         current_issues = []
 
-    # Build car-class-specific effect models
+    # Build car-class-specific effect models and parameter list
     effect_models = _get_model_for_class(car_class)
+    local_params = _get_class_params(car_class)
+    local_n = len(local_params)
 
     rng = np.random.RandomState(rng_seed)
     max_d = target.max_delta_per_param
 
     # ── Fitness function ──────────────────────────────────────────────────────
-    # Corner-phase error weights:  entry phase → brake_bias / front_arb;
-    # mid phase → springs / arb;  exit phase → TC / diff / rear_spring.
-    # Build a per-parameter phase penalty that rewards fixing the worst phase.
+    # Corner-phase params adapted for both road and oval/dirt contexts
     _PHASE_PARAMS = {
-        "entry":  {"brake_bias", "front_arb", "front_spring"},
+        "entry":  {"brake_bias", "front_arb", "front_spring", "wedge", "track_bar"},
         "mid":    {"front_spring", "rear_spring", "front_arb", "rear_arb",
-                   "ride_height_front", "ride_height_rear"},
-        "exit":   {"tc_level", "rear_spring", "rear_arb", "tire_pressure"},
+                   "ride_height_front", "ride_height_rear", "stagger", "bite_bar"},
+        "exit":   {"tc_level", "rear_spring", "rear_arb", "tire_pressure",
+                   "shock_compression", "nose_weight"},
     }
     _phase_scores = {
         "entry": balance_entry,
@@ -139,8 +191,8 @@ def optimize_setup(
         return bonus
 
     def _fitness(ind: np.ndarray) -> float:
-        changes = [{'parameter': _PARAMS[i], 'delta': float(ind[i])}
-                   for i in range(_N) if abs(ind[i]) >= 0.5]
+        changes = [{'parameter': local_params[i], 'delta': float(ind[i])}
+                   for i in range(local_n) if abs(ind[i]) >= 0.5]
         if not changes:
             return 1e6
 
@@ -178,10 +230,9 @@ def optimize_setup(
                     - phase_bonus)
 
     # ── Initialise population ─────────────────────────────────────────────────
-    # Seed initial population with balance-aware bias
-    bias = _balance_bias(current_balance)
-    pop = rng.uniform(-max_d, max_d, (pop_size, _N))
-    pop += bias * rng.uniform(0.0, 1.5, (pop_size, _N))
+    bias = _balance_bias(current_balance, local_params)
+    pop = rng.uniform(-max_d, max_d, (pop_size, local_n))
+    pop += bias * rng.uniform(0.0, 1.5, (pop_size, local_n))
     pop = _snap_and_clip(pop, max_d)
 
     best_ind = pop[0].copy()
@@ -213,10 +264,10 @@ def optimize_setup(
             p1 = pop[int(t1.min())]
             p2 = pop[int(t2.min())]
             # Uniform crossover
-            mask = rng.rand(_N) > 0.5
+            mask = rng.rand(local_n) > 0.5
             child = np.where(mask, p1, p2)
             # Gaussian mutation
-            child = child + rng.randn(_N) * sigma
+            child = child + rng.randn(local_n) * sigma
             child = _snap_and_clip(child, max_d)
             new_pop.append(child)
 
@@ -224,8 +275,8 @@ def optimize_setup(
 
     # ── Build result from best individual ─────────────────────────────────────
     raw_changes = [
-        {'parameter': _PARAMS[i], 'delta': float(best_ind[i])}
-        for i in range(_N) if abs(best_ind[i]) >= 0.5
+        {'parameter': local_params[i], 'delta': float(best_ind[i])}
+        for i in range(local_n) if abs(best_ind[i]) >= 0.5
     ]
 
     # Sort by predicted absolute lap-time impact (most impactful first)
@@ -240,7 +291,7 @@ def optimize_setup(
     if not best_changes:
         # Fallback: return the single highest-impact parameter
         idx = int(np.argmax(np.abs(best_ind)))
-        best_changes = [{'parameter': _PARAMS[idx], 'delta': float(best_ind[idx])}]
+        best_changes = [{'parameter': local_params[idx], 'delta': float(best_ind[idx])}]
 
     final_report = predict_impact(best_changes, current_balance=current_balance,
                                   car_class=car_class)
@@ -269,14 +320,17 @@ def _snap_and_clip(arr: np.ndarray, max_d: float) -> np.ndarray:
     return arr
 
 
-def _balance_bias(balance: float) -> np.ndarray:
+def _balance_bias(balance: float, params: Optional[List[str]] = None) -> np.ndarray:
     """
     Per-parameter bias vector that nudges initial population toward fixing
     the current balance imbalance.
     """
-    bias = np.zeros(_N)
-    for i, p in enumerate(_PARAMS):
-        param_bal = _EFFECT_MODELS[p].get('balance', 'neutral')
+    if params is None:
+        params = _ROAD_PARAMS
+    n = len(params)
+    bias = np.zeros(n)
+    for i, p in enumerate(params):
+        param_bal = _EFFECT_MODELS.get(p, {}).get('balance', 'neutral')
         if balance < -0.15:                 # car understeers → want oversteer-inducing changes
             if param_bal == 'oversteer':
                 bias[i] = 0.8

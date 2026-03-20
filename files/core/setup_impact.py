@@ -135,6 +135,90 @@ _EFFECT_MODELS: Dict[str, Dict] = {
         "tire_wear": "decreased",
         "confidence": 0.8,
     },
+
+    # ── Oval-specific parameters ───────────────────────────────────────────
+    "stagger": {
+        "lap_time_per_click": 0.05,    # per 0.25" of stagger
+        "straight_speed": 0.0,
+        "corner_speed": 0.6,           # more stagger = faster through left turns
+        "balance": "oversteer",        # more stagger = more rotation in left turns
+        "tire_wear": "increased",      # asymmetric circumference = uneven wear
+        "confidence": 0.75,
+    },
+    "wedge": {
+        "lap_time_per_click": 0.03,    # per 0.5% cross weight
+        "straight_speed": 0.0,
+        "corner_speed": -0.3,
+        "balance": "understeer",       # more wedge (cross weight) = tight = understeer
+        "tire_wear": "minimal",
+        "confidence": 0.70,
+    },
+    "track_bar": {
+        "lap_time_per_click": 0.04,    # per click height adjustment
+        "straight_speed": 0.0,
+        "corner_speed": 0.4,
+        "balance": "oversteer",        # raising track bar = higher roll centre = looser
+        "tire_wear": "minimal",
+        "confidence": 0.70,
+    },
+    "shock_rf_bump": {
+        "lap_time_per_click": 0.015,
+        "straight_speed": 0.0,
+        "corner_speed": 0.2,
+        "balance": "understeer",       # stiffer RF bump = more RF load = tighter
+        "tire_wear": "minimal",
+        "confidence": 0.55,
+    },
+    "shock_lf_bump": {
+        "lap_time_per_click": 0.015,
+        "straight_speed": 0.0,
+        "corner_speed": 0.2,
+        "balance": "oversteer",        # stiffer LF bump = less LF load = looser
+        "tire_wear": "minimal",
+        "confidence": 0.55,
+    },
+    "front_tape": {
+        "lap_time_per_click": 0.04,    # per strip of grill tape (reduces cooling drag)
+        "straight_speed": 0.8,
+        "corner_speed": -0.05,
+        "balance": "neutral",
+        "tire_wear": "minimal",
+        "confidence": 0.65,
+    },
+
+    # ── Dirt-specific parameters ───────────────────────────────────────────
+    "bite_bar": {
+        "lap_time_per_click": 0.04,    # per notch of bite bar
+        "straight_speed": 0.0,
+        "corner_speed": -0.3,
+        "balance": "understeer",       # more bite = tight = understeer
+        "tire_wear": "minimal",
+        "confidence": 0.65,
+    },
+    "wing_angle": {
+        "lap_time_per_click": 0.03,    # per degree of wing angle
+        "straight_speed": -0.5,
+        "corner_speed": 0.4,
+        "balance": "understeer",       # more rear wing = more rear grip = understeer
+        "tire_wear": "decreased",
+        "confidence": 0.65,
+    },
+    "shock_compression": {
+        "lap_time_per_click": 0.02,    # per click
+        "straight_speed": 0.0,
+        "corner_speed": -0.25,
+        "balance": "neutral",
+        "tire_wear": "increased",      # stiffer = less conformity over bumps/dirt
+        "confidence": 0.55,
+    },
+    "nose_weight": {
+        "lap_time_per_click": 0.03,    # per lb of nose weight
+        "straight_speed": 0.0,
+        "corner_speed": 0.3,
+        "balance": "oversteer",        # more nose weight = more front grip = rotation
+        "tire_wear": "minimal",
+        "confidence": 0.60,
+    },
 }
 
 
@@ -251,19 +335,85 @@ _CLASS_MODELS: Dict[str, Dict[str, Dict[str, Any]]] = {
         "rear_arb":        {"lap_time_per_click": 0.012, "confidence": 0.55},
         "front_arb":       {"lap_time_per_click": 0.012, "confidence": 0.55},
     },
+
+    # ── Oval (short track / intermediate) ────────────────────────────────────
+    "oval": {
+        # Oval-specific params are more sensitive
+        "stagger":       {"lap_time_per_click": 0.06,  "confidence": 0.80},
+        "wedge":         {"lap_time_per_click": 0.04,  "confidence": 0.75},
+        "track_bar":     {"lap_time_per_click": 0.05,  "confidence": 0.75},
+        "shock_rf_bump": {"lap_time_per_click": 0.02,  "confidence": 0.60},
+        "shock_lf_bump": {"lap_time_per_click": 0.02,  "confidence": 0.60},
+        "front_tape":    {"lap_time_per_click": 0.06,  "confidence": 0.70},
+        "tire_pressure": {"lap_time_per_click": 0.08,  "confidence": 0.80},
+        "rear_spring":   {"lap_time_per_click": 0.04,  "confidence": 0.65},
+        "front_spring":  {"lap_time_per_click": 0.04,  "confidence": 0.65},
+        "brake_bias":    {"lap_time_per_click": 0.012, "confidence": 0.75},
+        # No traditional wings
+        "rear_wing":     {"lap_time_per_click": 0.0, "corner_speed": 0.0, "straight_speed": 0.0, "confidence": 0.05},
+        "front_wing":    {"lap_time_per_click": 0.0, "corner_speed": 0.0, "straight_speed": 0.0, "confidence": 0.05},
+    },
+
+    # ── Superspeedway (Daytona / Talladega style) ─────────────────────────────
+    "superspeedway": {
+        "stagger":       {"lap_time_per_click": 0.08,  "confidence": 0.80},
+        "wedge":         {"lap_time_per_click": 0.05,  "confidence": 0.75},
+        "front_tape":    {"lap_time_per_click": 0.10,  "confidence": 0.80},  # tape critical at high speed
+        "tire_pressure": {"lap_time_per_click": 0.06,  "confidence": 0.75},
+        "track_bar":     {"lap_time_per_click": 0.04,  "confidence": 0.70},
+        "rear_wing":     {"lap_time_per_click": 0.0, "corner_speed": 0.0, "straight_speed": 0.0, "confidence": 0.05},
+        "front_wing":    {"lap_time_per_click": 0.0, "corner_speed": 0.0, "straight_speed": 0.0, "confidence": 0.05},
+    },
+
+    # ── Dirt Oval (late models, sprint cars, modifieds) ───────────────────────
+    "dirt_oval": {
+        "bite_bar":          {"lap_time_per_click": 0.05,  "confidence": 0.70},
+        "nose_weight":       {"lap_time_per_click": 0.04,  "confidence": 0.65},
+        "wing_angle":        {"lap_time_per_click": 0.04,  "confidence": 0.70},
+        "shock_compression": {"lap_time_per_click": 0.025, "confidence": 0.60},
+        "tire_pressure":     {"lap_time_per_click": 0.07,  "confidence": 0.75},
+        "rear_spring":       {"lap_time_per_click": 0.05,  "confidence": 0.65},
+        "front_spring":      {"lap_time_per_click": 0.05,  "confidence": 0.65},
+        "wedge":             {"lap_time_per_click": 0.04,  "confidence": 0.70},
+        "rear_wing":         {"lap_time_per_click": 0.0, "corner_speed": 0.0, "straight_speed": 0.0, "confidence": 0.05},
+        "front_wing":        {"lap_time_per_click": 0.0, "corner_speed": 0.0, "straight_speed": 0.0, "confidence": 0.05},
+    },
+
+    # ── Dirt Road (rallycross / dirt road course) ─────────────────────────────
+    "dirt_road": {
+        "shock_compression": {"lap_time_per_click": 0.03,  "confidence": 0.60},
+        "tire_pressure":     {"lap_time_per_click": 0.06,  "confidence": 0.70},
+        "rear_spring":       {"lap_time_per_click": 0.04,  "confidence": 0.60},
+        "front_spring":      {"lap_time_per_click": 0.04,  "confidence": 0.60},
+        "rear_arb":          {"lap_time_per_click": 0.02,  "confidence": 0.60},
+        "front_arb":         {"lap_time_per_click": 0.02,  "confidence": 0.60},
+        "ride_height_rear":  {"lap_time_per_click": 0.04,  "confidence": 0.60},
+        "ride_height_front": {"lap_time_per_click": 0.04,  "confidence": 0.60},
+    },
 }
 
 # Aliases for fuzzy car-class name matching
 _CLASS_ALIASES = {
     "gtp": "gtp", "lmp2": "lmp2", "lmp": "lmp2",
     "gt3": "gt3", "gt4": "gt4", "gte": "gte",
-    "formula": "formula", "open_wheel": "formula", "f3": "formula",
+    "formula": "formula", "open_wheel": "formula", "f3": "formula", "ir18": "formula",
     "porsche_cup": "porsche_cup", "cup": "porsche_cup",
     "tcr": "tcr", "touring": "tcr",
-    "stock": "stock", "nascar": "stock", "oval": "stock",
+    "stock": "stock", "nascar": "stock",
     "road_rookie": "road_rookie", "rookie": "road_rookie",
-    "sports_car": "gt3",  # default sports_car to gt3 coefficients
+    "sports_car": "gt3",
     "prototype": "lmp2",
+    # Oval
+    "oval": "oval", "short_track": "oval", "nascar_oval": "oval",
+    "intermediate": "oval", "cup_oval": "oval",
+    # Superspeedway
+    "superspeedway": "superspeedway", "super_speedway": "superspeedway",
+    "daytona": "superspeedway", "talladega": "superspeedway",
+    # Dirt
+    "dirt_oval": "dirt_oval", "dirt": "dirt_oval",
+    "sprint_car": "dirt_oval", "late_model": "dirt_oval",
+    "modified": "dirt_oval", "dirt_late_model": "dirt_oval",
+    "dirt_road": "dirt_road", "rallycross": "dirt_road",
 }
 
 
@@ -636,6 +786,149 @@ def _explain(param: str, delta: float, lt: float, straight: float,
                 f"too low risks lock-up and flat spots. "
                 + (f"{lt_str} per lap." if lt_str else "")
             )
+
+    if param == "stagger":
+        if inc:
+            return (
+                f"WHY: {bal_ctx.capitalize()}. Increasing stagger by {mag:.2f}\" makes the "
+                f"right-side tires larger in circumference than the left, causing the car to "
+                f"naturally rotate left — adding oversteer through left-hand turns. "
+                f"EFFECT: More rotation, easier entry into left corners. "
+                f"Can feel loose if overdone. {lt_str} per lap." if lt_str else
+                f"WHY: Increasing stagger adds left-turn rotation. Monitor for excess looseness."
+            )
+        else:
+            return (
+                f"WHY: {bal_ctx.capitalize()}. Reducing stagger tightens the handling, "
+                f"making the car more neutral or tight (understeer) through left turns. "
+                f"EFFECT: More stable but may push (understeer) in left-hand corners. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+
+    if param == "wedge":
+        if inc:
+            return (
+                f"WHY: {bal_ctx.capitalize()}. Adding wedge increases cross weight "
+                f"(LF + RR diagonal), tightening the car through corners. "
+                f"EFFECT: More understeer — the car pushes rather than rotates. "
+                f"Use if the car is too loose (oversteering) mid-corner. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+        else:
+            return (
+                f"WHY: {bal_ctx.capitalize()}. Removing wedge reduces cross weight, "
+                f"making the car freer (more oversteer) through corners. "
+                f"EFFECT: Better rotation but can cause instability if too loose. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+
+    if param == "track_bar":
+        if inc:
+            return (
+                f"WHY: {bal_ctx.capitalize()}. Raising the track bar (panhard bar) "
+                f"raises the rear roll centre, increasing rear lateral stiffness. "
+                f"EFFECT: Car becomes looser (more oversteer) — better rotation but "
+                f"can cause snap oversteer if raised too far. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+        else:
+            return (
+                f"WHY: {bal_ctx.capitalize()}. Lowering the track bar reduces the "
+                f"rear roll centre, giving the rear more compliance. "
+                f"EFFECT: Car tightens up (more understeer) — more stable but less rotation. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+
+    if param == "front_tape":
+        if inc:
+            return (
+                f"Adding {unit_str} of front grill tape reduces radiator opening area. "
+                f"EFFECT: ~{abs(straight):.1f} km/h gain on straights from reduced drag. "
+                f"Watch coolant temps — too much tape risks overheating. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+        else:
+            return (
+                f"Removing {unit_str} of front grill tape increases cooling airflow. "
+                f"EFFECT: Safer coolant temps, slight drag increase (~{abs(straight):.1f} km/h loss). "
+                f"Use if engine temps are borderline or track is hot. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+
+    if param == "bite_bar":
+        if inc:
+            return (
+                f"WHY: {bal_ctx.capitalize()}. Adding bite bar notches increases cross "
+                f"weight on the left-rear/right-front diagonal, tightening the car. "
+                f"EFFECT: Less rotation, more push (understeer). Use if the car is too "
+                f"loose and hard to keep straight exiting corners. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+        else:
+            return (
+                f"WHY: {bal_ctx.capitalize()}. Removing bite bar notches reduces cross "
+                f"weight, freeing up the car for more rotation. "
+                f"EFFECT: More oversteer — better entry rotation but can get slippery. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+
+    if param == "wing_angle":
+        if inc:
+            return (
+                f"Increasing rear wing angle by {mag:.0f}°. "
+                f"EFFECT: More rear downforce, ~{abs(corner):.1f} km/h more corner speed, "
+                f"~{abs(straight):.1f} km/h top speed loss. Reduces oversteer on the cushion. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+        else:
+            return (
+                f"Reducing rear wing angle by {mag:.0f}°. "
+                f"EFFECT: ~{abs(straight):.1f} km/h more top speed, less rear grip. "
+                f"Can cause oversteer in high-speed sections — good if the car is too tight. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+
+    if param == "shock_compression":
+        if inc:
+            return (
+                f"Stiffening shock compression by {unit_str}. "
+                f"EFFECT: Less body movement over bumps and rough dirt surface. "
+                f"Car feels more planted but can skip over rough patches — monitor for "
+                f"loss of grip on bumpy sections. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+        else:
+            return (
+                f"Softening shock compression by {unit_str}. "
+                f"EFFECT: More wheel travel, better compliance over rough dirt. "
+                f"Car should hook up better through rutted sections. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+
+    if param == "nose_weight":
+        if inc:
+            return (
+                f"Adding {mag:.0f} lb of nose weight. "
+                f"EFFECT: More front grip, car rotates more freely. "
+                f"Use if the car is tight (pushing) and won't turn into corners. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+        else:
+            return (
+                f"Removing {mag:.0f} lb of nose weight. "
+                f"EFFECT: Less front grip, car tightens up. "
+                f"Use if the car is too loose or darting on entry. "
+                + (f"{lt_str} per lap." if lt_str else "")
+            )
+
+    if param in ("shock_rf_bump", "shock_lf_bump"):
+        corner_label = "RF" if param == "shock_rf_bump" else "LF"
+        return (
+            f"{'Stiffening' if inc else 'Softening'} {corner_label} bump damping by {unit_str}. "
+            f"EFFECT: {'More' if inc else 'Less'} resistance to body roll at that corner. "
+            f"Fine-tune this after spring and wedge changes are dialled in. "
+            + (f"{lt_str} per lap." if lt_str else "")
+        )
 
     # Fallback
     return (

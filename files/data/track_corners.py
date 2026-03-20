@@ -437,6 +437,282 @@ TRACK_MAPS: Dict[str, TrackMap] = {
             {"name": "Turn 10 (final)",     "start_pct": 0.85,  "apex_pct": 0.88,  "end_pct": 0.92,  "type": "medium",   "priority": 2},
         ],
     },
+
+    # ── Brands Hatch GP ──────────────────────────────────────────────────
+    "Brands Hatch": {
+        "sectors": [0.30, 0.65],
+        "corners": [
+            {"name": "Paddock Hill Bend",   "start_pct": 0.02,  "apex_pct": 0.05,  "end_pct": 0.09,  "type": "hairpin",  "priority": 1},
+            {"name": "Druids",              "start_pct": 0.14,  "apex_pct": 0.17,  "end_pct": 0.20,  "type": "hairpin",  "priority": 1},
+            {"name": "Graham Hill Bend",    "start_pct": 0.24,  "apex_pct": 0.26,  "end_pct": 0.28,  "type": "medium",   "priority": 2},
+            {"name": "Surtees",             "start_pct": 0.36,  "apex_pct": 0.38,  "end_pct": 0.41,  "type": "fast",     "priority": 2},
+            {"name": "Pilgrim Rise",        "start_pct": 0.46,  "apex_pct": 0.49,  "end_pct": 0.53,  "type": "fast",     "priority": 2},
+            {"name": "Hawthorn",            "start_pct": 0.57,  "apex_pct": 0.59,  "end_pct": 0.62,  "type": "medium",   "priority": 2},
+            {"name": "Westfield Bend",      "start_pct": 0.66,  "apex_pct": 0.69,  "end_pct": 0.73,  "type": "fast",     "priority": 1},
+            {"name": "Sheene Curve",        "start_pct": 0.77,  "apex_pct": 0.80,  "end_pct": 0.83,  "type": "fast",     "priority": 1},
+            {"name": "Clark Curve",         "start_pct": 0.86,  "apex_pct": 0.89,  "end_pct": 0.93,  "type": "fast",     "priority": 1},
+        ],
+    },
+
+    # ── Suzuka International Racing Course ───────────────────────────────
+    "Suzuka International Racing Course": {
+        "sectors": [0.28, 0.60],
+        "corners": [
+            {"name": "T1–T2 (First/Second)", "start_pct": 0.02,  "apex_pct": 0.05,  "end_pct": 0.09,  "type": "complex",  "priority": 1},
+            {"name": "Esses",                "start_pct": 0.13,  "apex_pct": 0.18,  "end_pct": 0.23,  "type": "complex",  "priority": 1},
+            {"name": "Dunlop Curve",         "start_pct": 0.26,  "apex_pct": 0.28,  "end_pct": 0.31,  "type": "fast",     "priority": 2},
+            {"name": "Degner 1",             "start_pct": 0.33,  "apex_pct": 0.35,  "end_pct": 0.37,  "type": "medium",   "priority": 2},
+            {"name": "Degner 2",             "start_pct": 0.38,  "apex_pct": 0.40,  "end_pct": 0.42,  "type": "medium",   "priority": 2},
+            {"name": "Hairpin",              "start_pct": 0.46,  "apex_pct": 0.49,  "end_pct": 0.52,  "type": "hairpin",  "priority": 1},
+            {"name": "Spoon Curve",          "start_pct": 0.62,  "apex_pct": 0.66,  "end_pct": 0.70,  "type": "complex",  "priority": 1},
+            {"name": "130R",                 "start_pct": 0.76,  "apex_pct": 0.79,  "end_pct": 0.83,  "type": "fast",     "priority": 1},
+            {"name": "Casio Chicane",        "start_pct": 0.87,  "apex_pct": 0.90,  "end_pct": 0.94,  "type": "chicane",  "priority": 1},
+        ],
+    },
+
+    # ── Mount Panorama (Bathurst) ─────────────────────────────────────────
+    "Mount Panorama Circuit": {
+        "sectors": [0.28, 0.62],
+        "corners": [
+            {"name": "Hell Corner (T1)",    "start_pct": 0.02,  "apex_pct": 0.04,  "end_pct": 0.07,  "type": "hairpin",  "priority": 1},
+            {"name": "T2–T4 (Mountain)",    "start_pct": 0.10,  "apex_pct": 0.16,  "end_pct": 0.22,  "type": "complex",  "priority": 1},
+            {"name": "Skyline T8",          "start_pct": 0.28,  "apex_pct": 0.30,  "end_pct": 0.33,  "type": "medium",   "priority": 2},
+            {"name": "The Cutting T9",      "start_pct": 0.36,  "apex_pct": 0.38,  "end_pct": 0.41,  "type": "medium",   "priority": 2},
+            {"name": "Forrest's Elbow",     "start_pct": 0.44,  "apex_pct": 0.47,  "end_pct": 0.51,  "type": "hairpin",  "priority": 2},
+            {"name": "Murray's Corner",     "start_pct": 0.60,  "apex_pct": 0.63,  "end_pct": 0.66,  "type": "hairpin",  "priority": 1},
+            {"name": "Griffins Bend",       "start_pct": 0.70,  "apex_pct": 0.72,  "end_pct": 0.74,  "type": "medium",   "priority": 2},
+            {"name": "Dipper",              "start_pct": 0.77,  "apex_pct": 0.80,  "end_pct": 0.84,  "type": "fast",     "priority": 1},
+            {"name": "Brock's Skyline",     "start_pct": 0.87,  "apex_pct": 0.90,  "end_pct": 0.94,  "type": "fast",     "priority": 1},
+        ],
+    },
+
+    # ── Red Bull Ring ─────────────────────────────────────────────────────
+    "Red Bull Ring": {
+        "sectors": [0.35, 0.68],
+        "corners": [
+            {"name": "Turn 1",              "start_pct": 0.02,  "apex_pct": 0.05,  "end_pct": 0.08,  "type": "medium",   "priority": 1},
+            {"name": "Turn 2",              "start_pct": 0.12,  "apex_pct": 0.14,  "end_pct": 0.17,  "type": "medium",   "priority": 2},
+            {"name": "Turn 3 (fast left)",  "start_pct": 0.22,  "apex_pct": 0.25,  "end_pct": 0.29,  "type": "fast",     "priority": 2},
+            {"name": "Turn 4 hairpin",      "start_pct": 0.35,  "apex_pct": 0.37,  "end_pct": 0.40,  "type": "hairpin",  "priority": 1},
+            {"name": "Turn 5",              "start_pct": 0.47,  "apex_pct": 0.49,  "end_pct": 0.52,  "type": "medium",   "priority": 2},
+            {"name": "Turn 6",              "start_pct": 0.55,  "apex_pct": 0.57,  "end_pct": 0.59,  "type": "medium",   "priority": 3},
+            {"name": "Turn 7 (final)",      "start_pct": 0.78,  "apex_pct": 0.82,  "end_pct": 0.87,  "type": "hairpin",  "priority": 1},
+        ],
+    },
+
+    # ── Hungaroring ───────────────────────────────────────────────────────
+    "Hungaroring": {
+        "sectors": [0.32, 0.65],
+        "corners": [
+            {"name": "Turn 1",              "start_pct": 0.02,  "apex_pct": 0.04,  "end_pct": 0.07,  "type": "medium",   "priority": 1},
+            {"name": "T2–T3 Esses",         "start_pct": 0.10,  "apex_pct": 0.14,  "end_pct": 0.18,  "type": "complex",  "priority": 1},
+            {"name": "Turn 4",              "start_pct": 0.22,  "apex_pct": 0.24,  "end_pct": 0.26,  "type": "medium",   "priority": 2},
+            {"name": "Turn 6 hairpin",      "start_pct": 0.32,  "apex_pct": 0.35,  "end_pct": 0.38,  "type": "hairpin",  "priority": 1},
+            {"name": "T8–T9 Complex",       "start_pct": 0.48,  "apex_pct": 0.53,  "end_pct": 0.58,  "type": "complex",  "priority": 1},
+            {"name": "Turn 11",             "start_pct": 0.65,  "apex_pct": 0.67,  "end_pct": 0.70,  "type": "medium",   "priority": 2},
+            {"name": "T12–T13",             "start_pct": 0.76,  "apex_pct": 0.80,  "end_pct": 0.84,  "type": "complex",  "priority": 2},
+            {"name": "Turn 14 (final)",     "start_pct": 0.88,  "apex_pct": 0.91,  "end_pct": 0.95,  "type": "hairpin",  "priority": 1},
+        ],
+    },
+
+    # ── Hockenheimring GP ─────────────────────────────────────────────────
+    "Hockenheimring": {
+        "sectors": [0.30, 0.62],
+        "corners": [
+            {"name": "Turn 1 (Einfahrt)",   "start_pct": 0.02,  "apex_pct": 0.04,  "end_pct": 0.07,  "type": "medium",   "priority": 2},
+            {"name": "T2 Einfahrt hairpin", "start_pct": 0.10,  "apex_pct": 0.13,  "end_pct": 0.16,  "type": "hairpin",  "priority": 1},
+            {"name": "T6 Motodrom",         "start_pct": 0.32,  "apex_pct": 0.35,  "end_pct": 0.39,  "type": "complex",  "priority": 1},
+            {"name": "T8 Einfahrt Motodrom","start_pct": 0.45,  "apex_pct": 0.47,  "end_pct": 0.50,  "type": "medium",   "priority": 2},
+            {"name": "Mercedes Arena T10",  "start_pct": 0.56,  "apex_pct": 0.59,  "end_pct": 0.62,  "type": "hairpin",  "priority": 1},
+            {"name": "T12 Spitzkehre",      "start_pct": 0.70,  "apex_pct": 0.73,  "end_pct": 0.76,  "type": "hairpin",  "priority": 2},
+            {"name": "T14–T16 Stadium",     "start_pct": 0.82,  "apex_pct": 0.87,  "end_pct": 0.92,  "type": "complex",  "priority": 2},
+        ],
+    },
+
+    # ── Mugello Circuit ───────────────────────────────────────────────────
+    "Mugello": {
+        "sectors": [0.30, 0.65],
+        "corners": [
+            {"name": "San Donato (T1)",     "start_pct": 0.02,  "apex_pct": 0.05,  "end_pct": 0.08,  "type": "hairpin",  "priority": 1},
+            {"name": "Luco–Poggio Secco",   "start_pct": 0.12,  "apex_pct": 0.17,  "end_pct": 0.22,  "type": "complex",  "priority": 2},
+            {"name": "Materassi",           "start_pct": 0.27,  "apex_pct": 0.30,  "end_pct": 0.33,  "type": "medium",   "priority": 2},
+            {"name": "Borgo San Lorenzo",   "start_pct": 0.36,  "apex_pct": 0.39,  "end_pct": 0.42,  "type": "hairpin",  "priority": 1},
+            {"name": "Casanova–Savelli",    "start_pct": 0.48,  "apex_pct": 0.54,  "end_pct": 0.60,  "type": "complex",  "priority": 1},
+            {"name": "Arrabbiata 1",        "start_pct": 0.64,  "apex_pct": 0.66,  "end_pct": 0.69,  "type": "fast",     "priority": 1},
+            {"name": "Arrabbiata 2",        "start_pct": 0.70,  "apex_pct": 0.72,  "end_pct": 0.75,  "type": "fast",     "priority": 1},
+            {"name": "Scarperia",           "start_pct": 0.79,  "apex_pct": 0.82,  "end_pct": 0.85,  "type": "hairpin",  "priority": 1},
+            {"name": "Palagio–Correntaio",  "start_pct": 0.88,  "apex_pct": 0.92,  "end_pct": 0.96,  "type": "complex",  "priority": 2},
+        ],
+    },
+
+    # ── Autodromo José Carlos Pace (Interlagos) ───────────────────────────
+    "Autodromo José Carlos Pace": {
+        "sectors": [0.28, 0.60],
+        "corners": [
+            {"name": "Senna S (T1–T2)",     "start_pct": 0.02,  "apex_pct": 0.05,  "end_pct": 0.10,  "type": "complex",  "priority": 1},
+            {"name": "T3 Curva do Sol",      "start_pct": 0.14,  "apex_pct": 0.16,  "end_pct": 0.18,  "type": "fast",     "priority": 2},
+            {"name": "T4 Descida do Lago",   "start_pct": 0.22,  "apex_pct": 0.25,  "end_pct": 0.28,  "type": "fast",     "priority": 1},
+            {"name": "T6 Ferradura",         "start_pct": 0.34,  "apex_pct": 0.37,  "end_pct": 0.40,  "type": "hairpin",  "priority": 1},
+            {"name": "T8 Laranja",           "start_pct": 0.48,  "apex_pct": 0.50,  "end_pct": 0.52,  "type": "medium",   "priority": 2},
+            {"name": "T9 Pinheirinho",       "start_pct": 0.57,  "apex_pct": 0.59,  "end_pct": 0.61,  "type": "medium",   "priority": 2},
+            {"name": "T11–T12 Bico de Pato", "start_pct": 0.66,  "apex_pct": 0.69,  "end_pct": 0.72,  "type": "complex",  "priority": 2},
+            {"name": "Mergulho (T13)",        "start_pct": 0.78,  "apex_pct": 0.81,  "end_pct": 0.85,  "type": "medium",   "priority": 2},
+            {"name": "Subida dos Boxes",      "start_pct": 0.88,  "apex_pct": 0.92,  "end_pct": 0.96,  "type": "fast",     "priority": 1},
+        ],
+    },
+
+    # ── Phillip Island Grand Prix Circuit ─────────────────────────────────
+    "Phillip Island": {
+        "sectors": [0.32, 0.65],
+        "corners": [
+            {"name": "Turn 1 (Honda)",      "start_pct": 0.02,  "apex_pct": 0.04,  "end_pct": 0.07,  "type": "medium",   "priority": 1},
+            {"name": "Turn 2",              "start_pct": 0.10,  "apex_pct": 0.12,  "end_pct": 0.14,  "type": "medium",   "priority": 2},
+            {"name": "Doohan Corner (T3)",  "start_pct": 0.18,  "apex_pct": 0.21,  "end_pct": 0.25,  "type": "fast",     "priority": 1},
+            {"name": "Lukey Heights (T4)",  "start_pct": 0.30,  "apex_pct": 0.34,  "end_pct": 0.38,  "type": "fast",     "priority": 1},
+            {"name": "MG Corner (T6)",      "start_pct": 0.44,  "apex_pct": 0.47,  "end_pct": 0.50,  "type": "hairpin",  "priority": 1},
+            {"name": "Turn 8 (fast left)",  "start_pct": 0.58,  "apex_pct": 0.61,  "end_pct": 0.65,  "type": "fast",     "priority": 2},
+            {"name": "Siberia (T9)",        "start_pct": 0.70,  "apex_pct": 0.72,  "end_pct": 0.75,  "type": "medium",   "priority": 2},
+            {"name": "Hayshed (T10)",       "start_pct": 0.80,  "apex_pct": 0.83,  "end_pct": 0.86,  "type": "medium",   "priority": 2},
+            {"name": "Hayshed Exit",        "start_pct": 0.89,  "apex_pct": 0.92,  "end_pct": 0.95,  "type": "fast",     "priority": 2},
+        ],
+    },
+
+    # ── Mid-Ohio Sports Car Course ────────────────────────────────────────
+    "Mid-Ohio Sports Car Course": {
+        "sectors": [0.33, 0.66],
+        "corners": [
+            {"name": "Turn 1",              "start_pct": 0.02,  "apex_pct": 0.04,  "end_pct": 0.07,  "type": "medium",   "priority": 1},
+            {"name": "Turn 2 (chicane)",    "start_pct": 0.09,  "apex_pct": 0.11,  "end_pct": 0.14,  "type": "chicane",  "priority": 2},
+            {"name": "Turn 4 hairpin",      "start_pct": 0.20,  "apex_pct": 0.23,  "end_pct": 0.26,  "type": "hairpin",  "priority": 1},
+            {"name": "The Keyhole (T5)",    "start_pct": 0.32,  "apex_pct": 0.36,  "end_pct": 0.40,  "type": "hairpin",  "priority": 1},
+            {"name": "The Carousel (T8)",   "start_pct": 0.55,  "apex_pct": 0.60,  "end_pct": 0.65,  "type": "complex",  "priority": 1},
+            {"name": "Turn 10",             "start_pct": 0.70,  "apex_pct": 0.72,  "end_pct": 0.74,  "type": "medium",   "priority": 2},
+            {"name": "T11–T12 (final)",     "start_pct": 0.80,  "apex_pct": 0.84,  "end_pct": 0.88,  "type": "complex",  "priority": 2},
+        ],
+    },
+
+    # ── Canadian Tire Motorsport Park (Mosport) ───────────────────────────
+    "Canadian Tire Motorsport Park": {
+        "sectors": [0.30, 0.62],
+        "corners": [
+            {"name": "Turn 1",              "start_pct": 0.02,  "apex_pct": 0.04,  "end_pct": 0.07,  "type": "fast",     "priority": 1},
+            {"name": "Turn 2",              "start_pct": 0.10,  "apex_pct": 0.13,  "end_pct": 0.16,  "type": "fast",     "priority": 1},
+            {"name": "Turn 3 (fast left)",  "start_pct": 0.20,  "apex_pct": 0.23,  "end_pct": 0.26,  "type": "fast",     "priority": 1},
+            {"name": "Turn 4",              "start_pct": 0.30,  "apex_pct": 0.32,  "end_pct": 0.34,  "type": "medium",   "priority": 2},
+            {"name": "Turn 5 hairpin",      "start_pct": 0.42,  "apex_pct": 0.45,  "end_pct": 0.48,  "type": "hairpin",  "priority": 1},
+            {"name": "Turn 7",              "start_pct": 0.56,  "apex_pct": 0.58,  "end_pct": 0.60,  "type": "medium",   "priority": 2},
+            {"name": "Turn 8 (fast left)",  "start_pct": 0.65,  "apex_pct": 0.68,  "end_pct": 0.72,  "type": "fast",     "priority": 1},
+            {"name": "Turn 9",              "start_pct": 0.78,  "apex_pct": 0.80,  "end_pct": 0.83,  "type": "medium",   "priority": 2},
+            {"name": "Turn 10 (final)",     "start_pct": 0.88,  "apex_pct": 0.91,  "end_pct": 0.94,  "type": "hairpin",  "priority": 2},
+        ],
+    },
+
+    # ── Circuit Paul Ricard ───────────────────────────────────────────────
+    "Circuit Paul Ricard": {
+        "sectors": [0.35, 0.68],
+        "corners": [
+            {"name": "Sainte Baume (T1)",   "start_pct": 0.02,  "apex_pct": 0.04,  "end_pct": 0.07,  "type": "medium",   "priority": 1},
+            {"name": "T2 (Sainte Beaume)",  "start_pct": 0.10,  "apex_pct": 0.12,  "end_pct": 0.14,  "type": "medium",   "priority": 2},
+            {"name": "T3",                  "start_pct": 0.18,  "apex_pct": 0.20,  "end_pct": 0.22,  "type": "medium",   "priority": 3},
+            {"name": "Beausset hairpin",    "start_pct": 0.30,  "apex_pct": 0.32,  "end_pct": 0.36,  "type": "hairpin",  "priority": 1},
+            {"name": "T8",                  "start_pct": 0.44,  "apex_pct": 0.46,  "end_pct": 0.48,  "type": "medium",   "priority": 2},
+            {"name": "Mistral Chicane",     "start_pct": 0.60,  "apex_pct": 0.63,  "end_pct": 0.66,  "type": "chicane",  "priority": 1},
+            {"name": "T11 Signes",          "start_pct": 0.72,  "apex_pct": 0.75,  "end_pct": 0.79,  "type": "fast",     "priority": 1},
+            {"name": "T14–T15 (final)",     "start_pct": 0.84,  "apex_pct": 0.88,  "end_pct": 0.92,  "type": "complex",  "priority": 2},
+        ],
+    },
+
+    # ── Donington Park ────────────────────────────────────────────────────
+    "Donington Park": {
+        "sectors": [0.35, 0.70],
+        "corners": [
+            {"name": "Redgate (T1)",        "start_pct": 0.02,  "apex_pct": 0.04,  "end_pct": 0.07,  "type": "medium",   "priority": 1},
+            {"name": "Hollywood",           "start_pct": 0.11,  "apex_pct": 0.13,  "end_pct": 0.16,  "type": "medium",   "priority": 2},
+            {"name": "Craner Curves",       "start_pct": 0.19,  "apex_pct": 0.24,  "end_pct": 0.30,  "type": "complex",  "priority": 1},
+            {"name": "Old Hairpin",         "start_pct": 0.35,  "apex_pct": 0.38,  "end_pct": 0.41,  "type": "hairpin",  "priority": 1},
+            {"name": "Coppice",             "start_pct": 0.48,  "apex_pct": 0.51,  "end_pct": 0.54,  "type": "fast",     "priority": 1},
+            {"name": "Macleans",            "start_pct": 0.60,  "apex_pct": 0.62,  "end_pct": 0.64,  "type": "medium",   "priority": 2},
+            {"name": "Fogarty Esses",       "start_pct": 0.68,  "apex_pct": 0.72,  "end_pct": 0.76,  "type": "complex",  "priority": 2},
+            {"name": "Goddards (final)",    "start_pct": 0.82,  "apex_pct": 0.86,  "end_pct": 0.90,  "type": "hairpin",  "priority": 2},
+        ],
+    },
+
+    # ── Talladega Superspeedway ───────────────────────────────────────────
+    "Talladega Superspeedway": {
+        "sectors": [0.25, 0.50, 0.75],
+        "corners": [
+            {"name": "T1–T2 (Turn 1)",      "start_pct": 0.00,  "apex_pct": 0.05,  "end_pct": 0.13,  "type": "fast",     "priority": 1},
+            {"name": "Tri-Oval",            "start_pct": 0.20,  "apex_pct": 0.25,  "end_pct": 0.30,  "type": "fast",     "priority": 2},
+            {"name": "T3–T4 (Turn 3)",      "start_pct": 0.50,  "apex_pct": 0.55,  "end_pct": 0.63,  "type": "fast",     "priority": 1},
+            {"name": "Back stretch exit",   "start_pct": 0.70,  "apex_pct": 0.75,  "end_pct": 0.80,  "type": "fast",     "priority": 2},
+        ],
+    },
+
+    # ── Charlotte Motor Speedway (Oval) ───────────────────────────────────
+    "Charlotte Motor Speedway": {
+        "sectors": [0.25, 0.50, 0.75],
+        "corners": [
+            {"name": "Turn 1",              "start_pct": 0.00,  "apex_pct": 0.06,  "end_pct": 0.12,  "type": "fast",     "priority": 1},
+            {"name": "Turn 2",              "start_pct": 0.12,  "apex_pct": 0.18,  "end_pct": 0.24,  "type": "fast",     "priority": 1},
+            {"name": "Turn 3",              "start_pct": 0.50,  "apex_pct": 0.56,  "end_pct": 0.62,  "type": "fast",     "priority": 1},
+            {"name": "Turn 4",              "start_pct": 0.62,  "apex_pct": 0.68,  "end_pct": 0.74,  "type": "fast",     "priority": 1},
+        ],
+    },
+
+    # ── Bristol Motor Speedway ────────────────────────────────────────────
+    "Bristol Motor Speedway": {
+        "sectors": [0.25, 0.50, 0.75],
+        "corners": [
+            {"name": "Turn 1",              "start_pct": 0.00,  "apex_pct": 0.06,  "end_pct": 0.12,  "type": "fast",     "priority": 1},
+            {"name": "Turn 2",              "start_pct": 0.12,  "apex_pct": 0.18,  "end_pct": 0.25,  "type": "fast",     "priority": 1},
+            {"name": "Turn 3",              "start_pct": 0.50,  "apex_pct": 0.56,  "end_pct": 0.62,  "type": "fast",     "priority": 1},
+            {"name": "Turn 4",              "start_pct": 0.62,  "apex_pct": 0.68,  "end_pct": 0.75,  "type": "fast",     "priority": 1},
+        ],
+    },
+
+    # ── Martinsville Speedway ─────────────────────────────────────────────
+    "Martinsville Speedway": {
+        "sectors": [0.25, 0.50, 0.75],
+        "corners": [
+            {"name": "Turn 1",              "start_pct": 0.00,  "apex_pct": 0.06,  "end_pct": 0.13,  "type": "hairpin",  "priority": 1},
+            {"name": "Turn 2",              "start_pct": 0.13,  "apex_pct": 0.19,  "end_pct": 0.25,  "type": "hairpin",  "priority": 1},
+            {"name": "Turn 3",              "start_pct": 0.50,  "apex_pct": 0.56,  "end_pct": 0.63,  "type": "hairpin",  "priority": 1},
+            {"name": "Turn 4",              "start_pct": 0.63,  "apex_pct": 0.69,  "end_pct": 0.75,  "type": "hairpin",  "priority": 1},
+        ],
+    },
+
+    # ── Eldora Speedway (Dirt Oval) ───────────────────────────────────────
+    "Eldora Speedway": {
+        "sectors": [0.25, 0.50, 0.75],
+        "corners": [
+            {"name": "Turn 1",              "start_pct": 0.00,  "apex_pct": 0.06,  "end_pct": 0.13,  "type": "medium",   "priority": 1},
+            {"name": "Turn 2",              "start_pct": 0.13,  "apex_pct": 0.19,  "end_pct": 0.25,  "type": "medium",   "priority": 1},
+            {"name": "Turn 3",              "start_pct": 0.50,  "apex_pct": 0.56,  "end_pct": 0.63,  "type": "medium",   "priority": 1},
+            {"name": "Turn 4",              "start_pct": 0.63,  "apex_pct": 0.69,  "end_pct": 0.75,  "type": "medium",   "priority": 1},
+        ],
+    },
+
+    # ── Knoxville Raceway (Dirt Oval) ─────────────────────────────────────
+    "Knoxville Raceway": {
+        "sectors": [0.25, 0.50, 0.75],
+        "corners": [
+            {"name": "Turn 1",              "start_pct": 0.00,  "apex_pct": 0.06,  "end_pct": 0.13,  "type": "medium",   "priority": 1},
+            {"name": "Turn 2",              "start_pct": 0.13,  "apex_pct": 0.19,  "end_pct": 0.25,  "type": "medium",   "priority": 1},
+            {"name": "Turn 3",              "start_pct": 0.50,  "apex_pct": 0.56,  "end_pct": 0.63,  "type": "medium",   "priority": 1},
+            {"name": "Turn 4",              "start_pct": 0.63,  "apex_pct": 0.69,  "end_pct": 0.75,  "type": "medium",   "priority": 1},
+        ],
+    },
+
+    # ── Williams Grove Speedway (Dirt Oval) ──────────────────────────────
+    "Williams Grove Speedway": {
+        "sectors": [0.25, 0.50, 0.75],
+        "corners": [
+            {"name": "Turn 1",              "start_pct": 0.00,  "apex_pct": 0.06,  "end_pct": 0.13,  "type": "medium",   "priority": 1},
+            {"name": "Turn 2",              "start_pct": 0.13,  "apex_pct": 0.19,  "end_pct": 0.25,  "type": "medium",   "priority": 1},
+            {"name": "Turn 3",              "start_pct": 0.50,  "apex_pct": 0.56,  "end_pct": 0.63,  "type": "medium",   "priority": 1},
+            {"name": "Turn 4",              "start_pct": 0.63,  "apex_pct": 0.69,  "end_pct": 0.75,  "type": "medium",   "priority": 1},
+        ],
+    },
 }
 
 # ---------------------------------------------------------------------------
