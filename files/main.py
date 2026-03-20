@@ -128,9 +128,43 @@ MAX_SESSIONS = 20  # LRU eviction when exceeded
 # ── Helpers (imported from ui.theme) ──────────────────────────────────────────
 
 # ══════════════════════════════════════════════════════════════════════════════
+def _show_splash() -> "ctk.CTkToplevel | None":
+    """
+    Display a lightweight splash window before the main UI builds.
+    Returns the splash widget so the caller can destroy it when ready.
+    """
+    try:
+        splash = ctk.CTkToplevel()
+        splash.overrideredirect(True)          # no title bar
+        splash.configure(fg_color="#1a1a2e")
+        splash.attributes("-topmost", True)
+        sw = splash.winfo_screenwidth()
+        sh = splash.winfo_screenheight()
+        w, h = 420, 220
+        x = (sw - w) // 2
+        y = (sh - h) // 2
+        splash.geometry(f"{w}x{h}+{x}+{y}")
+
+        ctk.CTkLabel(splash, text="🏎", font=ctk.CTkFont(size=48)).pack(pady=(30, 4))
+        ctk.CTkLabel(splash, text=APP_NAME,
+                     font=ctk.CTkFont(size=22, weight="bold"),
+                     text_color="white").pack()
+        ctk.CTkLabel(splash, text=f"v{VERSION}",
+                     font=ctk.CTkFont(size=11),
+                     text_color="#aec6cf").pack(pady=2)
+        ctk.CTkLabel(splash, text="Loading…",
+                     font=ctk.CTkFont(size=10),
+                     text_color="#7f8c8d").pack(pady=(10, 0))
+        splash.update()
+        return splash
+    except Exception:
+        return None
+
+
 class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
     def __init__(self):
         super().__init__()
+        self.withdraw()          # hide main window until build is complete
         self.title(f"{APP_NAME}  v{VERSION}")
         # Set window icon
         _icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app.ico')
@@ -154,6 +188,11 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
             except Exception:
                 pass
         self.cfg=cfg
+        # Apply saved unit preferences immediately so first render uses correct units
+        units.configure(
+            speed=cfg.get('units_speed', 'kmh'),
+            temp=cfg.get('units_temp', 'c'),
+        )
         self.sessions:list[tuple[TelemetryData,AnalysisReport]]=[]
         self._analysis_cache:dict[int,tuple]={}  # session-index -> (sec, best, stint, style, fuel)
         self._ai_cache:dict[int,str]={}  # session-index -> AI recommendation text
@@ -193,9 +232,17 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
         self._race_engineer: RaceEngineer | None = (
             RaceEngineer(self._driver_profile) if self._driver_profile.persona_unlocked else None
         )
+        _splash = _show_splash()
         self._build()
         self._bind_shortcuts()
+        if _splash:
+            try:
+                _splash.destroy()
+            except Exception:
+                pass
+        self.deiconify()         # reveal main window now that build is complete
         threading.Thread(target=evict_old_entries, daemon=True).start()
+        threading.Thread(target=self._check_for_update, daemon=True).start()
         # Show What's New dialog if the version has changed since last launch
         _last_seen = self.cfg.get('last_seen_version', '')
         if _last_seen != VERSION:
@@ -210,6 +257,60 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
         saved_chart = self.cfg.get('last_chart')
         if saved_chart and saved_chart in self.CDEFS:
             self._tv.set(saved_chart)
+
+    # ── Update check ──────────────────────────────────────────────────────────
+    def _check_for_update(self):
+        """
+        Background thread: fetch latest release tag from GitHub and show a
+        non-blocking banner if a newer version is available.
+        """
+        try:
+            import urllib.request, urllib.error
+            from version import APP_URL
+            # Derive API URL from the repo URL
+            # e.g. https://github.com/owner/repo → https://api.github.com/repos/owner/repo/releases/latest
+            parts = APP_URL.rstrip("/").split("github.com/")
+            if len(parts) != 2:
+                return
+            api_url = f"https://api.github.com/repos/{parts[1]}/releases/latest"
+            req = urllib.request.Request(
+                api_url,
+                headers={"User-Agent": f"OptimalSector/{VERSION}",
+                         "Accept": "application/vnd.github+json"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                import json as _json
+                data = _json.loads(resp.read().decode())
+            tag = data.get("tag_name", "").lstrip("v").strip()
+            html_url = data.get("html_url", APP_URL)
+            if not tag:
+                return
+            # Compare versions: split on '.' and compare tuples numerically
+            def _ver(s):
+                try:
+                    return tuple(int(x) for x in s.split("."))
+                except ValueError:
+                    return (0,)
+            if _ver(tag) > _ver(VERSION):
+                logger.info("Update available: v%s (current: v%s)", tag, VERSION)
+                self.after(0, lambda: self._show_update_banner(tag, html_url))
+        except Exception as e:
+            logger.debug("Update check failed: %s", e)
+
+    def _show_update_banner(self, new_version: str, url: str):
+        """Show the update banner in the header bar."""
+        self._update_banner_url = url
+        self._update_banner.configure(
+            text=f"  ⬆  v{new_version} available — click to download  ",
+            width=0)
+        self._update_banner.pack(side='left', padx=(0, 8))
+
+    def _on_update_banner_click(self):
+        """Open the release page and hide the banner."""
+        import webbrowser
+        if self._update_banner_url:
+            webbrowser.open(self._update_banner_url)
+        self._update_banner.pack_forget()
 
     def _update_title(self, data=None):
         """Keep window title in sync with the currently loaded session."""
@@ -292,6 +393,13 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
         lbl(hdr,f"🏎  {APP_NAME}",17,bold=True).pack(side='left',padx=18)
         self._status_lbl = lbl(hdr,"",11,color=YELLOW)
         self._status_lbl.pack(side='left',padx=12)
+        # Update-available banner (hidden until _check_for_update fires)
+        self._update_banner = ctk.CTkButton(
+            hdr, text="", width=0, height=26, fg_color="#1e6b3e",
+            hover_color="#27ae60", text_color="white",
+            font=ctk.CTkFont(size=10, weight="bold"), corner_radius=6,
+            command=self._on_update_banner_click)
+        self._update_banner_url: str = ""
         # Progress bar (hidden by default)
         self._progress = ctk.CTkProgressBar(hdr, width=120, height=14,
             fg_color=CARD, progress_color=ACCENT, mode='indeterminate')
@@ -4726,30 +4834,31 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
             return
 
         # Pre-load size check — warn for large files, hard-reject above limit
+        # Uses os.path.getsize() (single OS stat call — no file read) so the
+        # main thread is never blocked by file I/O.
         if path and not demo:
             try:
-                from core.ibt_parser import IBTParser as _IBTParser
-                _sz = _IBTParser(path).file_size_mb()
-                if _sz > _IBTParser.MAX_SIZE_MB:
+                _sz_mb = os.path.getsize(path) / (1024 * 1024)
+                if _sz_mb > IBTParser.MAX_SIZE_MB:
                     messagebox.showerror(
                         "File Too Large",
-                        f"This IBT file is {_sz:.0f} MB — the maximum supported size is "
-                        f"{_IBTParser.MAX_SIZE_MB} MB.\n\n"
+                        f"This IBT file is {_sz_mb:.0f} MB — the maximum supported size is "
+                        f"{IBTParser.MAX_SIZE_MB} MB.\n\n"
                         "Very long endurance sessions may exceed this limit. "
                         "Try trimming the session or loading a shorter file."
                     )
                     return
-                if _sz > _IBTParser.WARN_SIZE_MB:
+                if _sz_mb > IBTParser.WARN_SIZE_MB:
                     if not messagebox.askyesno(
                         "Large File",
-                        f"This IBT file is {_sz:.0f} MB — parsing may take 30–60 seconds "
+                        f"This IBT file is {_sz_mb:.0f} MB — parsing may take 30–60 seconds "
                         "for an endurance session.\n\nContinue loading?",
                     ):
                         return
             except FileNotFoundError:
                 messagebox.showerror("File Not Found", f"Could not find:\n{path}")
                 return
-            except Exception:
+            except OSError:
                 pass   # let the parser produce the detailed error
 
         self._loading = True

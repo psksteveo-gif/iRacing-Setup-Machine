@@ -1,6 +1,6 @@
 """Single source of truth for Optimal Sector version information."""
 
-VERSION = "3.3.4"
+VERSION = "3.3.5"
 APP_NAME = "Optimal Sector"
 APP_AUTHOR = "SpicySteveO Gaming LLC"
 APP_URL = "https://github.com/psksteveo-gif/iRacing-Setup-Machine"
@@ -8,6 +8,14 @@ COPYRIGHT = "Copyright © 2024-2026 SpicySteveO Gaming LLC. All rights reserved.
 
 # Ordered newest-first — each entry: (version_str, [(emoji, headline), ...])
 CHANGELOG: list[tuple[str, list[tuple[str, str]]]] = [
+    ("3.3.5", [
+        ("🪟", "Splash screen on launch — app name and version shown while UI loads"),
+        ("⬆",  "Auto-update check on launch — green banner appears if a new version is available"),
+        ("📂", "iRacing path detection now queries Windows registry first (handles D: drives, OneDrive, custom installs)"),
+        ("🔒", "Write-permission probe before setup file export — clear error if folder is read-only"),
+        ("⚡", "IBT size check uses os.path.getsize() directly — no unnecessary object creation"),
+        ("🌡",  "Speed and temperature units applied from saved config at startup — no first-session mismatch"),
+    ]),
     ("3.3.4", [
         ("🛡",  "Atomic setup file writes — no data loss if write fails mid-operation"),
         ("💬", "User-friendly error messages — no raw Python errors shown to users"),

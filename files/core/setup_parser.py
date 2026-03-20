@@ -162,6 +162,24 @@ class SetupParser:
         return re.sub(r'<[^>]+>', '', html).replace('&nbsp;', ' ').replace('&amp;', '&').strip()
 
 
+def _probe_writable(dirname: str) -> None:
+    """
+    Confirm a directory is writable before attempting a full export.
+    Raises PermissionError with a user-friendly message if not.
+    """
+    probe = os.path.join(dirname, ".writetest_optisector")
+    try:
+        with open(probe, "w") as f:
+            f.write("")
+        os.unlink(probe)
+    except PermissionError:
+        raise PermissionError(
+            f"Cannot write to this folder — it may be read-only or locked by iRacing:\n{dirname}"
+        )
+    except OSError as e:
+        raise OSError(f"Cannot write to export folder: {e}")
+
+
 class SetupExporter:
     """
     Export a ParsedSetup back to iRacing-compatible .htm format.
@@ -179,6 +197,7 @@ class SetupExporter:
         html = self._generate_html(setup)
         dirname = os.path.dirname(output_path) or '.'
         os.makedirs(dirname, exist_ok=True)
+        _probe_writable(dirname)
         tmp_path = None
         try:
             with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
@@ -204,6 +223,7 @@ class SetupExporter:
         """Export setup as JSON for history tracking."""
         dirname = os.path.dirname(output_path) or '.'
         os.makedirs(dirname, exist_ok=True)
+        _probe_writable(dirname)
         tmp_path = None
         try:
             with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
@@ -313,6 +333,7 @@ class StoWriter:
         content = self._generate_sto(setup, setup_name)
         dirname = os.path.dirname(os.path.abspath(output_path))
         os.makedirs(dirname, exist_ok=True)
+        _probe_writable(dirname)
         tmp_path = None
         try:
             with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', newline="\n",
@@ -371,12 +392,13 @@ class StoWriter:
     def default_sto_path(setup: ParsedSetup, base_dir: Optional[str] = None) -> str:
         """
         Return the default iRacing garage setups folder path for a given setup.
-        Falls back to ~/Documents/iRacing/setups/<car>/ on Windows.
+        Uses Windows registry to locate iRacing documents folder (handles D: drives,
+        OneDrive redirects, and custom install paths).
         """
         car = re.sub(r"[^\w\-_]", "_", setup.car or "car").lower()
         if base_dir is None:
-            docs = os.path.expanduser("~/Documents/iRacing/setups")
-            base_dir = os.path.join(docs, car)
+            from core.file_watcher import _get_iracing_docs
+            base_dir = os.path.join(_get_iracing_docs(), "setups", car)
         os.makedirs(base_dir, exist_ok=True)
         stem = re.sub(r"[^\w\-_ ]", "_", setup.filename or "setup").rstrip(".htmHTM").strip("_")
         if not stem:

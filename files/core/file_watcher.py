@@ -12,9 +12,49 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Default iRacing paths
-DEFAULT_TELEMETRY_DIR = os.path.expanduser("~/Documents/iRacing/telemetry")
-DEFAULT_SETUPS_DIR = os.path.expanduser("~/Documents/iRacing/setups")
+
+def _get_iracing_docs() -> str:
+    """
+    Return the iRacing documents folder path.
+
+    Search order:
+    1. Windows registry (handles non-C: drives and custom install paths)
+    2. ~/OneDrive/Documents/iRacing  (OneDrive-redirected My Documents)
+    3. ~/Documents/iRacing           (standard path)
+    """
+    if os.name == "nt":
+        try:
+            import winreg
+            # iRacing stores the user data path in HKCU
+            for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                for subkey in (
+                    r"SOFTWARE\iRacing.com\iRacing",
+                    r"SOFTWARE\WOW6432Node\iRacing.com\iRacing",
+                ):
+                    try:
+                        with winreg.OpenKey(root, subkey) as k:
+                            path, _ = winreg.QueryValueEx(k, "datadir")
+                            if path and os.path.isdir(path):
+                                logger.debug("iRacing docs from registry: %s", path)
+                                return path
+                    except (FileNotFoundError, OSError):
+                        continue
+        except ImportError:
+            pass
+
+    # OneDrive-redirected My Documents
+    onedrive = os.path.join(os.path.expanduser("~"), "OneDrive", "Documents", "iRacing")
+    if os.path.isdir(onedrive):
+        return onedrive
+
+    # Standard fallback
+    return os.path.join(os.path.expanduser("~"), "Documents", "iRacing")
+
+
+# Default iRacing paths — resolved once at import time
+_IRACING_DOCS = _get_iracing_docs()
+DEFAULT_TELEMETRY_DIR = os.path.join(_IRACING_DOCS, "telemetry")
+DEFAULT_SETUPS_DIR    = os.path.join(_IRACING_DOCS, "setups")
 
 POLL_INTERVAL_S = 3.0
 IBT_EXTENSIONS = {'.ibt'}
