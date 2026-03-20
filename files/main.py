@@ -206,7 +206,7 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
         saved_tab = self.cfg.get('last_tab')
         if saved_tab:
             try: self.tv.set(saved_tab)
-            except Exception: pass
+            except Exception as e: logger.debug("Could not restore saved tab: %s", e)
         saved_chart = self.cfg.get('last_chart')
         if saved_chart and saved_chart in self.CDEFS:
             self._tv.set(saved_chart)
@@ -696,7 +696,7 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
         timeline = r.balance_timeline if r else []
         if len(timeline) < 2:
             try: self._dbal.pack_forget()
-            except Exception: pass
+            except Exception as e: logger.debug("pack_forget dbal: %s", e)
             return
         self._dbal.pack(fill='x', padx=10, pady=(0, 4))
         c = self._dbal; c.clear()
@@ -912,7 +912,7 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
         r=self.cur_sec
         if not r or not r.sectors: return
         try: self._ph_sectors.pack_forget()
-        except Exception: pass
+        except Exception as e: logger.debug("pack_forget ph_sectors: %s", e)
         # Track map with sector colour bands
         hl = highlights_from_sectors(r)
         splits = [s.start_pct for s in r.sectors[1:]]
@@ -2272,12 +2272,16 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
     def _open_logs(self):
         """Open the log directory in file explorer."""
         import subprocess as _sp
-        if sys.platform == 'win32':
-            os.startfile(_LOG_DIR)
-        elif sys.platform == 'darwin':
-            _sp.Popen(['open', _LOG_DIR])
-        else:
-            _sp.Popen(['xdg-open', _LOG_DIR])
+        try:
+            if sys.platform == 'win32':
+                os.startfile(_LOG_DIR)
+            elif sys.platform == 'darwin':
+                _sp.Popen(['open', _LOG_DIR])
+            else:
+                _sp.Popen(['xdg-open', _LOG_DIR])
+        except Exception as e:
+            logger.warning("Could not open logs folder: %s", e)
+            messagebox.showerror("Error", f"Could not open logs folder:\n{_LOG_DIR}", parent=self)
 
     def _whats_new(self, highlight_version: str = ""):
         """Show the What's New / changelog dialog."""
@@ -2626,7 +2630,7 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
             report = None
         if not report:
             try: self._ph_brake.pack_forget()
-            except Exception: pass
+            except Exception as e: logger.debug("pack_forget ph_brake (no report): %s", e)
             for w in self._brake_cards.winfo_children(): w.destroy()
             lbl(self._brake_cards,
                 "No brake zones detected.\n"
@@ -2634,7 +2638,7 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
                 13, color=DIM).pack(pady=30)
             return
         try: self._ph_brake.pack_forget()
-        except Exception: pass
+        except Exception as e: logger.debug("pack_forget ph_brake: %s", e)
         # Track map with brake zones highlighted
         hl = highlights_from_brakes(report)
         self._brake_map.update(d, highlights=hl,
@@ -2796,7 +2800,7 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
 
     def _render_strategy(self, report: StrategyReport):
         try: self._ph_strat.pack_forget()
-        except Exception: pass
+        except Exception as e: logger.debug("pack_forget ph_strat: %s", e)
         # Chart: lap time prediction across stints
         c = self._strat_chart; c.clear()
         ax = c.std_ax("Predicted Lap Times by Stint", xlabel="Lap")
@@ -2876,7 +2880,7 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
         if len(self.sessions) < 2:
             return
         try: self._ph_trends.pack_forget()
-        except Exception: pass
+        except Exception as e: logger.debug("pack_forget ph_trends: %s", e)
         report = aggregate_sessions(self.sessions)
         if not report:
             return

@@ -1,6 +1,6 @@
 """Single source of truth for Optimal Sector version information."""
 
-VERSION = "3.3.3"
+VERSION = "3.3.4"
 APP_NAME = "Optimal Sector"
 APP_AUTHOR = "SpicySteveO Gaming LLC"
 APP_URL = "https://github.com/psksteveo-gif/iRacing-Setup-Machine"
@@ -8,6 +8,13 @@ COPYRIGHT = "Copyright © 2024-2026 SpicySteveO Gaming LLC. All rights reserved.
 
 # Ordered newest-first — each entry: (version_str, [(emoji, headline), ...])
 CHANGELOG: list[tuple[str, list[tuple[str, str]]]] = [
+    ("3.3.4", [
+        ("🛡",  "Atomic setup file writes — no data loss if write fails mid-operation"),
+        ("💬", "User-friendly error messages — no raw Python errors shown to users"),
+        ("🔒", "Setup file read/write errors now caught and explained clearly"),
+        ("🪵", "Silent exception swallowing replaced with debug logging throughout"),
+        ("📂", "Log folder button handles missing file explorer gracefully"),
+    ]),
     ("3.3.3", [
         ("🪟", "Window title shows loaded car & track — always know what session is active"),
         ("🛡",  "Window off-screen recovery — restored position clamped to visible screen area"),

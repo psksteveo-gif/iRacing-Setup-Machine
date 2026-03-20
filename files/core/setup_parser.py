@@ -10,9 +10,13 @@ import re
 import os
 import json
 import html as html_mod
+import logging
+import tempfile
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -62,8 +66,13 @@ class SetupParser:
         file_size = os.path.getsize(filepath)
         if file_size > self.MAX_SETUP_FILE_SIZE:
             raise ValueError("Setup file exceeds maximum supported size (10 MB)")
-        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-            html = f.read()
+        try:
+            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                html = f.read()
+        except PermissionError:
+            raise PermissionError(f"Cannot read setup file — it may be locked by iRacing: {filepath}")
+        except OSError as e:
+            raise OSError(f"Could not read setup file: {e}")
         return self.parse_html(html, filepath)
 
     def parse_html(self, html: str, filepath: str = "") -> ParsedSetup:
@@ -168,15 +177,52 @@ class SetupExporter:
                 setup.set(k, v)
 
         html = self._generate_html(setup)
-        os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
-        with open(output_path, 'w', encoding='utf-8') as f:
-            f.write(html)
+        dirname = os.path.dirname(output_path) or '.'
+        os.makedirs(dirname, exist_ok=True)
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
+                                             dir=dirname, delete=False, suffix='.tmp') as tmp:
+                tmp.write(html)
+                tmp_path = tmp.name
+            os.replace(tmp_path, output_path)
+        except PermissionError:
+            raise PermissionError(
+                f"Cannot write setup file — the destination may be locked or read-only:\n{output_path}")
+        except OSError as e:
+            raise OSError(f"Could not write setup file: {e}")
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+        logger.info("Setup exported (htm): %s", output_path)
         return output_path
 
     def export_json(self, setup: ParsedSetup, output_path: str):
         """Export setup as JSON for history tracking."""
-        with open(output_path, 'w') as f:
-            json.dump(setup.to_dict(), f, indent=2)
+        dirname = os.path.dirname(output_path) or '.'
+        os.makedirs(dirname, exist_ok=True)
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8',
+                                             dir=dirname, delete=False, suffix='.tmp') as tmp:
+                json.dump(setup.to_dict(), tmp, indent=2)
+                tmp_path = tmp.name
+            os.replace(tmp_path, output_path)
+        except PermissionError:
+            raise PermissionError(
+                f"Cannot write setup JSON — destination may be read-only:\n{output_path}")
+        except OSError as e:
+            raise OSError(f"Could not write setup JSON: {e}")
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+        logger.info("Setup exported (json): %s", output_path)
 
     def _generate_html(self, setup: ParsedSetup) -> str:
         """Generate a clean HTML setup file compatible with iRacing import."""
@@ -265,9 +311,27 @@ class StoWriter:
                 setup.set(k, v)
 
         content = self._generate_sto(setup, setup_name)
-        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-        with open(output_path, "w", encoding="utf-8", newline="\n") as f:
-            f.write(content)
+        dirname = os.path.dirname(os.path.abspath(output_path))
+        os.makedirs(dirname, exist_ok=True)
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', newline="\n",
+                                             dir=dirname, delete=False, suffix='.tmp') as tmp:
+                tmp.write(content)
+                tmp_path = tmp.name
+            os.replace(tmp_path, output_path)
+        except PermissionError:
+            raise PermissionError(
+                f"Cannot write .sto file — destination may be locked by iRacing:\n{output_path}")
+        except OSError as e:
+            raise OSError(f"Could not write .sto file: {e}")
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+        logger.info("Setup exported (sto): %s", output_path)
         return output_path
 
     def _generate_sto(self, setup: ParsedSetup, setup_name: Optional[str] = None) -> str:

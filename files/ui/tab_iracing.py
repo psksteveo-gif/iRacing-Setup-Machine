@@ -949,9 +949,20 @@ class IRacingTabMixin:
                     self.cur_data.track_name or "",
                 ))
             except CloudSyncError as e:
-                self.after(0, lambda: messagebox.showerror("Leaderboard Error", str(e), parent=self))
-            except Exception as e:
-                self.after(0, lambda: messagebox.showerror("Error", str(e), parent=self))
+                import logging as _log
+                _log.getLogger(__name__).warning("Leaderboard submit error: %s", e)
+                self.after(0, lambda: messagebox.showerror(
+                    "Leaderboard Error",
+                    "Could not submit your time.\nCheck your connection and try again.",
+                    parent=self))
+            except Exception:
+                import logging as _log
+                _log.getLogger(__name__).exception("Leaderboard submit unexpected error")
+                self.after(0, lambda: messagebox.showerror(
+                    "Error",
+                    "An unexpected error occurred submitting your time.\n"
+                    "Please check the logs for details.",
+                    parent=self))
 
         threading.Thread(target=_worker, daemon=True).start()
 
