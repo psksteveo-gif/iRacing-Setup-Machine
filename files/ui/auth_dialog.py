@@ -29,7 +29,7 @@ class AuthDialog(ctk.CTkToplevel):
     def __init__(self, parent, on_success: Optional[Callable] = None):
         super().__init__(parent)
         self.on_success = on_success
-        self.title("Sign In — iRacing Setup Advisor")
+        self.title("Sign In — Optimal Sector")
         self.geometry("440x520")
         self.resizable(False, False)
         self.configure(fg_color=DARK)
@@ -42,7 +42,7 @@ class AuthDialog(ctk.CTkToplevel):
 
     def _build(self):
         # ── Header ────────────────────────────────────────────────────
-        ctk.CTkLabel(self, text="iRacing Setup Advisor",
+        ctk.CTkLabel(self, text="Optimal Sector",
                      font=ctk.CTkFont(size=20, weight="bold"),
                      text_color=ACCENT).pack(pady=(24, 2))
         ctk.CTkLabel(self, text="Sign in to unlock cloud features",

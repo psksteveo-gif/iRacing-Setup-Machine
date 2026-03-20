@@ -111,7 +111,7 @@ def export_motec_csv(
         w.writerow(['Driver', si.get('driver_name', 'Unknown')])
         w.writerow(['Session', si.get('session_type', 'Practice')])
         w.writerow(['Comment',
-                    f'Exported from iRacing Setup Machine  {timestamp}  {lap_desc}'])
+                    f'Exported from Optimal Sector  {timestamp}  {lap_desc}'])
         w.writerow([])
 
         # ── Channel descriptor rows ───────────────────────────────────────

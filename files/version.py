@@ -1,7 +1,7 @@
-"""Single source of truth for iRacing Setup Advisor version information."""
+"""Single source of truth for Optimal Sector version information."""
 
-VERSION = "2.1.0"
-APP_NAME = "iRacing Setup Advisor"
-APP_AUTHOR = "iRacing Setup Machine"
-APP_URL = "https://github.com/iRacingSetupMachine/iRacing-Setup-Advisor"
-COPYRIGHT = "Copyright © 2024-2026 iRacing Setup Machine. All rights reserved."
+VERSION = "3.3.0"
+APP_NAME = "Optimal Sector"
+APP_AUTHOR = "SpicySteveO Gaming LLC"
+APP_URL = "https://github.com/psksteveo-gif/iRacing-Setup-Machine"
+COPYRIGHT = "Copyright © 2024-2026 SpicySteveO Gaming LLC. All rights reserved."

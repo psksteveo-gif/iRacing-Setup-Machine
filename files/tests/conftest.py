@@ -1,4 +1,4 @@
-"""Shared fixtures for the iRacing Setup Machine test suite."""
+"""Shared fixtures for the Optimal Sector test suite."""
 import sys, os
 import pytest
 

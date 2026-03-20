@@ -226,7 +226,7 @@ def send_discord_webhook(summary: ShareSummary, webhook_url: str) -> None:
                   f"@ {summary.track_name}"),
         "color": color,
         "fields": fields,
-        "footer": {"text": f"iRacing Setup Machine  •  {summary.export_time}"},
+        "footer": {"text": f"Optimal Sector  •  {summary.export_time}"},
     }
 
     payload = _json.dumps({"embeds": [embed]}).encode("utf-8")

@@ -55,7 +55,7 @@ UPGRADE_MESSAGES: dict[str, str] = {
     "setup_diff":       "Setup diff visualization requires Pro. Upgrade to compare setups side-by-side.",
     "pdf_export":       "PDF export requires Pro. Upgrade to generate shareable session reports.",
     "csv_export":       "CSV export requires Pro. Upgrade to export channel data for external analysis.",
-    "ai_advisor":       "AI Setup Advisor requires Pro. Upgrade to get Claude-powered setup recommendations.",
+    "ai_advisor":       "Optimal Sector requires Pro. Upgrade to get Claude-powered setup recommendations.",
     "session_history":  "Session history & trends require Pro. Upgrade to track your pace over time.",
     "consistency_score":"Consistency scoring requires Pro.",
     "ml_prediction":    "ML lap time prediction requires Pro.",

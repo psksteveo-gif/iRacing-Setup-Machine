@@ -1,12 +1,12 @@
 """
-iRacing Setup Advisor — Professional Desktop Telemetry Tool
+Optimal Sector — Professional Desktop Telemetry Tool
 Integrates: telemetry, setup parsing, sector analysis, driving style,
 tire pressure model, fuel correction, stint analysis, history, AI, PDF export.
 """
 
 import sys
 if sys.version_info < (3, 10):
-    sys.exit("iRacing Setup Advisor requires Python 3.10 or later.")
+    sys.exit("Optimal Sector requires Python 3.10 or later.")
 
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
@@ -2418,7 +2418,7 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
             with open(path,'w',newline='',encoding='utf-8') as f:
                 w=csv.writer(f)
                 # Header info
-                w.writerow(["iRacing Setup Advisor — Telemetry Export"])
+                w.writerow(["Optimal Sector — Telemetry Export"])
                 w.writerow(["Car",d.car_name,"Track",d.track_name,"Laps",d.num_laps])
                 w.writerow(["Best Lap",format_laptime(r.best_lap),"Avg Lap",format_laptime(r.avg_lap)])
                 w.writerow([])
@@ -3533,7 +3533,7 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
         if setups_base:
             dest_dir = os.path.join(setups_base, car_slug)
         else:
-            dest_dir = os.path.join(os.path.expanduser('~/Documents'), 'iRacing Setup Machine')
+            dest_dir = os.path.join(os.path.expanduser('~/Documents'), 'Optimal Sector')
         os.makedirs(dest_dir, exist_ok=True)
 
         # ── Write a human-readable reference file (.txt) ──────────────────────
@@ -3551,7 +3551,7 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
             now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
             ref_lines = [
                 "═" * 64,
-                f"  iRacing Setup Reference Card",
+                f"  Optimal Sector — Setup Reference Card",
                 f"  Car:   {car_name}",
                 f"  Track: {track_name}",
                 f"  Generated: {now_str}",

@@ -1,5 +1,5 @@
 """
-AI Setup Advisor
+Optimal Sector
 Uses the Anthropic API to generate setup recommendations from telemetry analysis.
 Supports both blocking and streaming modes.
 """

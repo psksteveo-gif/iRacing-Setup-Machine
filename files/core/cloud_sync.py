@@ -47,7 +47,7 @@ class QuotaError(CloudSyncError):
 
 def _session() -> requests.Session:
     s = requests.Session()
-    s.headers.update({"User-Agent": "iRacingSetupAdvisor-Desktop/1.0"})
+    s.headers.update({"User-Agent": "OptimalSector-Desktop/1.0"})
     if license_state.access_token:
         s.headers["Authorization"] = f"Bearer {license_state.access_token}"
     return s

@@ -148,7 +148,7 @@ class IRacingAPIClient:
 
     def __init__(self):
         self._session = requests.Session()
-        self._session.headers["User-Agent"] = "iRacingSetupAdvisor/3.x"
+        self._session.headers["User-Agent"] = "OptimalSector/3.x"
         self._status = APIConnectionStatus()
         self._lock = threading.Lock()
         self._rate_last: float = 0.0
