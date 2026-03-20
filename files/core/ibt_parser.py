@@ -45,6 +45,18 @@ class IBTParser:
             raise FileNotFoundError(f"IBT file not found: {path}")
         self.path = path
 
+    # Thresholds for pre-load warnings (checked before reading the file)
+    MIN_VALID_SIZE   = 112        # bytes — smaller than this can't hold a valid header
+    WARN_SIZE_MB     = 200        # show a "large file" notice above this
+    MAX_SIZE_MB      = 500        # hard reject above this
+
+    def file_size_mb(self) -> float:
+        """Return file size in MB without reading the file."""
+        try:
+            return os.path.getsize(self.path) / (1024 * 1024)
+        except OSError:
+            return 0.0
+
     def parse(self) -> TelemetryData:
         """Parse an iRacing .ibt binary telemetry file into structured TelemetryData."""
         import time
@@ -52,19 +64,56 @@ class IBTParser:
         try:
             t0 = time.perf_counter()
             file_size = os.path.getsize(self.path)
-            if file_size > 500 * 1024 * 1024:  # 500 MB
-                raise ValueError("IBT file exceeds maximum supported size (500 MB)")
+
+            # Zero-length file
+            if file_size == 0:
+                raise ValueError(
+                    "The IBT file is empty (0 bytes). "
+                    "This usually means iRacing crashed before writing any telemetry. "
+                    "Try loading a different session."
+                )
+
+            # Too small to be valid
+            if file_size < self.MIN_VALID_SIZE:
+                raise ValueError(
+                    f"The IBT file is too small to be valid ({file_size} bytes). "
+                    "The session may have ended immediately after starting."
+                )
+
+            # Hard size limit
+            if file_size > self.MAX_SIZE_MB * 1024 * 1024:
+                raise ValueError(
+                    f"IBT file is {file_size / (1024*1024):.0f} MB — "
+                    f"maximum supported size is {self.MAX_SIZE_MB} MB. "
+                    "For endurance sessions, trim the file or load in segments."
+                )
+
             t1 = time.perf_counter()
-            with open(self.path, 'rb') as f:
-                raw = f.read()
+            try:
+                with open(self.path, 'rb') as f:
+                    raw = f.read()
+            except PermissionError:
+                raise ValueError(
+                    "Cannot read the IBT file — it may be locked by iRacing. "
+                    "Close iRacing or wait for the session to fully save, then try again."
+                )
+            except OSError as e:
+                raise ValueError(f"Could not read IBT file: {e}")
+
             t2 = time.perf_counter()
             data = self._parse_binary(raw)
             t3 = time.perf_counter()
-            logger.info(f"IBTParser timings: size check={t1-t0:.3f}s, read={t2-t1:.3f}s, parse={t3-t2:.3f}s, total={t3-t0:.3f}s")
+            logger.info(
+                "IBTParser timings: size check=%.3fs, read=%.3fs, parse=%.3fs, total=%.3fs",
+                t1-t0, t2-t1, t3-t2, t3-t0,
+            )
         except (ValueError, FileNotFoundError):
             raise
         except Exception as e:
-            raise RuntimeError(f"Failed to parse IBT file: {e}")
+            raise RuntimeError(
+                f"Failed to parse IBT file: {e}\n\n"
+                "The file may be corrupted, incomplete, or from an unsupported iRacing version."
+            )
         return data
 
     def _parse_binary(self, raw: bytes) -> TelemetryData:
@@ -182,6 +231,40 @@ class IBTParser:
             # Fallback: try LapCurrentLapTime resets, or SessionTime-based heuristic
             logger.warning("LapDistPct channel missing — using fallback lap detection.")
             self._derive_laps_fallback(data)
+
+        # ── Channel sanity checks ──────────────────────────────────────────
+        # Clip known channels to physical limits so downstream analysis is never
+        # fed garbage values from corrupted or truncated IBT data.
+        _CHANNEL_CLAMPS = {
+            'Throttle':        (0.0, 1.0),
+            'Brake':           (0.0, 1.0),
+            'Clutch':          (0.0, 1.0),
+            'SteeringWheelAngle': (-10.0, 10.0),  # radians; >10 rad is physically impossible
+            'Speed':           (0.0, 150.0),       # m/s — ~540 kph; faster is sensor noise
+            'RPM':             (0.0, 30000.0),
+            'Gear':            (-1.0, 8.0),
+            'LapDistPct':      (0.0, 1.0),
+            'FuelLevel':       (0.0, 1000.0),      # litres
+            'WaterTemp':       (0.0, 200.0),       # °C
+            'OilTemp':         (0.0, 300.0),       # °C
+            'LatAccel':        (-100.0, 100.0),    # m/s²
+            'LongAccel':       (-100.0, 100.0),
+            'VertAccel':       (-100.0, 100.0),
+        }
+        _clamped = 0
+        for ch_name, (lo, hi) in _CHANNEL_CLAMPS.items():
+            ch = data.get_channel(ch_name)
+            if ch is None:
+                continue
+            out_of_range = np.sum((ch < lo) | (ch > hi))
+            if out_of_range > 0:
+                data.set_channel(ch_name, np.clip(ch, lo, hi))
+                _clamped += out_of_range
+                logger.debug("Clamped %d out-of-range values in channel %s [%s, %s]",
+                             out_of_range, ch_name, lo, hi)
+        if _clamped:
+            logger.warning("IBT sanity check clamped %d total values across channels — "
+                           "file may be partially corrupted.", _clamped)
 
         return data
 

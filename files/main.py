@@ -14,6 +14,7 @@ import threading, os, json, logging, logging.handlers, csv, traceback, time, re
 from datetime import datetime
 import numpy as np
 from version import VERSION, APP_NAME, COPYRIGHT, CHANGELOG
+from core.config import APP_DATA_DIR
 import matplotlib
 matplotlib.use('TkAgg')
 from matplotlib.figure import Figure
@@ -29,9 +30,19 @@ except ImportError:
     _HAS_DND = False
 
 # ── Logging (file + console) ──────────────────────────────────────────────
-_LOG_DIR = os.path.expanduser("~/.iracing_setup_advisor_logs")
+# Logs stored in %APPDATA%\OptimalSector\logs\ (Windows) or ~/.config/OptimalSector/logs/
+_LOG_DIR = os.path.join(APP_DATA_DIR, "logs")
 os.makedirs(_LOG_DIR, exist_ok=True)
 _LOG_FILE = os.path.join(_LOG_DIR, "app.log")
+# One-time migration: move old log directory if it exists and new one is empty
+_LEGACY_LOG_DIR = os.path.expanduser("~/.iracing_setup_advisor_logs")
+if os.path.isdir(_LEGACY_LOG_DIR) and not os.listdir(_LOG_DIR):
+    try:
+        import shutil as _shutil
+        for _f in os.listdir(_LEGACY_LOG_DIR):
+            _shutil.copy2(os.path.join(_LEGACY_LOG_DIR, _f), os.path.join(_LOG_DIR, _f))
+    except Exception:
+        pass
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -128,9 +139,10 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
                 self.iconbitmap(_icon_path)
             except Exception:
                 pass
-        # Restore window geometry
+        # Restore window geometry — validate against screen bounds first
         cfg = load_cfg()
         geo = cfg.get('geometry', '1360x880')
+        geo = self._safe_geometry(geo)
         self.geometry(geo)
         self.configure(fg_color=DARK); self.minsize(1100,700)
         # Save geometry on close
@@ -198,6 +210,40 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
         saved_chart = self.cfg.get('last_chart')
         if saved_chart and saved_chart in self.CDEFS:
             self._tv.set(saved_chart)
+
+    def _update_title(self, data=None):
+        """Keep window title in sync with the currently loaded session."""
+        if data and data.car_name and data.track_name:
+            car  = data.car_name[:30]
+            trk  = data.track_name[:30]
+            self.title(f"{APP_NAME}  —  {car}  @  {trk}  (v{VERSION})")
+        else:
+            self.title(f"{APP_NAME}  v{VERSION}")
+
+    def _safe_geometry(self, geo: str) -> str:
+        """Validate geometry string against screen bounds; reset if window would be off-screen."""
+        try:
+            # geometry strings: "WxH+X+Y" or "WxH"
+            import re as _re
+            m = _re.match(r'(\d+)x(\d+)(?:\+(-?\d+)\+(-?\d+))?', geo)
+            if not m:
+                return '1360x880'
+            w, h = int(m.group(1)), int(m.group(2))
+            x = int(m.group(3)) if m.group(3) is not None else None
+            y = int(m.group(4)) if m.group(4) is not None else None
+            sw = self.winfo_screenwidth()
+            sh = self.winfo_screenheight()
+            # Clamp size to screen
+            w = max(1100, min(w, sw))
+            h = max(700,  min(h, sh))
+            if x is not None and y is not None:
+                # Ensure at least 100px of the title bar is visible
+                x = max(-w + 100, min(x, sw - 100))
+                y = max(0,        min(y, sh - 100))
+                return f'{w}x{h}+{x}+{y}'
+            return f'{w}x{h}'
+        except Exception:
+            return '1360x880'
 
     def _on_close(self):
         """Save state and exit cleanly."""
@@ -4674,6 +4720,34 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
     def _process(self,path,demo=False):
         if self._loading:
             return
+
+        # Pre-load size check — warn for large files, hard-reject above limit
+        if path and not demo:
+            try:
+                from core.ibt_parser import IBTParser as _IBTParser
+                _sz = _IBTParser(path).file_size_mb()
+                if _sz > _IBTParser.MAX_SIZE_MB:
+                    messagebox.showerror(
+                        "File Too Large",
+                        f"This IBT file is {_sz:.0f} MB — the maximum supported size is "
+                        f"{_IBTParser.MAX_SIZE_MB} MB.\n\n"
+                        "Very long endurance sessions may exceed this limit. "
+                        "Try trimming the session or loading a shorter file."
+                    )
+                    return
+                if _sz > _IBTParser.WARN_SIZE_MB:
+                    if not messagebox.askyesno(
+                        "Large File",
+                        f"This IBT file is {_sz:.0f} MB — parsing may take 30–60 seconds "
+                        "for an endurance session.\n\nContinue loading?",
+                    ):
+                        return
+            except FileNotFoundError:
+                messagebox.showerror("File Not Found", f"Could not find:\n{path}")
+                return
+            except Exception:
+                pass   # let the parser produce the detailed error
+
         self._loading = True
         for btn in self._load_btns:
             btn.configure(state='disabled')
@@ -4741,6 +4815,7 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
         self.cur_stint=stint; self.cur_style=style
         self.cur_fuel=fuel
         self._last_opt_result = None   # invalidate optimizer result for new session
+        self._update_title(data)
 
         # Auto-populate session mode from IBT session type
         _sess_type_raw = (data.session_info.get('session_type') or
@@ -4801,6 +4876,7 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
         if self._loading:
             return
         self.cur_data=data; self.cur_rpt=rpt
+        self._update_title(data)
         self._highlight_card(data)
         idx = next((i for i,(d,_) in enumerate(self.sessions) if d is data), None)
         cached = self._analysis_cache.get(idx) if idx is not None else None

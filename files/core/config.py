@@ -4,9 +4,36 @@ import json, logging, os
 
 logger = logging.getLogger(__name__)
 
-CONFIG_FILE = os.path.expanduser("~/.iracing_setup_advisor.json")
-_KEYRING_SERVICE = "iracing_setup_advisor"
+# ── App data directory ─────────────────────────────────────────────────────
+# Windows: %APPDATA%\OptimalSector\
+# macOS/Linux: ~/.config/OptimalSector/
+def _app_data_dir() -> str:
+    if os.name == "nt":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        return os.path.join(base, "OptimalSector")
+    return os.path.join(os.path.expanduser("~"), ".config", "OptimalSector")
+
+APP_DATA_DIR = _app_data_dir()
+os.makedirs(APP_DATA_DIR, exist_ok=True)
+
+CONFIG_FILE = os.path.join(APP_DATA_DIR, "config.json")
+_LEGACY_CONFIG = os.path.expanduser("~/.iracing_setup_advisor.json")
+
+_KEYRING_SERVICE = "OptimalSector"
 _KEYRING_USER = "anthropic_api_key"
+
+
+def _migrate_legacy_config():
+    """One-time migration: move old ~/.iracing_setup_advisor.json to new location."""
+    if os.path.exists(_LEGACY_CONFIG) and not os.path.exists(CONFIG_FILE):
+        try:
+            import shutil
+            shutil.copy2(_LEGACY_CONFIG, CONFIG_FILE)
+            logger.info("Migrated config from %s to %s", _LEGACY_CONFIG, CONFIG_FILE)
+        except Exception as e:
+            logger.warning("Could not migrate legacy config: %s", e)
+
+_migrate_legacy_config()
 
 
 def get_api_key() -> str:

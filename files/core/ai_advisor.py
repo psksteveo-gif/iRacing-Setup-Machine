@@ -26,6 +26,57 @@ def _check_rate_limit() -> bool:
         return True
 
 
+# ── Retry helper ──────────────────────────────────────────────────────────
+_MAX_RETRIES = 2          # attempt up to 3 total calls (1 + 2 retries)
+_RETRY_BASE_DELAY = 1.5   # seconds; doubles each retry
+
+
+def _is_retryable_error(exc: Exception) -> bool:
+    """Return True for transient errors that are worth retrying."""
+    msg = str(exc).lower()
+    # Retry on network issues, timeouts, and 529 overload — not on auth or content errors
+    retryable_keywords = ('timeout', 'connection', 'network', 'overloaded',
+                          'service unavailable', '529', '503', '502', 'reset')
+    non_retryable = ('invalid_api_key', 'authentication', '401', '403',
+                     'content_policy', 'permission')
+    if any(kw in msg for kw in non_retryable):
+        return False
+    return any(kw in msg for kw in retryable_keywords)
+
+
+def _stream_with_retry(client, *, model: str, max_tokens: int,
+                       messages: list, system: str = "") -> list[str]:
+    """
+    Call client.messages.stream() with up to _MAX_RETRIES retries on transient errors.
+    Returns all text chunks as a list (collected before yielding to allow retry).
+    Raises the final exception if all retries are exhausted.
+    """
+    kwargs: dict = dict(model=model, max_tokens=max_tokens, messages=messages)
+    if system:
+        kwargs['system'] = system
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            chunks: list[str] = []
+            with client.messages.stream(**kwargs) as stream:
+                for text in stream.text_stream:
+                    chunks.append(text)
+            return chunks
+        except Exception as exc:
+            last_exc = exc
+            if attempt < _MAX_RETRIES and _is_retryable_error(exc):
+                delay = _RETRY_BASE_DELAY * (2 ** attempt)
+                import logging as _log
+                _log.getLogger(__name__).warning(
+                    "API call failed (attempt %d/%d): %s — retrying in %.1fs",
+                    attempt + 1, _MAX_RETRIES + 1, exc, delay,
+                )
+                time.sleep(delay)
+            else:
+                break
+    raise last_exc  # type: ignore[misc]
+
+
 def _weather_guidance(si: dict) -> str:
     """
     Translate raw session conditions into concrete setup adjustment guidance
@@ -359,13 +410,12 @@ Balance score: {bal_desc}
 Keep your response under 250 words. Use short paragraphs, no bullet soup. Speak directly to the driver."""
 
     try:
-        with client.messages.stream(
-            model=model,
-            max_tokens=400,
+        chunks = _stream_with_retry(
+            client, model=model, max_tokens=400,
             messages=[{"role": "user", "content": prompt}],
-        ) as stream:
-            for text in stream.text_stream:
-                yield text
+        )
+        for text in chunks:
+            yield text
     except Exception as e:
         yield f"AI request failed: {e}\nCheck your API key and internet connection."
 
@@ -447,13 +497,12 @@ def get_ai_recommendations_stream(report: AnalysisReport, car_name: str,
                                session_info=session_info, corner_report=corner_report,
                                incident_report=incident_report, evolution_report=evolution_report)
 
-        with client.messages.stream(
-            model=_MODEL_SONNET,
-            max_tokens=1024,
+        chunks = _stream_with_retry(
+            client, model=_MODEL_SONNET, max_tokens=1024,
             messages=[{"role": "user", "content": prompt}],
-        ) as stream:
-            for text in stream.text_stream:
-                yield text
+        )
+        for text in chunks:
+            yield text
 
     except ImportError:
         yield ("Anthropic package not installed. Install with: pip install anthropic\n\n"
@@ -980,13 +1029,12 @@ Keep reasons on one line per parameter. Every value must be within the legal ran
         import anthropic
         client = anthropic.Anthropic(api_key=api_key, timeout=90.0)
 
-        with client.messages.stream(
-            model="claude-sonnet-4-6",
-            max_tokens=2500,
+        chunks = _stream_with_retry(
+            client, model="claude-sonnet-4-6", max_tokens=2500,
             messages=[{"role": "user", "content": prompt}],
-        ) as stream:
-            for text in stream.text_stream:
-                yield text
+        )
+        for text in chunks:
+            yield text
 
     except ImportError:
         yield "Anthropic package not installed. Run: pip install anthropic\n\n"
