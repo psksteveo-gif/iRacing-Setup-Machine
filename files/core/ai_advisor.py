@@ -629,6 +629,7 @@ def generate_tech_legal_setup_stream(
         current_setup: dict | None = None,
         session_info: dict | None = None,
         track_info=None,
+        stint_mode: str = "race",   # "qualifying" | "race" | "endurance"
 ) -> "Generator[str, None, None]":
     """
     Generate a complete, tech-inspection-passing iRacing setup tailored to
@@ -869,11 +870,33 @@ def generate_tech_legal_setup_stream(
         for h in style_hints:
             hints_text += f"  • {h}\n"
 
+    # ── Stint mode context ─────────────────────────────────────────────────
+    _STINT_GUIDANCE = {
+        "qualifying": (
+            "SESSION TYPE: QUALIFYING — optimise purely for maximum single-lap pace. "
+            "Ignore tire wear and fuel weight. Prioritise peak grip, minimum drag, and "
+            "the sharpest possible turn-in and exit traction. Fuel load = qualifying (minimal)."
+        ),
+        "endurance": (
+            "SESSION TYPE: ENDURANCE RACE — balance lap time against tire longevity. "
+            "Avoid aggressive camber or pressure settings that accelerate wear. "
+            "Favour stability and predictability over outright speed. "
+            "Account for a heavy fuel load at the start of each stint."
+        ),
+        "race": (
+            "SESSION TYPE: SPRINT RACE — balance peak lap time with reasonable tire life "
+            "for a full race stint. Account for a moderate starting fuel load."
+        ),
+    }
+    stint_context = _STINT_GUIDANCE.get(stint_mode, _STINT_GUIDANCE["race"])
+
     # ── Assemble prompt ────────────────────────────────────────────────────
     trail_pct_str = (f"{style_report.trail_braking_pct:.0f}%"
                      if style_report else "unknown")
 
     prompt = f"""You are a professional iRacing setup engineer building a PERSONALISED, TECH-INSPECTION-PASSING setup.
+
+{stint_context}
 
 Your job is to START from the validated baseline below and ADJUST it to suit:
   1. The specific challenges of {track_name}

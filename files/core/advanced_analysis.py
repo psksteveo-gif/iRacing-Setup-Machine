@@ -357,7 +357,7 @@ class StintAnalyzer:
 import json
 import os
 from datetime import datetime
-from typing import List
+from typing import List, Optional, Dict
 
 
 @dataclass
@@ -369,6 +369,8 @@ class HistoryEntry:
     setup_snapshot: Dict
     changes_from_prev: List[Dict] = field(default_factory=list)
     notes: str = ""
+    session_type: str = "Practice"   # "Practice" | "Qualifying" | "Race"
+    lap_delta: Optional[float] = None  # best_lap - prev best_lap (negative = improvement)
 
 
 class HistoryTracker:
@@ -390,7 +392,7 @@ class HistoryTracker:
                     return
                 with open(self.db_path, 'r') as f:
                     data = json.load(f)
-                allowed_keys = {'timestamp', 'car', 'track', 'best_lap', 'setup_snapshot', 'changes_from_prev', 'notes'}
+                allowed_keys = {'timestamp', 'car', 'track', 'best_lap', 'setup_snapshot', 'changes_from_prev', 'notes', 'session_type', 'lap_delta'}
                 self.entries = [HistoryEntry(**{k: v for k, v in e.items() if k in allowed_keys}) for e in data]
                 self._prune()
             except Exception:
@@ -434,10 +436,12 @@ class HistoryTracker:
             raise
 
     def add_entry(self, car: str, track: str, best_lap: float,
-                  setup: dict, notes: str = "") -> HistoryEntry:
+                  setup: dict, notes: str = "",
+                  session_type: str = "Practice") -> HistoryEntry:
         # Diff against previous entry for same car+track
         prev = self._find_last(car, track)
         changes = []
+        lap_delta: Optional[float] = None
         if prev:
             all_keys = set(prev.setup_snapshot.keys()) | set(setup.keys())
             for k in all_keys:
@@ -445,6 +449,8 @@ class HistoryTracker:
                 b = setup.get(k, "—")
                 if a != b:
                     changes.append({'param': k, 'before': a, 'after': b})
+            if prev.best_lap and prev.best_lap > 0 and best_lap and best_lap > 0:
+                lap_delta = best_lap - prev.best_lap
 
         entry = HistoryEntry(
             timestamp=datetime.now().isoformat(),
@@ -454,6 +460,8 @@ class HistoryTracker:
             setup_snapshot=setup,
             changes_from_prev=changes,
             notes=notes,
+            session_type=session_type,
+            lap_delta=lap_delta,
         )
         self.entries.append(entry)
         self._prune()

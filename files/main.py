@@ -1338,8 +1338,11 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
             # Guard: skip if last history entry already matches this session+setup
             prev = self.history._find_last(self.cur_data.car_name, self.cur_data.track_name)
             if not prev or prev.setup_snapshot != setup.flat:
+                _stype = (self.cur_data.session_info.get('session_type') or
+                          self.cur_data.session_info.get('SessionType') or "Practice")
                 self.history.add_entry(self.cur_data.car_name,self.cur_data.track_name,
-                    self.cur_rpt.best_lap,setup.flat)
+                    self.cur_rpt.best_lap,setup.flat,
+                    session_type=str(_stype))
             self._u_history()
 
     def _render_diff(self,a:ParsedSetup,b:ParsedSetup):
@@ -1928,11 +1931,32 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
                 ch.fig.patch.set_facecolor('#0d1b2a')
                 ch.fig.tight_layout(pad=0.5); ch.draw()
 
+        # Session type badge colors
+        _STYPE_COLORS = {
+            "qualifying": "#9b59b6",
+            "race":       ACCENT,
+            "endurance":  "#1a7a3a",
+            "practice":   DIM,
+        }
+
         for entry in entries[:30]:
             ec=ctk.CTkFrame(f,fg_color=PANEL,corner_radius=8); ec.pack(fill='x',pady=3)
             hr=ctk.CTkFrame(ec,fg_color="transparent"); hr.pack(fill='x',padx=10,pady=(8,4))
             lbl(hr,f"{entry.car} @ {entry.track}",12,bold=True).pack(side='left')
+            # Session type badge
+            _stype_key = getattr(entry, 'session_type', 'Practice').lower()
+            _badge_color = _STYPE_COLORS.get(_stype_key, DIM)
+            _badge_txt = getattr(entry, 'session_type', 'Practice')
+            ctk.CTkLabel(hr, text=_badge_txt, font=ctk.CTkFont(size=10, weight='bold'),
+                         fg_color=_badge_color, text_color='white',
+                         corner_radius=4, padx=6, pady=1).pack(side='left', padx=(8, 0))
             lbl(hr,entry.timestamp[:16].replace('T',' '),12,color=DIM).pack(side='right')
+            # Lap delta with color coding
+            _lap_delta = getattr(entry, 'lap_delta', None)
+            if _lap_delta is not None:
+                _delta_sign = "+" if _lap_delta > 0 else ""
+                _delta_color = GREEN if _lap_delta < 0 else ("#e74c3c" if _lap_delta > 0 else DIM)
+                lbl(hr,f"Δ{_delta_sign}{_lap_delta:.3f}s",12,color=_delta_color).pack(side='right',padx=4)
             lbl(hr,f"Best: {format_laptime(entry.best_lap)}",12,color=GREEN).pack(side='right',padx=12)
             if entry.changes_from_prev:
                 lbl(ec,f"  {len(entry.changes_from_prev)} change(s) from previous:",12,color=DIM).pack(anchor='w',padx=10)
@@ -3098,6 +3122,13 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
             variable=self._opt_target,
             fg_color=CARD, button_color=ACCENT, width=200).pack(side='left', padx=4)
 
+        lbl(row1, "Session:", color=DIM).pack(side='left', padx=(16, 4))
+        self._opt_stint_mode = ctk.StringVar(value="Race")
+        ctk.CTkOptionMenu(row1,
+            values=["Race", "Qualifying", "Endurance"],
+            variable=self._opt_stint_mode,
+            fg_color=CARD, button_color=ACCENT, width=120).pack(side='left', padx=4)
+
         lbl(row1, "Max ± clicks:", color=DIM).pack(side='left', padx=(16, 4))
         self._opt_maxd = ctk.CTkEntry(row1, width=50, fg_color=CARD); self._opt_maxd.pack(side='left')
         self._opt_maxd.insert(0, "3")
@@ -3110,6 +3141,8 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
         self._opt_btn = ctk.CTkButton(row2, text="Run Optimizer", width=140, fg_color=ACCENT,
                                       hover_color="#c0392b", command=self._run_optimizer)
         self._opt_btn.pack(side='left', padx=(0, 12))
+        self._opt_class_lbl = lbl(row2, "", 10, color=DIM)
+        self._opt_class_lbl.pack(side='left', padx=(0, 12))
         self._opt_status = lbl(row2, "Load a session, then run the optimizer.", 11, color=DIM)
         self._opt_status.pack(side='left')
 
@@ -3144,11 +3177,15 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
             messagebox.showwarning("Invalid Input", "Max clicks and Generations must be numbers.")
             return
 
+        stint_map = {"Race": "race", "Qualifying": "qualifying", "Endurance": "endurance"}
+        stint_mode = stint_map.get(self._opt_stint_mode.get(), "race")
+
         target = OptimizationTarget(
             mode=mode,
             target_balance=target_bal,
             balance_weight=2.5 if mode == "fix_balance" else 1.5,
             max_delta_per_param=max(0.5, min(max_d, 5.0)),
+            stint_mode=stint_mode,
         )
 
         self._opt_btn.configure(state='disabled', text="Optimizing…")
@@ -3262,6 +3299,16 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
             command=self._run_ai_setup_builder)
         self._ai_setup_btn.pack(side='left', padx=(0, 12))
 
+        lbl(crow, "Session:", color=DIM).pack(side='left', padx=(0, 4))
+        self._ai_stint_mode = ctk.StringVar(value="Race")
+        ctk.CTkOptionMenu(crow,
+            values=["Race", "Qualifying", "Endurance"],
+            variable=self._ai_stint_mode,
+            fg_color=CARD, button_color=ACCENT, width=120).pack(side='left', padx=(0, 12))
+
+        self._ai_class_lbl = lbl(crow, "", 10, color=DIM)
+        self._ai_class_lbl.pack(side='left', padx=(0, 12))
+
         self._ai_setup_status = lbl(crow, "Load a session and provide an API key in Settings (⚙).",
                                     11, color=DIM)
         self._ai_setup_status.pack(side='left')
@@ -3349,6 +3396,9 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
             except Exception:
                 pass
 
+        _ai_stint_map = {"Race": "race", "Qualifying": "qualifying", "Endurance": "endurance"}
+        ai_stint_mode = _ai_stint_map.get(self._ai_stint_mode.get(), "race")
+
         def worker():
             try:
                 for chunk in generate_tech_legal_setup_stream(
@@ -3363,7 +3413,8 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
                         corner_report=getattr(self, 'cur_corner_report', None),
                         current_setup=setup_flat,
                         session_info=self.cur_data.session_info if self.cur_data else None,
-                        track_info=track_info):
+                        track_info=track_info,
+                        stint_mode=ai_stint_mode):
                     self.after(0, lambda c=chunk: self._on_ai_setup_chunk(c))
             except Exception as ex:
                 self.after(0, lambda: self._on_ai_setup_chunk(
@@ -4639,6 +4690,31 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
         self.cur_stint=stint; self.cur_style=style
         self.cur_fuel=fuel
         self._last_opt_result = None   # invalidate optimizer result for new session
+
+        # Auto-populate session mode from IBT session type
+        _sess_type_raw = (data.session_info.get('session_type') or
+                          data.session_info.get('SessionType') or "Race")
+        _sess_type_raw = str(_sess_type_raw).lower()
+        if "qual" in _sess_type_raw:
+            _detected_stint = "Qualifying"
+        elif "endur" in _sess_type_raw or "endu" in _sess_type_raw:
+            _detected_stint = "Endurance"
+        else:
+            _detected_stint = "Race"
+        if hasattr(self, '_opt_stint_mode'):
+            self._opt_stint_mode.set(_detected_stint)
+        if hasattr(self, '_ai_stint_mode'):
+            self._ai_stint_mode.set(_detected_stint)
+
+        # Update detected class labels
+        _car_class = rpt.car_class if rpt else "default"
+        _class_is_unknown = (not _car_class or _car_class == "default")
+        _class_txt = f"Class: {_car_class.upper()}" if not _class_is_unknown else "⚠ Class: undetected"
+        _class_color = DIM if not _class_is_unknown else "#e67e22"
+        if hasattr(self, '_opt_class_lbl'):
+            self._opt_class_lbl.configure(text=_class_txt, text_color=_class_color)
+        if hasattr(self, '_ai_class_lbl'):
+            self._ai_class_lbl.configure(text=_class_txt, text_color=_class_color)
         # Auto-load setup from IBT session info if CarSetup is embedded
         car_setup = data.session_info.get('car_setup')
         if car_setup:

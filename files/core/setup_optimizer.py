@@ -24,6 +24,7 @@ class OptimizationTarget:
     target_balance: float = 0.0      # desired end balance (-1=US, +1=OS; 0=neutral)
     balance_weight: float = 2.0      # relative importance vs lap-time cost
     max_delta_per_param: float = 3.0 # max ±clicks / turns / psi per parameter
+    stint_mode: str = "race"         # "qualifying" | "race" | "endurance"
 
 
 @dataclass
@@ -207,27 +208,41 @@ def optimize_setup(
         # Lap-time cost (magnitude of total change — any change has a cost)
         lt_cost = abs(report.net_lap_time_delta_s)
 
-        # Complexity penalty (prefer fewer changes)
-        complexity = len(changes) * 0.04
+        # Complexity penalty (prefer fewer changes) — relaxed for qualifying (one shot)
+        if target.stint_mode == "qualifying":
+            complexity = len(changes) * 0.01   # almost no penalty — squeeze every tenth
+        else:
+            complexity = len(changes) * 0.04
 
         # Confidence reward (prefer high-confidence parameters)
         avg_conf = np.mean([effect_models.get(c['parameter'], _EFFECT_MODELS.get(c['parameter'], {})).get('confidence', 0.5)
                             for c in changes])
         conf_reward = (1.0 - avg_conf) * 0.3
 
+        # Tire-wear penalty for endurance stints
+        wear_penalty = 0.0
+        if target.stint_mode == "endurance":
+            for c in changes:
+                wear = effect_models.get(c['parameter'], _EFFECT_MODELS.get(c['parameter'], {})).get('tire_wear', 'neutral')
+                if wear == 'increased':
+                    wear_penalty += abs(c['delta']) * 0.05
+                elif wear == 'reduced':
+                    wear_penalty -= abs(c['delta']) * 0.02  # reward wear-saving changes
+
         # Corner-phase bonus (reward changes that fix the worst phase)
         phase_bonus = sum(_phase_bonus(c['parameter'], c['delta']) for c in changes)
 
         if target.mode == "lap_time":
-            return lt_cost + complexity + conf_reward + balance_error * 0.3 - phase_bonus
+            return lt_cost + complexity + conf_reward + balance_error * 0.3 - phase_bonus + wear_penalty
         elif target.mode == "fix_balance":
-            return balance_error * target.balance_weight + lt_cost * 0.5 + complexity + conf_reward - phase_bonus
+            return balance_error * target.balance_weight + lt_cost * 0.5 + complexity + conf_reward - phase_bonus + wear_penalty
         else:  # balance_and_time
             return (balance_error * target.balance_weight
                     + lt_cost * 1.0
                     + complexity
                     + conf_reward
-                    - phase_bonus)
+                    - phase_bonus
+                    + wear_penalty)
 
     # ── Initialise population ─────────────────────────────────────────────────
     bias = _balance_bias(current_balance, local_params)
