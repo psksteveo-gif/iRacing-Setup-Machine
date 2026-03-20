@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller spec file for iRacing Setup Advisor
-Run: pyinstaller iRacingSetupAdvisor.spec
+PyInstaller spec file for Optimal Sector
+Run: pyinstaller OptimalSector.spec
 """
 
 import os
@@ -32,6 +32,7 @@ a = Analysis(
         (ctk_path, 'customtkinter'),
         # Bundle app data and version
         ('core', 'core'),
+        ('ui', 'ui'),
         ('data', 'data'),
         ('version.py', '.'),
         ('LICENSE', '.'),
@@ -60,6 +61,7 @@ a = Analysis(
         'reportlab.platypus',
         'reportlab.lib.styles',
         'reportlab.lib.units',
+        'winreg',
         'core',
         'core.ibt_parser',
         'core.analysis_engine',
@@ -69,6 +71,9 @@ a = Analysis(
         'core.ai_advisor',
         'core.pdf_report',
         'core.car_classifier',
+        'core.file_watcher',
+        'core.cloud_sync',
+        'core.race_engineer',
         'data',
         'data.templates',
         'data.templates.track_templates',
@@ -90,7 +95,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='iRacingSetupAdvisor',
+    name='OptimalSector',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -112,5 +117,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='iRacingSetupAdvisor',
+    name='OptimalSector',
 )

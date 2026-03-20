@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Build iRacing Setup Advisor into a standalone Windows application.
+    Build Optimal Sector into a standalone Windows application.
 
 .DESCRIPTION
     This script installs dependencies and uses PyInstaller to create
@@ -17,7 +17,7 @@ Set-Location $PSScriptRoot
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  iRacing Setup Advisor - Build Script" -ForegroundColor Cyan
+Write-Host "  Optimal Sector - Build Script" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -55,16 +55,16 @@ if (Test-Path "build") { Remove-Item -Recurse -Force "build" }
 
 # ── Step 4: Run PyInstaller ────────────────────────────────────────────────
 Write-Host "[4/5] Building executable with PyInstaller..." -ForegroundColor Yellow
-python -m PyInstaller iRacingSetupAdvisor.spec --noconfirm
+python -m PyInstaller OptimalSector.spec --noconfirm
 
-if (-not (Test-Path "dist\iRacingSetupAdvisor\iRacingSetupAdvisor.exe")) {
+if (-not (Test-Path "dist\OptimalSector\OptimalSector.exe")) {
     Write-Host "BUILD FAILED - exe not found!" -ForegroundColor Red
     exit 1
 }
 
 Write-Host ""
 Write-Host "BUILD SUCCESSFUL!" -ForegroundColor Green
-Write-Host "  Executable: dist\iRacingSetupAdvisor\iRacingSetupAdvisor.exe" -ForegroundColor White
+Write-Host "  Executable: dist\OptimalSector\OptimalSector.exe" -ForegroundColor White
 Write-Host ""
 
 # ── Step 5: Optionally build installer with Inno Setup ────────────────────
@@ -74,14 +74,14 @@ if (Test-Path $innoPath) {
     & $innoPath "installer.iss"
     Write-Host ""
     Write-Host "INSTALLER CREATED!" -ForegroundColor Green
-    Write-Host "  Installer: dist\iRacingSetupAdvisor_Setup.exe" -ForegroundColor White
+    Write-Host "  Installer: dist\OptimalSector_Setup.exe" -ForegroundColor White
 } else {
     Write-Host "[5/5] Inno Setup not found - skipping installer creation." -ForegroundColor DarkGray
     Write-Host "  To create a proper installer, install Inno Setup 6 from:" -ForegroundColor DarkGray
     Write-Host "  https://jrsoftware.org/isinfo.php" -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "  You can still run the app directly from:" -ForegroundColor White
-    Write-Host "  dist\iRacingSetupAdvisor\iRacingSetupAdvisor.exe" -ForegroundColor White
+    Write-Host "  dist\OptimalSector\OptimalSector.exe" -ForegroundColor White
 }
 
 Write-Host ""
