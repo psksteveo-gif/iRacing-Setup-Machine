@@ -13,7 +13,7 @@ from tkinter import filedialog, messagebox
 import threading, os, json, logging, logging.handlers, csv, traceback, time, re
 from datetime import datetime
 import numpy as np
-from version import VERSION, APP_NAME, COPYRIGHT
+from version import VERSION, APP_NAME, COPYRIGHT, CHANGELOG
 import matplotlib
 matplotlib.use('TkAgg')
 from matplotlib.figure import Figure
@@ -184,6 +184,12 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
         self._build()
         self._bind_shortcuts()
         threading.Thread(target=evict_old_entries, daemon=True).start()
+        # Show What's New dialog if the version has changed since last launch
+        _last_seen = self.cfg.get('last_seen_version', '')
+        if _last_seen != VERSION:
+            self.cfg['last_seen_version'] = VERSION
+            save_cfg(self.cfg)
+            self.after(800, self._whats_new)   # slight delay so UI finishes drawing
         # Restore last active tab/chart
         saved_tab = self.cfg.get('last_tab')
         if saved_tab:
@@ -2212,6 +2218,8 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
         lr=ctk.CTkFrame(win,fg_color="transparent"); lr.pack(fill='x',padx=24,pady=4)
         ctk.CTkButton(lr,text="📋 View Logs",width=100,height=28,fg_color=CARD,
             hover_color="#1a5a8a",command=self._open_logs).pack(side='left')
+        ctk.CTkButton(lr,text="What's New",width=110,height=28,fg_color=CARD,
+            hover_color="#1a5a8a",command=self._whats_new).pack(side='left',padx=6)
         ctk.CTkButton(lr,text="Close",width=80,height=28,fg_color=ACCENT,
             command=win.destroy).pack(side='right')
 
@@ -2224,6 +2232,41 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
             _sp.Popen(['open', _LOG_DIR])
         else:
             _sp.Popen(['xdg-open', _LOG_DIR])
+
+    def _whats_new(self, highlight_version: str = ""):
+        """Show the What's New / changelog dialog."""
+        win = ctk.CTkToplevel(self)
+        win.title("What's New")
+        win.geometry("520x520")
+        win.configure(fg_color=DARK)
+        win.grab_set()
+        win.resizable(False, False)
+        win.bind('<Escape>', lambda e: win.destroy())
+
+        lbl(win, f"What's New in {APP_NAME}", 16, bold=True).pack(pady=(20, 2))
+        lbl(win, "Release notes", 11, color=DIM).pack(pady=(0, 10))
+
+        sc = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        sc.pack(fill='both', expand=True, padx=16, pady=(0, 8))
+
+        for ver, items in CHANGELOG:
+            is_current = (ver == VERSION) or (ver == highlight_version)
+            header_color = ACCENT if is_current else BLUE
+            badge_text = f"v{ver}  ← current" if (ver == VERSION) else f"v{ver}"
+            ctk.CTkLabel(sc, text=badge_text,
+                         font=ctk.CTkFont(size=13, weight='bold'),
+                         fg_color=header_color if is_current else CARD,
+                         text_color='white', corner_radius=6,
+                         padx=10, pady=3).pack(anchor='w', pady=(8, 3))
+            for emoji, headline in items:
+                row = ctk.CTkFrame(sc, fg_color="transparent")
+                row.pack(fill='x', padx=4, pady=1)
+                lbl(row, emoji, 13).pack(side='left', padx=(0, 6))
+                lbl(row, headline, 12, color=TEXT).pack(side='left')
+
+        ctk.CTkButton(win, text="Close", width=100, height=30,
+                      fg_color=ACCENT, hover_color="#c0392b",
+                      command=win.destroy).pack(pady=(0, 16))
 
     # ══════════════════════════════════════════════════════════════════════════
     # BATCH / RECENT FILES
@@ -4607,6 +4650,14 @@ class App(IRacingTabMixin, TelemetryTabMixin, CornersTabMixin, StintTabMixin, ct
             filetypes=[("iRacing Telemetry","*.ibt"),("All","*.*")])
         if not path: return
         self.cfg['last_dir']=os.path.dirname(path); save_cfg(self.cfg); self._process(path)
+
+    def _load_ibt_path(self, path: str):
+        """Load a specific IBT file directly (used by auto-load on session end)."""
+        if not os.path.isfile(path):
+            return
+        self.cfg['last_dir'] = os.path.dirname(path)
+        save_cfg(self.cfg)
+        self._process(path)
 
     def _load_demo(self): self._process(None, demo=True)
 

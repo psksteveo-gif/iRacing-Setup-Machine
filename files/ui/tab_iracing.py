@@ -198,6 +198,51 @@ class IRacingTabMixin:
         self._ir_corr_frame = ctk.CTkFrame(self._ir_sc, fg_color=PANEL, corner_radius=8)
         self._ir_corr_frame.pack(fill="x", pady=(0, 10))
 
+        # ── Auto-Load on Session End ──────────────────────────────────
+        lbl(self._ir_sc, "Auto-Load on Session End", 13,
+            bold=True, color=BLUE).pack(anchor="w", pady=(4, 2))
+        al_frame = ctk.CTkFrame(self._ir_sc, fg_color=PANEL, corner_radius=8)
+        al_frame.pack(fill="x", pady=(0, 6))
+        al_row = ctk.CTkFrame(al_frame, fg_color="transparent")
+        al_row.pack(fill="x", padx=12, pady=10)
+        self._ir_autoload_var = ctk.BooleanVar(value=False)
+        ctk.CTkSwitch(
+            al_row,
+            text="Watch for new IBT files while iRacing is running",
+            variable=self._ir_autoload_var,
+            onvalue=True, offvalue=False,
+            fg_color=ACCENT, progress_color=GREEN,
+            font=ctk.CTkFont(size=12),
+            command=self._ir_toggle_autoload,
+        ).pack(side="left")
+        self._ir_autoload_status = lbl(al_row, "", 11, color=DIM)
+        self._ir_autoload_status.pack(side="right", padx=8)
+
+        # ── Partnership Features (roadmap) ───────────────────────────
+        lbl(self._ir_sc, "Partnership Features  (roadmap)", 13,
+            bold=True, color=BLUE).pack(anchor="w", pady=(8, 2))
+        pf_frame = ctk.CTkFrame(self._ir_sc, fg_color=PANEL, corner_radius=8)
+        pf_frame.pack(fill="x", pady=(0, 10))
+
+        _PARTNERSHIP_FEATURES = [
+            ("✅", GREEN,   "iRacing Data API — session results, iRating, leaderboards"),
+            ("✅", GREEN,   "Live SDK telemetry — real-time channel monitoring"),
+            ("⏳", YELLOW,  "Setup file write (`.sto`) — pending iRacing partnership"),
+            ("⏳", YELLOW,  "Official parameter bounds per car — pending partnership"),
+            ("⏳", YELLOW,  "Official parameter step sizes — pending partnership"),
+            ("⏳", YELLOW,  "Track characterization data (banking, grip, elevation) — pending"),
+            ("⏳", YELLOW,  "Series locked-parameter mapping — pending partnership"),
+        ]
+        for emoji, color, text in _PARTNERSHIP_FEATURES:
+            row = ctk.CTkFrame(pf_frame, fg_color="transparent")
+            row.pack(fill="x", padx=12, pady=2)
+            lbl(row, emoji, 13).pack(side="left", padx=(0, 6))
+            lbl(row, text, 11, color=color).pack(side="left")
+        lbl(pf_frame,
+            "A partnership inquiry has been submitted to iRacing. "
+            "Features marked ⏳ will be activated automatically once the partnership is confirmed.",
+            10, color=DIM, wraplength=740).pack(anchor="w", padx=12, pady=(4, 10))
+
         # ── Pre-fill saved credentials ─────────────────────────────────
         try:
             email, pw = IRacingAPIClient.load_credentials()
@@ -249,6 +294,69 @@ class IRacingTabMixin:
         else:
             self._ir_live_dot.configure(text_color=DIM)
             self._ir_live_lbl.configure(text="SDK: not running", text_color=DIM)
+
+    # ── Auto-load toggle ──────────────────────────────────────────────────
+
+    def _ir_toggle_autoload(self):
+        """Enable or disable auto-load of new IBT files on session end."""
+        enabled = self._ir_autoload_var.get()
+        lbl = getattr(self, '_ir_autoload_status', None)
+        if not enabled:
+            # Stop the file watcher if running
+            fw = getattr(self, '_file_watcher', None)
+            if fw and fw.is_running:
+                fw.stop()
+            if lbl:
+                lbl.configure(text="Auto-load off", text_color=DIM)
+            return
+
+        # Find the iRacing replays/documents folder and watch it
+        import os
+        candidates = [
+            os.path.expanduser("~/Documents/iRacing/telemetry"),
+            os.path.expanduser("~/OneDrive/Documents/iRacing/telemetry"),
+        ]
+        watch_dir = next((d for d in candidates if os.path.isdir(d)), None)
+        if not watch_dir:
+            if lbl:
+                lbl.configure(text="⚠ Could not find iRacing/telemetry folder", text_color=YELLOW)
+            self._ir_autoload_var.set(False)
+            return
+
+        # Start the file watcher — new .ibt files trigger auto-load
+        try:
+            from core.file_watcher import FileWatcher
+
+            def _on_new_ibt(path: str):
+                """Called by file watcher when a new IBT file appears."""
+                self.after(0, lambda p=path: self._ir_on_new_ibt(p))
+
+            fw = getattr(self, '_file_watcher', None)
+            if fw and fw.is_running:
+                fw.stop()
+            self._file_watcher = FileWatcher(watch_dir, pattern="*.ibt",
+                                             callback=_on_new_ibt)
+            self._file_watcher.start()
+            if lbl:
+                lbl.configure(
+                    text=f"Watching: …/iRacing/telemetry", text_color=GREEN)
+        except Exception as exc:
+            if lbl:
+                lbl.configure(text=f"⚠ {exc}", text_color=YELLOW)
+            self._ir_autoload_var.set(False)
+
+    def _ir_on_new_ibt(self, path: str):
+        """Triggered when a new IBT file is detected by the file watcher."""
+        import os
+        from tkinter import messagebox as mb
+        fname = os.path.basename(path)
+        answer = mb.askyesno(
+            "New Session Detected",
+            f"A new telemetry file was detected:\n{fname}\n\nLoad it now?",
+            parent=self,
+        )
+        if answer and hasattr(self, '_load_ibt_path'):
+            self._load_ibt_path(path)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
