@@ -189,6 +189,50 @@ def get_car_setups_dir(src_path: str, setups_dir: str) -> str:
     return os.path.dirname(src_path)  # fallback
 
 
+def find_car_folder(setups_dir: str, car_name: str) -> str:
+    """
+    Find the best-matching car subfolder in setups_dir for the given car_name.
+
+    iRacing folder names differ from IBT car names (e.g. IBT 'Fia F4 2022'
+    maps to folder 'fiaf4_2022').  We tokenise both and pick the folder with
+    the highest overlap score.  Falls back to setups_dir itself if no folders
+    exist yet.
+    """
+    if not car_name:
+        return setups_dir
+
+    def _tokens(s: str) -> set:
+        return set(re.findall(r'[a-z0-9]+', s.lower()))
+
+    car_tokens = _tokens(car_name)
+
+    best_dir = setups_dir
+    best_score = -1
+
+    try:
+        entries = [
+            e for e in os.scandir(setups_dir)
+            if e.is_dir()
+        ]
+    except OSError:
+        return setups_dir
+
+    for entry in entries:
+        folder_tokens = _tokens(entry.name)
+        overlap = len(car_tokens & folder_tokens)
+        # Bonus: if any car token is a substring of the folder name or vice versa
+        bonus = sum(
+            1 for t in car_tokens
+            if t in entry.name.lower() and len(t) >= 3
+        )
+        score = overlap + bonus * 0.5
+        if score > best_score:
+            best_score = score
+            best_dir = entry.path
+
+    return best_dir
+
+
 def build_checklist(changes: List[dict], setup=None,
                     impact_predictions: Dict = None) -> List[ChecklistItem]:
     """

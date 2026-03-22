@@ -483,6 +483,15 @@ class HistoryTracker:
             entries = [e for e in entries if track.lower() in e.track.lower()]
         return sorted(entries, key=lambda e: e.timestamp, reverse=True)
 
+    def update_notes(self, timestamp: str, notes: str) -> bool:
+        """Update the user notes on the entry with the given timestamp. Returns True on success."""
+        for entry in self.entries:
+            if entry.timestamp == timestamp:
+                entry.notes = notes
+                self.save()
+                return True
+        return False
+
     def clear(self):
         self.entries = []
         self.save()

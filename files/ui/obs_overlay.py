@@ -31,7 +31,7 @@ import customtkinter as ctk
 try:
     from ui.theme import DARK, PANEL, CARD, TEXT, DIM, GREEN, YELLOW, RED, ACCENT
 except ImportError:
-    DARK = "#1a1a2e"; PANEL = "#16213e"; CARD = "#0f3460"
+    DARK = "#0c0a12"; PANEL = "#140e1e"; CARD = "#1e1530"
     TEXT = "#e0e0e0"; DIM = "#888"; GREEN = "#2ecc71"
     YELLOW = "#f1c40f"; RED = "#e74c3c"; ACCENT = "#e74c3c"
 

@@ -10,10 +10,10 @@ import matplotlib.pyplot as plt
 from core.analysis_engine import Severity
 
 # ── Theme Constants ───────────────────────────────────────────────────────────
-DARK = "#1a1a2e"; PANEL = "#16213e"; CARD = "#0f3460"
-ACCENT = "#e94560"; BLUE = "#00b4d8"; TEXT = "#eaeaea"
-DIM = "#8a8fa3"; GREEN = "#2ecc71"; YELLOW = "#f39c12"
-RED = "#e74c3c"; PURPLE = "#9b59b6"
+DARK = "#0c0a12"; PANEL = "#140e1e"; CARD = "#1e1530"
+ACCENT = "#c85a17"; BLUE = "#9d4edd"; TEXT = "#f0e8ff"
+DIM = "#7a6b8a"; GREEN = "#2ecc71"; YELLOW = "#f39c12"
+RED = "#e74c3c"; PURPLE = "#b06fe0"
 SEV_COLOR = {Severity.CRITICAL: RED, Severity.WARNING: YELLOW, Severity.INFO: BLUE}
 
 # ── Helper Functions ──────────────────────────────────────────────────────────
@@ -27,7 +27,7 @@ def card_frame(parent, **kw):
     return ctk.CTkFrame(parent, fg_color=CARD, corner_radius=8, **kw)
 
 def sec_lbl(parent, text):
-    lbl(parent, text, 14, bold=True, color=BLUE).pack(anchor='w', pady=(10, 2))
+    lbl(parent, text, 14, bold=True, color=PURPLE).pack(anchor='w', pady=(10, 2))
 
 def stat_blk(parent, label_text, val, color=TEXT, tooltip=None):
     f = ctk.CTkFrame(parent, fg_color="transparent"); f.pack(side='left', padx=10)
@@ -39,33 +39,58 @@ def stat_blk(parent, label_text, val, color=TEXT, tooltip=None):
 
 
 class _Tooltip:
-    """Simple hover tooltip for any widget."""
+    """Hover tooltip — appears after a short delay, disappears on mouse-out."""
     def __init__(self, widget, text):
         self.widget = widget
         self.text = text
         self.tw = None
-        widget.bind("<Enter>", self._show)
-        widget.bind("<Leave>", self._hide)
+        self._job = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide,     add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+
+    def _schedule(self, event=None):
+        self._cancel_job()
+        self._job = self.widget.after(450, self._show)
+
+    def _cancel_job(self):
+        if self._job:
+            try: self.widget.after_cancel(self._job)
+            except Exception: pass
+            self._job = None
+
     def _show(self, event=None):
-        x = self.widget.winfo_rootx() + 20
-        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
-        self.tw = tw = ctk.CTkToplevel(self.widget)
+        if self.tw:
+            return
+        import tkinter as _tk
+        x = self.widget.winfo_rootx() + 16
+        tw = _tk.Toplevel(self.widget)
         tw.wm_overrideredirect(True)
-        tw.configure(fg_color="#2a3050")
-        lbl(tw, self.text, 9, color=TEXT).pack(padx=8, pady=4)
+        tw.wm_attributes("-topmost", True)
+        tw.configure(bg="#2a1a38")
+        _tk.Label(tw, text=self.text, font=("Segoe UI", 9),
+                  fg=TEXT, bg="#2a1a38", padx=8, pady=5,
+                  wraplength=320, justify="left").pack()
         tw.update_idletasks()
-        sw = tw.winfo_screenwidth()
-        sh = tw.winfo_screenheight()
         tw_w = tw.winfo_reqwidth()
         tw_h = tw.winfo_reqheight()
+        sw = tw.winfo_screenwidth()
+        # Prefer showing above the widget; fall back to below
+        y_above = self.widget.winfo_rooty() - tw_h - 4
+        y_below = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+        y = y_above if y_above > 0 else y_below
         if x + tw_w > sw:
-            x = sw - tw_w - 4
-        if y + tw_h > sh:
-            y = self.widget.winfo_rooty() - tw_h - 4
+            x = sw - tw_w - 8
         tw.wm_geometry(f"+{x}+{y}")
+        self.tw = tw
+        # Destroy if mouse wanders into the tooltip window itself
+        tw.bind("<Enter>", self._hide)
+
     def _hide(self, event=None):
+        self._cancel_job()
         if self.tw:
-            self.tw.destroy()
+            try: self.tw.destroy()
+            except Exception: pass
             self.tw = None
 
 
@@ -81,25 +106,25 @@ class EmbedChart(ctk.CTkFrame):
         plt.close(self.fig)
         super().destroy()
     def std_ax(self, title="", xlabel="Track %"):
-        ax = self.fig.add_subplot(111, facecolor='#0d1b2a')
+        ax = self.fig.add_subplot(111, facecolor='#100c18')
         ax.set_title(title, color=TEXT, fontsize=13, pad=6)
         ax.tick_params(colors=DIM, labelsize=10)
-        for sp in ax.spines.values(): sp.set_color('#2a3050')
+        for sp in ax.spines.values(): sp.set_color('#3a2850')
         ax.spines['top'].set_visible(False); ax.spines['right'].set_visible(False)
         ax.set_xlabel(xlabel, color=DIM, fontsize=11)
-        ax.grid(True, alpha=0.1, color='#3a4a6a')
+        ax.grid(True, alpha=0.1, color='#3a2850')
         return ax
 
 
 class IssueCard(ctk.CTkFrame):
     def __init__(self, parent, issue, **kw):
-        super().__init__(parent, fg_color="#1e2845", corner_radius=6, **kw)
+        super().__init__(parent, fg_color="#1c1228", corner_radius=6, **kw)
         c = SEV_COLOR[issue.severity]
         icon = {"critical": "🔴", "warning": "🟡", "info": "🔵"}[issue.severity.value]
         hdr = ctk.CTkFrame(self, fg_color="transparent", cursor="hand2"); hdr.pack(fill='x', padx=8, pady=5)
         lbl(hdr, f"{icon}  {issue.title}", 13, bold=True, color=c, anchor='w').pack(side='left', fill='x', expand=True)
         ctk.CTkLabel(hdr, text=issue.category.value, font=ctk.CTkFont(size=11),
-            text_color=DIM, fg_color="#2a3050", corner_radius=4).pack(side='right', padx=4)
+            text_color=DIM, fg_color="#2a1a38", corner_radius=4).pack(side='right', padx=4)
         self._d = ctk.CTkFrame(self, fg_color="transparent")
         lbl(self._d, issue.description, 12, color=DIM, wraplength=520, justify='left', anchor='w').pack(fill='x', padx=8, pady=(0, 3))
         lbl(self._d, f"💡 {issue.recommendation}", 12, color=BLUE, wraplength=520, justify='left', anchor='w').pack(fill='x', padx=8, pady=(0, 6))

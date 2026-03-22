@@ -14,9 +14,9 @@ import customtkinter as ctk
 try:
     from ui.theme import DARK, PANEL, ACCENT, GREEN, RED, YELLOW, DIM, TEXT, lbl, BLUE
 except ImportError:
-    DARK = "#1a1a2e"; PANEL = "#16213e"; ACCENT = "#e94560"
+    DARK = "#0c0a12"; PANEL = "#140e1e"; ACCENT = "#c85a17"
     GREEN = "#2ecc71"; RED = "#e74c3c"; YELLOW = "#f39c12"
-    DIM = "#8a8fa3";   TEXT = "#e0e0e0"; BLUE = "#00b4d8"
+    DIM = "#7a6b8a";   TEXT = "#e0e0e0"; BLUE = "#9d4edd"
     def lbl(parent, text, size=12, **kw):
         return ctk.CTkLabel(parent, text=text, font=ctk.CTkFont(size=size))
 

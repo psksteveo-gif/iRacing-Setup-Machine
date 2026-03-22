@@ -173,7 +173,8 @@ def _sanitize(text: str, max_len: int = 200) -> str:
 def _build_prompt(report, car_name, track_name, setup_data, sector_report,
                   style_report, stint_report, best_report,
                   session_info=None, corner_report=None,
-                  incident_report=None, evolution_report=None) -> str:
+                  incident_report=None, evolution_report=None,
+                  car_class_str: str = "") -> str:
     """Build the full prompt string shared by sync and stream paths."""
     car_name = _sanitize(car_name, 120)
     track_name = _sanitize(track_name, 120)
@@ -263,6 +264,23 @@ def _build_prompt(report, car_name, track_name, setup_data, sector_report,
     if evolution_report is not None and evolution_report.detected:
         quality_text += f"{evolution_report.for_prompt()}\n"
 
+    # ── Tech inspection bounds ────────────────────────────────────────────────
+    tech_bounds_text = ""
+    try:
+        from core.car_classifier import classify_car, CarClass
+        from core.tech_inspector import bounds_summary_for_prompt
+        _cls_str = car_class_str or (report.car_class if hasattr(report, 'car_class') else "")
+        if _cls_str:
+            try:
+                car_class = CarClass(_cls_str.lower())
+            except (ValueError, AttributeError):
+                car_class = classify_car(car_name)
+        else:
+            car_class = classify_car(car_name)
+        tech_bounds_text = bounds_summary_for_prompt(car_class)
+    except Exception:
+        tech_bounds_text = ""
+
     conditions_text = ""
     if si.get('air_temp_c') is not None or si.get('track_temp_c') is not None:
         parts = []
@@ -279,6 +297,15 @@ def _build_prompt(report, car_name, track_name, setup_data, sector_report,
             parts.append(f"Wind: {si['wind_speed_ms']:.1f} m/s" + (f" @ {wind_dir:.0f}°" if wind_dir != '' else ''))
         conditions_text = "\nSession Conditions:\n  " + ", ".join(parts) + "\n"
 
+    tech_section = f"""
+TECH INSPECTION — MANDATORY COMPLIANCE
+=======================================
+{tech_bounds_text}
+CRITICAL: ALL setup values you recommend MUST fall within the legal ranges above.
+Never suggest a value outside these bounds. If a current value is already at the limit, do not recommend moving it further in that direction.
+Any recommendation that violates these bounds will cause the driver to FAIL tech inspection and be disqualified. Compliance is non-negotiable.
+""" if tech_bounds_text else ""
+
     return f"""You are an expert iRacing setup engineer. Analyze this telemetry session and provide specific, actionable setup recommendations.
 
 Car: {car_name}
@@ -293,10 +320,11 @@ Issues Found:
 Tire Temperatures:
 {tire_text if tire_text else "No tire data available."}
 {setup_text}{sector_text}{style_text}{stint_text}{fuel_text}{grip_text}{phase_text}{susp_text}
-{corner_text}
+{corner_text}{tech_section}
 For EACH corner with issues, provide a specific setup change recommendation that addresses the problem at that corner. Reference corners by name (e.g. "Eau Rouge entry" or "T3 Andretti Hairpin") where names are available.
 
-Provide 3-5 specific setup changes with expected impact, prioritizing the worst corners. Reference actual current values when available. Distinguish between driver technique issues (brake point, throttle timing) and car setup issues (balance, springs, ARB, aero). Be concise and practical."""
+Provide 3-5 specific setup changes with expected impact, prioritizing the worst corners. Reference actual current values when available. Distinguish between driver technique issues (brake point, throttle timing) and car setup issues (balance, springs, ARB, aero). Be concise and practical.
+At the end of your response, add a one-line tech inspection summary: either "✅ All recommended values are within legal limits." or list any parameters that could not be confirmed within bounds."""
 
 
 _MODEL_HAIKU  = "claude-haiku-4-5-20251001"
@@ -430,7 +458,8 @@ def get_ai_recommendations_sync(report: AnalysisReport, car_name: str,
                                  session_info: dict | None = None,
                                  corner_report=None,
                                  incident_report=None,
-                                 evolution_report=None) -> str:
+                                 evolution_report=None,
+                                 car_class_str: str = "") -> str:
     """
     Get AI-generated setup recommendations based on analysis report.
     Uses the Anthropic Claude API if available, otherwise returns rule-based advice.
@@ -448,7 +477,8 @@ def get_ai_recommendations_sync(report: AnalysisReport, car_name: str,
         prompt = _build_prompt(report, car_name, track_name, setup_data,
                                sector_report, style_report, stint_report, best_report,
                                session_info=session_info, corner_report=corner_report,
-                               incident_report=incident_report, evolution_report=evolution_report)
+                               incident_report=incident_report, evolution_report=evolution_report,
+                               car_class_str=car_class_str)
 
         message = client.messages.create(
             model=_MODEL_SONNET,
@@ -475,7 +505,8 @@ def get_ai_recommendations_stream(report: AnalysisReport, car_name: str,
                                    session_info: dict | None = None,
                                    corner_report=None,
                                    incident_report=None,
-                                   evolution_report=None) -> Generator[str, None, None]:
+                                   evolution_report=None,
+                                   car_class_str: str = "") -> Generator[str, None, None]:
     """
     Streaming variant — yields text chunks as they arrive from Claude.
     Falls back to a single-yield rule-based response on error.
@@ -495,7 +526,8 @@ def get_ai_recommendations_stream(report: AnalysisReport, car_name: str,
         prompt = _build_prompt(report, car_name, track_name, setup_data,
                                sector_report, style_report, stint_report, best_report,
                                session_info=session_info, corner_report=corner_report,
-                               incident_report=incident_report, evolution_report=evolution_report)
+                               incident_report=incident_report, evolution_report=evolution_report,
+                               car_class_str=car_class_str)
 
         chunks = _stream_with_retry(
             client, model=_MODEL_SONNET, max_tokens=1024,

@@ -35,7 +35,7 @@ class CornersTabMixin:
         lbl(self._cor_ai_hdr, "🤖  AI Corner-Specific Setup Suggestions", 12, bold=True).pack(side='left', padx=12)
         self._cor_ai_status = lbl(self._cor_ai_hdr, "", 10, color=DIM); self._cor_ai_status.pack(side='right', padx=8)
         self._cor_ai_btn = ctk.CTkButton(self._cor_ai_hdr, text="Get Corner Suggestions", width=180, height=28,
-            fg_color=ACCENT, hover_color="#c0392b", command=self._get_corner_ai)
+            fg_color=ACCENT, hover_color="#a03010", command=self._get_corner_ai)
         self._cor_ai_btn.pack(side='right', padx=8)
         self._cor_ai_text = ctk.CTkTextbox(self._cor_sc, fg_color=PANEL, text_color=TEXT, height=300,
             font=ctk.CTkFont(family="Helvetica", size=14), wrap='word')
@@ -87,13 +87,13 @@ class CornersTabMixin:
         ax.bar(x + w / 2, bests, w, label='Best', color=GREEN, alpha=0.85)
         ax.set_xticks(x); ax.set_xticklabels(nums, color=DIM, fontsize=8)
         ax.set_ylabel("seconds", color=DIM, fontsize=8)
-        ax.legend(fontsize=8, facecolor='#1e2845', edgecolor='#2a3050', labelcolor=TEXT)
+        ax.legend(fontsize=8, facecolor='#1c1228', edgecolor='#2a1a38', labelcolor=TEXT)
         c.fig.tight_layout(pad=0.8); c.draw()
         # Corner detail cards
         for w in self._cor_cards.winfo_children(): w.destroy()
         for cd in report.corners:
             is_worst = cd.corner_num - 1 == report.worst_corner
-            cf = ctk.CTkFrame(self._cor_cards, fg_color="#1e2845", corner_radius=8)
+            cf = ctk.CTkFrame(self._cor_cards, fg_color="#1c1228", corner_radius=8)
             cf.pack(fill='x', pady=4)
             hdr = ctk.CTkFrame(cf, fg_color="transparent"); hdr.pack(fill='x', padx=12, pady=(8, 4))
             corner_label = f"🔴 Turn {cd.corner_num}  ← WORST" if is_worst else f"🟢 Turn {cd.corner_num}"
@@ -110,7 +110,7 @@ class CornersTabMixin:
             stat_blk(mr, "Consistency", f"{cd.consistency_pct:.0f}%",
                      color=GREEN if cd.consistency_pct > 90 else YELLOW if cd.consistency_pct > 75 else RED)
             if cd.coaching_note:
-                nf = ctk.CTkFrame(cf, fg_color="#0d1b2a", corner_radius=6)
+                nf = ctk.CTkFrame(cf, fg_color="#100c18", corner_radius=6)
                 nf.pack(fill='x', padx=12, pady=(4, 8))
                 lbl(nf, "📋 Coach's Notes:", 10, bold=True, color=ACCENT).pack(anchor='w', padx=8, pady=(6, 2))
                 lbl(nf, cd.coaching_note, 10, color=TEXT, wraplength=800, justify='left', anchor='w').pack(
@@ -122,12 +122,12 @@ class CornersTabMixin:
             cmp_lap = sorted_laps[1] if len(sorted_laps) > 1 else 0
             delta = LapDeltaAnalyzer().analyze(d, best_lap, cmp_lap)
             if delta and len(delta.segments) > 0:
-                dsf = ctk.CTkFrame(self._cor_cards, fg_color="#1e2845", corner_radius=8)
+                dsf = ctk.CTkFrame(self._cor_cards, fg_color="#1c1228", corner_radius=8)
                 dsf.pack(fill='x', pady=(8, 4))
                 lbl(dsf, f"📊 Lap Delta Notes — Lap {cmp_lap + 1} vs Best (Lap {best_lap + 1})",
                     12, bold=True, color=BLUE).pack(anchor='w', padx=12, pady=(8, 4))
                 for seg in delta.segments:
-                    sf = ctk.CTkFrame(dsf, fg_color="#0d1b2a", corner_radius=4)
+                    sf = ctk.CTkFrame(dsf, fg_color="#100c18", corner_radius=4)
                     sf.pack(fill='x', padx=12, pady=2)
                     lbl(sf, seg['note'], 10, color=TEXT, wraplength=800, justify='left', anchor='w').pack(
                         fill='x', padx=8, pady=4)

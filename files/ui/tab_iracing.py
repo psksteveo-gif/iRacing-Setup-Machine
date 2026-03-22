@@ -57,7 +57,7 @@ class IRacingTabMixin:
         self._ir_live_lbl.pack(side="left", padx=(0, 4), pady=4)
         self._ir_sdk_btn = ctk.CTkButton(
             self._ir_live_badge, text="Start", width=52, height=22,
-            fg_color=ACCENT, hover_color="#c0392b", font=ctk.CTkFont(size=10),
+            fg_color=ACCENT, hover_color="#a03010", font=ctk.CTkFont(size=10),
             command=self._ir_toggle_sdk,
         )
         self._ir_sdk_btn.pack(side="left", padx=(0, 6), pady=4)
@@ -78,7 +78,7 @@ class IRacingTabMixin:
 
         self._ir_connect_btn = ctk.CTkButton(
             hdr, text="Connect", width=90, height=30,
-            fg_color=ACCENT, hover_color="#c0392b",
+            fg_color=ACCENT, hover_color="#a03010",
             command=self._ir_do_login,
         )
         self._ir_connect_btn.pack(side="right", padx=(4, 8))
@@ -93,7 +93,7 @@ class IRacingTabMixin:
         er.pack(fill="x", padx=12, pady=2)
         lbl(er, "Email:", 11, color=DIM).pack(side="left", padx=(0, 8))
         self._ir_email_entry = ctk.CTkEntry(
-            er, fg_color=CARD, border_color="#2a3050",
+            er, fg_color=CARD, border_color="#2a1a38",
             width=280, height=28, placeholder_text="your@email.com",
         )
         self._ir_email_entry.pack(side="left", padx=8)
@@ -102,7 +102,7 @@ class IRacingTabMixin:
         pr.pack(fill="x", padx=12, pady=2)
         lbl(pr, "Password:", 11, color=DIM).pack(side="left", padx=(0, 8))
         self._ir_pass_entry = ctk.CTkEntry(
-            pr, show="●", fg_color=CARD, border_color="#2a3050",
+            pr, show="●", fg_color=CARD, border_color="#2a1a38",
             width=280, height=28,
         )
         self._ir_pass_entry.pack(side="left", padx=8)
@@ -182,7 +182,7 @@ class IRacingTabMixin:
         lbl(lb_hdr, "Community Leaderboard", 13, bold=True, color=BLUE).pack(side="left")
         self._ir_lb_submit_btn = ctk.CTkButton(
             lb_hdr, text="Submit My Best", width=120, height=26,
-            fg_color=ACCENT, hover_color="#c0392b",
+            fg_color=ACCENT, hover_color="#a03010",
             command=self._ir_lb_submit,
         )
         self._ir_lb_submit_btn.pack(side="right", padx=4)
@@ -719,7 +719,7 @@ class IRacingTabMixin:
 
             ctk.CTkButton(
                 row, text="Load IBT →", width=90, height=24,
-                fg_color=ACCENT, hover_color="#c0392b",
+                fg_color=ACCENT, hover_color="#a03010",
                 command=lambda i=idx: self._sel(*self.sessions[i]),
             ).pack(side="right", padx=8, pady=3)
 
@@ -1056,7 +1056,7 @@ class IRacingTabMixin:
             from ui.theme import DARK as _BG
 
             fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(7, 4.5),
-                                            facecolor="#1a1a2e", sharex=True)
+                                            facecolor="#0c0a12", sharex=True)
             fig.subplots_adjust(hspace=0.08, left=0.07, right=0.97, top=0.95, bottom=0.12)
 
             lap_nums = [l["lap"] for l in laps]
@@ -1068,7 +1068,7 @@ class IRacingTabMixin:
                 ax.set_facecolor("#0f0f1a")
                 ax.tick_params(colors="#888", labelsize=8)
                 for spine in ax.spines.values():
-                    spine.set_edgecolor("#2a3050")
+                    spine.set_edgecolor("#2a1a38")
 
             # Position chart (inverted — P1 at top)
             ax1.plot(lap_nums, positions, color="#3498db", linewidth=1.8)
