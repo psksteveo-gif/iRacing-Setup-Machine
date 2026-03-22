@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# PyInstaller output
+files/dist/
+files/build/
+*.spec.bak
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.env.local
+*.key
+*.pem
+
+# Claude Code session data
+.claude/
+
+# Build artifacts / zips
+files.zip
+zip_contents/
+*.zip
+
+# Old/separate backend scaffold (backend lives in optimal-sector-backend repo)
+backend/
+requirements-backend.txt
+Dockerfile
+docker-compose.yml
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/settings.json
+.idea/
