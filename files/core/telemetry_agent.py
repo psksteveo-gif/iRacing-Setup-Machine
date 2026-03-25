@@ -48,9 +48,10 @@ def _get_channel_stats(data: TelemetryData, channel: str, lap: int | None = None
     arr = np.asarray(data._channels[channel], dtype=float)
     if lap is not None and hasattr(data, 'lap_boundaries') and data.lap_boundaries:
         bounds = data.lap_boundaries
-        if 0 <= lap < len(bounds):
-            s, e = bounds[lap]
-            arr = arr[s:e]
+        if 0 <= lap < len(bounds) - 1:
+            arr = arr[bounds[lap]:bounds[lap + 1]]
+        elif 0 <= lap < len(bounds):
+            arr = arr[bounds[lap]:]
     arr = arr[np.isfinite(arr)]
     if len(arr) == 0:
         return {"error": "No valid data for that channel/lap combination."}
@@ -78,9 +79,10 @@ def _get_channel_slice(
     arr = np.asarray(data._channels[channel], dtype=float)
     if lap is not None and hasattr(data, 'lap_boundaries') and data.lap_boundaries:
         bounds = data.lap_boundaries
-        if 0 <= lap < len(bounds):
-            s, e = bounds[lap]
-            arr = arr[s:e]
+        if 0 <= lap < len(bounds) - 1:
+            arr = arr[bounds[lap]:bounds[lap + 1]]
+        elif 0 <= lap < len(bounds):
+            arr = arr[bounds[lap]:]
     n = len(arr)
     si = max(0, int(start_pct * n))
     ei = min(n, int(end_pct * n))
@@ -113,9 +115,10 @@ def _compare_laps(
     bounds = getattr(data, 'lap_boundaries', [])
     results = []
     for lap_idx in (lap_a, lap_b):
-        if 0 <= lap_idx < len(bounds):
-            s, e = bounds[lap_idx]
-            seg = arr[s:e]
+        if 0 <= lap_idx < len(bounds) - 1:
+            seg = arr[bounds[lap_idx]:bounds[lap_idx + 1]]
+        elif 0 <= lap_idx < len(bounds):
+            seg = arr[bounds[lap_idx]:]
         else:
             return {"error": f"Lap {lap_idx} out of range (0–{len(bounds)-1})."}
         zone_means = []

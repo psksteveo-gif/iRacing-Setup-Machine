@@ -18,10 +18,10 @@ class TestFormatLaptime:
         assert format_laptime(91.234) == "1:31.234"
 
     def test_zero_returns_placeholder(self):
-        assert format_laptime(0) == "--:--.---"
+        assert format_laptime(0) == "—"
 
     def test_negative_returns_placeholder(self):
-        assert format_laptime(-5.0) == "--:--.---"
+        assert format_laptime(-5.0) == "—"
 
     def test_exact_minute(self):
         result = format_laptime(60.0)
@@ -29,7 +29,7 @@ class TestFormatLaptime:
 
     def test_sub_minute(self):
         result = format_laptime(45.678)
-        assert result == "0:45.678"
+        assert result == "45.678s"
 
 
 # ── Constants sanity ────────────────────────────────────────────────

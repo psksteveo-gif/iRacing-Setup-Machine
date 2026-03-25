@@ -8,6 +8,7 @@ import time
 import threading
 from typing import Generator
 from core.analysis_engine import AnalysisReport, Severity, format_laptime  # type: ignore[import-unresolved]
+from core import units
 
 # ── Rate limiter ──────────────────────────────────────────────────────────
 _MIN_INTERVAL_S = 10  # minimum seconds between API calls
@@ -108,21 +109,21 @@ def _weather_guidance(si: dict) -> str:
     if track is not None and not is_wet:
         if track >= 50.0:
             lines += [
-                f"HOT TRACK ({track:.0f}°C) — tire pressure management critical:",
+                f"HOT TRACK ({units.fmt_temp_both(track, 0)}) — tire pressure management critical:",
                 "  • Cold tire pressures: start 0.5–1.0 psi LOWER than baseline (tires reach operating temp very quickly and peak pressure will be high)",
                 "  • Expect front tires to overheat on long stints — consider slightly higher front pressures if inner-edge wear appears",
-                "  • Brake cooling ducts (if adjustable): open 1–2 steps (brake fade risk rises sharply above 45°C ambient)",
+                f"  • Brake cooling ducts (if adjustable): open 1–2 steps (brake fade risk rises sharply above {units.fmt_temp_both(45, 0)} ambient)",
                 "  • Fuel load effect is amplified — watch balance shift over stint length",
             ]
         elif track >= 40.0:
             lines += [
-                f"WARM TRACK ({track:.0f}°C) — minor pressure adjustment:",
+                f"WARM TRACK ({units.fmt_temp_both(track, 0)}) — minor pressure adjustment:",
                 "  • Cold tire pressures: start 0.25–0.5 psi lower than baseline",
                 "  • Tires reach operating window quickly — avoid excessive warm-up laps wasting rubber",
             ]
         elif track <= 20.0:
             lines += [
-                f"COLD TRACK ({track:.0f}°C) — tires slow to reach optimal window:",
+                f"COLD TRACK ({units.fmt_temp_both(track, 0)}) — tires slow to reach optimal window:",
                 "  • Cold tire pressures: start 1.0–2.0 psi HIGHER than baseline (pressures drop further before tires warm up)",
                 "  • Warm-up laps are critical — at least 2 full laps before pushing",
                 "  • Reduce TC by 1 level only once confident tires are up to temperature",
@@ -130,7 +131,7 @@ def _weather_guidance(si: dict) -> str:
             ]
         elif track <= 28.0:
             lines += [
-                f"COOL TRACK ({track:.0f}°C) — modest pressure increase recommended:",
+                f"COOL TRACK ({units.fmt_temp_both(track, 0)}) — modest pressure increase recommended:",
                 "  • Cold tire pressures: start 0.5 psi higher than baseline",
                 "  • First flying lap may feel understeer as fronts lag behind rears in warm-up",
             ]
@@ -139,12 +140,12 @@ def _weather_guidance(si: dict) -> str:
     if air is not None and not is_wet:
         if air >= 35.0:
             lines.append(
-                f"HIGH AIR TEMP ({air:.0f}°C): reduced air density → marginally less downforce (~1–2%). "
+                f"HIGH AIR TEMP ({units.fmt_temp_both(air, 0)}): reduced air density → marginally less downforce (~1–2%). "
                 "No setup change needed but be aware top speed will be slightly higher than baseline suggests."
             )
         elif air <= 10.0:
             lines.append(
-                f"LOW AIR TEMP ({air:.0f}°C): dense cold air → slightly more downforce than baseline. "
+                f"LOW AIR TEMP ({units.fmt_temp_both(air, 0)}): dense cold air → slightly more downforce than baseline. "
                 "Car may feel more planted than expected. Engine also produces peak power more easily."
             )
 
@@ -186,7 +187,9 @@ def _build_prompt(report, car_name, track_name, setup_data, sector_report,
     tire_text = ""
     if report.tire_summary:
         for corner, temps in report.tire_summary.items():
-            tire_text += f"  {corner}: inner={temps['inner']:.1f}°C, mid={temps['mid']:.1f}°C, outer={temps['outer']:.1f}°C\n"
+            tire_text += (f"  {corner}: inner={units.fmt_temp_both(temps['inner'], 1)}, "
+                          f"mid={units.fmt_temp_both(temps['mid'], 1)}, "
+                          f"outer={units.fmt_temp_both(temps['outer'], 1)}\n")
 
     setup_text = ""
     if setup_data:
@@ -232,6 +235,18 @@ def _build_prompt(report, car_name, track_name, setup_data, sector_report,
             fuel_text += f", trend: {best_report.improvement_trend:+.3f}s/lap"
         if fuel_text:
             fuel_text += "\n"
+    # Enrich with historical fuel data for this car+track
+    try:
+        from core.fuel_db import get_fuel_db
+        _frec = get_fuel_db().get(car_name, track_name)
+        if _frec and _frec.samples >= 3:
+            fuel_text += (
+                f"Historical fuel (this car+track, {_frec.samples} laps): "
+                f"avg {_frec.avg_l_per_lap:.2f} L/lap  "
+                f"range {_frec.min_l_per_lap:.2f}–{_frec.max_l_per_lap:.2f} L/lap\n"
+            )
+    except Exception:
+        pass
 
     grip_text = ""
     if report.grip_utilization_pct > 0:
@@ -258,6 +273,107 @@ def _build_prompt(report, car_name, track_name, setup_data, sector_report,
         for corner, s in report.suspension_summary.items():
             susp_text += f"  {corner}: range={s['range']:.1f}mm, bottoming={s['bottoming_pct']:.1f}%\n"
 
+    engine_text = ""
+    if getattr(report, 'engine_temp_summary', None):
+        e = report.engine_temp_summary
+        parts = []
+        if 'water_avg' in e:
+            parts.append(f"Coolant avg {units.fmt_temp_both(e['water_avg'], 0)} peak {units.fmt_temp_both(e.get('water_peak', 0), 0)}"
+                         + (f" (+{units.fmt_temp_both(e['water_rise'], 0)} trend)" if e.get('water_rise', 0) > 3 else ""))
+        if 'oil_avg' in e:
+            parts.append(f"Oil avg {units.fmt_temp_both(e['oil_avg'], 0)} peak {units.fmt_temp_both(e.get('oil_peak', 0), 0)}"
+                         + (f" (+{units.fmt_temp_both(e['oil_rise'], 0)} trend)" if e.get('oil_rise', 0) > 5 else ""))
+        if parts:
+            engine_text = "\nEngine Temps: " + ", ".join(parts) + "\n"
+
+    vert_text = ""
+    if getattr(report, 'vert_accel_summary', None):
+        v = report.vert_accel_summary
+        if v.get('hard_hits', 0) > 0 or v.get('peak_g', 0) > 3.0:
+            pos_str = ""
+            if v.get('kerb_positions'):
+                pos_str = " at track positions " + ", ".join(
+                    f"{p*100:.0f}%" for p in v['kerb_positions'][:5])
+            vert_text = (f"\nVertical Impacts: peak {v['peak_g']:.1f}G, "
+                         f"{v.get('hard_hits', 0)} hard hits (>4G), "
+                         f"{v.get('kerb_hits', 0)} kerb events{pos_str}\n")
+
+    grip_text_extra = ""
+    if getattr(report, 'grip_gain_s', 0) > 0.3:
+        grip_text_extra = (f"\nTire Warm-Up: {report.grip_warmup_laps} laps to reach pace, "
+                           f"{report.grip_gain_s:.2f}s gained from lap 1 to settled pace\n")
+
+    slip_text = ""
+    if getattr(report, 'tire_slip_summary', None):
+        parts = []
+        for corner, s in report.tire_slip_summary.items():
+            ws = s.get('wheelspin_pct', 0.0)
+            lu = s.get('lockup_pct', 0.0)
+            if ws > 2.0:
+                parts.append(f"{corner} wheelspin {ws:.0f}%")
+            if lu > 2.0:
+                parts.append(f"{corner} lock-up {lu:.0f}%")
+        if parts:
+            slip_text = "\nTire Slip: " + ", ".join(parts) + "\n"
+
+    abs_text = ""
+    if getattr(report, 'abs_summary', None):
+        ab = report.abs_summary
+        fp = ab.get('firing_pct', 0.0)
+        if fp > 5.0:
+            abs_text = f"\nABS: firing {fp:.0f}% of braking time, avg cut {ab.get('cut_avg', 0):.0f}%"
+            if ab.get('top_positions'):
+                abs_text += " | hot-spots: " + ", ".join(f"{p*100:.0f}%" for p in ab['top_positions'][:5])
+            abs_text += "\n"
+
+    ride_h_text = ""
+    if getattr(report, 'ride_height_summary', None):
+        parts = []
+        for corner, s in report.ride_height_summary.items():
+            parts.append(f"{corner} avg {s['avg_m']*1000:.1f}mm min {s['min_m']*1000:.1f}mm")
+        if parts:
+            ride_h_text = "\nRide Height at speed: " + ", ".join(parts) + "\n"
+
+    damper_text = ""
+    if getattr(report, 'damper_speed_summary', None):
+        parts = []
+        for corner, s in report.damper_speed_summary.items():
+            if s.get('fast_pct', 0) > 10:
+                parts.append(f"{corner} fast-bump {s['fast_pct']:.0f}% (peak {s['peak_ms']*1000:.0f}mm/s)")
+        if parts:
+            damper_text = "\nDamper Speed (fast-bump): " + ", ".join(parts) + "\n"
+
+    body_text = ""
+    if getattr(report, 'body_dynamics_summary', None):
+        bd = report.body_dynamics_summary
+        parts = []
+        if bd.get('max_roll_deg', 0) > 1.0:
+            parts.append(f"max roll {bd['max_roll_deg']:.1f}deg")
+        if bd.get('max_pitch_brake_deg', 0) > 1.0:
+            parts.append(f"dive {bd['max_pitch_brake_deg']:.1f}deg")
+        if bd.get('max_pitch_accel_deg', 0) > 1.0:
+            parts.append(f"squat {bd['max_pitch_accel_deg']:.1f}deg")
+        if parts:
+            body_text = "\nBody Dynamics: " + ", ".join(parts) + "\n"
+
+    brake_press_text = ""
+    if getattr(report, 'brake_pressure_summary', None):
+        bp = report.brake_pressure_summary
+        fs = bp.get('front_share', 0.0)
+        fade = bp.get('fade_detected', False)
+        if fs > 0:
+            brake_press_text = f"\nBrake Balance: front {fs*100:.0f}% / rear {(1-fs)*100:.0f}%"
+            if fade:
+                brake_press_text += " — FADE DETECTED"
+            brake_press_text += "\n"
+
+    fuel_sector_text = ""
+    if getattr(report, 'fuel_sector_summary', None):
+        fs = report.fuel_sector_summary
+        vals = [fs.get('s1_l_per_lap', 0), fs.get('s2_l_per_lap', 0), fs.get('s3_l_per_lap', 0)]
+        if any(v > 0 for v in vals):
+            fuel_sector_text = (f"\nFuel by sector: S1 {vals[0]:.2f}L, S2 {vals[1]:.2f}L, S3 {vals[2]:.2f}L per lap\n")
+
     quality_text = ""
     if incident_report is not None:
         quality_text = f"\nSession Quality: {incident_report.summary_text()}\n"
@@ -277,7 +393,7 @@ def _build_prompt(report, car_name, track_name, setup_data, sector_report,
                 car_class = classify_car(car_name)
         else:
             car_class = classify_car(car_name)
-        tech_bounds_text = bounds_summary_for_prompt(car_class)
+        tech_bounds_text = bounds_summary_for_prompt(car_class, car_name=car_name)
     except Exception:
         tech_bounds_text = ""
 
@@ -285,9 +401,9 @@ def _build_prompt(report, car_name, track_name, setup_data, sector_report,
     if si.get('air_temp_c') is not None or si.get('track_temp_c') is not None:
         parts = []
         if si.get('air_temp_c') is not None:
-            parts.append(f"Air Temp: {si['air_temp_c']:.1f}°C")
+            parts.append(f"Air Temp: {units.fmt_temp_both(si['air_temp_c'], 1)}")
         if si.get('track_temp_c') is not None:
-            parts.append(f"Track Temp: {si['track_temp_c']:.1f}°C")
+            parts.append(f"Track Temp: {units.fmt_temp_both(si['track_temp_c'], 1)}")
         if si.get('skies'):
             parts.append(f"Skies: {_sanitize(str(si['skies']), 40)}")
         if si.get('weather_type'):
@@ -306,6 +422,39 @@ Never suggest a value outside these bounds. If a current value is already at the
 Any recommendation that violates these bounds will cause the driver to FAIL tech inspection and be disqualified. Compliance is non-negotiable.
 """ if tech_bounds_text else ""
 
+    # ── Historical learning data ───────────────────────────────────────────────
+    historical_section = ""
+    try:
+        from core.setup_performance_db import get_setup_perf_db
+        perf_text = get_setup_perf_db().format_for_prompt(car_name, track_name)
+        if perf_text:
+            historical_section += f"\n{perf_text}\n"
+    except Exception:
+        pass
+    try:
+        from core.shift_db import get_shift_db
+        shift_text = get_shift_db().format_for_prompt(car_name)
+        if shift_text:
+            historical_section += f"\n{shift_text}\n"
+    except Exception:
+        pass
+    try:
+        from core.advanced_analysis import HistoryTracker
+        _hist = HistoryTracker()
+        impact_text = _hist.format_impact_for_prompt(car_name, track_name)
+        if impact_text:
+            historical_section += f"\n{impact_text}\n"
+    except Exception:
+        pass
+    try:
+        from core.tire_pressure_db import get_tire_pressure_db
+        track_temp_c = float(si.get("track_temp_c") or 25.0)
+        pressure_summary = get_tire_pressure_db().summary_for_car(car_name, track_temp_c)
+        if pressure_summary:
+            historical_section += f"\n{pressure_summary}\n"
+    except Exception:
+        pass
+
     return f"""You are an expert iRacing setup engineer. Analyze this telemetry session and provide specific, actionable setup recommendations.
 
 Car: {car_name}
@@ -319,8 +468,8 @@ Issues Found:
 
 Tire Temperatures:
 {tire_text if tire_text else "No tire data available."}
-{setup_text}{sector_text}{style_text}{stint_text}{fuel_text}{grip_text}{phase_text}{susp_text}
-{corner_text}{tech_section}
+{setup_text}{sector_text}{style_text}{stint_text}{fuel_text}{fuel_sector_text}{grip_text}{phase_text}{susp_text}{engine_text}{vert_text}{grip_text_extra}{slip_text}{abs_text}{ride_h_text}{damper_text}{body_text}{brake_press_text}
+{corner_text}{historical_section}{tech_section}
 For EACH corner with issues, provide a specific setup change recommendation that addresses the problem at that corner. Reference corners by name (e.g. "Eau Rouge entry" or "T3 Andretti Hairpin") where names are available.
 
 Provide 3-5 specific setup changes with expected impact, prioritizing the worst corners. Reference actual current values when available. Distinguish between driver technique issues (brake point, throttle timing) and car setup issues (balance, springs, ARB, aero). Be concise and practical.
@@ -411,18 +560,31 @@ def get_setup_recommendation_stream(
 
     changes_text = ""
     if opt_result and opt_result.changes:
-        changes_text = "\nOptimizer recommended changes:\n"
+        from core.setup_recommend import PARAM_GARAGE_TAB, GARAGE_TAB_ORDER, PARAM_DISPLAY
+        # Group changes by garage tab in iRacing UI order
+        tab_groups: dict = {}
         for ch in opt_result.changes:
-            param = ch.get('parameter', '').replace('_', ' ')
-            delta = ch.get('delta', 0)
-            sign = '+' if delta > 0 else ''
-            changes_text += f"  {param}: {sign}{delta:g}\n"
+            param = ch.get('parameter', '')
+            tab, pos = PARAM_GARAGE_TAB.get(param, ('Other', 999))
+            tab_groups.setdefault(tab, []).append((pos, ch))
+        tab_order = GARAGE_TAB_ORDER + [t for t in tab_groups if t not in GARAGE_TAB_ORDER]
+        changes_text = "\nOptimizer recommended changes (in garage tab order):\n"
+        for tab in tab_order:
+            if tab not in tab_groups:
+                continue
+            changes_text += f"  [{tab} tab]\n"
+            for _pos, ch in sorted(tab_groups[tab], key=lambda x: x[0]):
+                param = ch.get('parameter', '')
+                label = PARAM_DISPLAY.get(param, (param.replace('_', ' '), '', ''))[0]
+                delta = ch.get('delta', 0)
+                sign = '+' if delta > 0 else ''
+                changes_text += f"    {label}: {sign}{delta:g}\n"
 
     best_lap = f"{report.best_lap:.3f}s" if report and report.best_lap else "unknown"
 
     prompt = f"""You are an expert iRacing setup engineer. A driver has loaded their telemetry and the app's optimizer has suggested setup changes. Your job is to:
 1. Validate the optimizer's recommendations — explain WHY each change makes sense (or flag if risky)
-2. Add context specific to this car and track
+2. Group your explanation by iRacing garage tab (TIRES/AERO first, then CHASSIS, then DAMPERS) so the driver can follow along tab by tab
 3. Note any setup concerns the optimizer may have missed (e.g. tire temp imbalances suggesting camber issue)
 4. Give a 1-sentence priority tip: the single most impactful change to make first
 
@@ -757,7 +919,7 @@ def generate_tech_legal_setup_stream(
     # ── Legal bounds ───────────────────────────────────────────────────────
     try:
         from core.tech_inspector import bounds_summary_for_prompt
-        bounds_text = bounds_summary_for_prompt(car_class) if car_class else \
+        bounds_text = bounds_summary_for_prompt(car_class, car_name=car_name) if car_class else \
             "(parameter bounds unavailable — stay within iRacing garage slider limits)"
     except Exception:
         bounds_text = "(parameter bounds unavailable — stay within iRacing garage slider limits)"

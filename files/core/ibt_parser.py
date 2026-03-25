@@ -36,6 +36,11 @@ class TelemetryData:
     def channel_names(self) -> List[str]:
         return list(self._channels.keys())
 
+    @property
+    def is_fixed_setup(self) -> bool:
+        """True when the session was run in a fixed-setup series/event."""
+        return bool(self.session_info.get('is_fixed_setup', False))
+
 
 class IBTParser:
     """Parse iRacing .ibt binary telemetry files."""
@@ -281,9 +286,29 @@ class IBTParser:
         boundaries.append(len(lap_dist))
 
         session_time = data.get_channel('SessionTime')
+        lap_last = data.get_channel('LapLastLapTime')
         lap_times = []
         for i in range(len(boundaries) - 1):
-            if session_time is not None:
+            official_time = None
+            # Prefer iRacing's official LapLastLapTime recorded at the crossing point.
+            # At boundaries[i+1] the S/F line was just crossed and LapLastLapTime updates
+            # to the time of the lap that just completed (lap i).
+            # Skip the last segment — it's an incomplete lap with no crossing event.
+            if lap_last is not None and i + 1 < len(boundaries) - 1:
+                b_end = boundaries[i + 1]
+                # LapLastLapTime holds the PREVIOUS lap's time until the crossing,
+                # then updates to the newly completed lap's time at or just after
+                # the boundary sample.  Detect the value change to get the new time.
+                prev_val = float(lap_last[b_end - 1]) if b_end > 0 else -1.0
+                for k in range(b_end, min(b_end + 5, len(lap_last))):
+                    lt = float(lap_last[k])
+                    if lt > 0 and lt != prev_val:
+                        official_time = lt
+                        break
+
+            if official_time is not None:
+                lap_times.append(official_time)
+            elif session_time is not None:
                 t0 = session_time[boundaries[i]]
                 t1 = session_time[boundaries[i + 1] - 1]
                 lap_times.append(t1 - t0)
@@ -418,6 +443,9 @@ class IBTParser:
                     info['session_laps'] = val
                 elif key == 'sessiontime':
                     info['session_time_limit'] = val
+        # Store the player's car index so downstream code can identify their ResultsPositions entry
+        if _driver_car_idx >= 0:
+            info['driver_car_idx'] = _driver_car_idx
         # Extract CarSetup block
         try:
             car_setup = self._extract_car_setup(text)
@@ -446,6 +474,17 @@ class IBTParser:
                     except (ValueError, TypeError): pass
         except Exception as e:
             logger.debug("WeekendInfo extraction skipped: %s", e)
+
+        # Extract WeekendOptions — IsFixedSetup flag
+        try:
+            wo = self._extract_yaml_block(text, 'WeekendOptions')
+            if wo and 'IsFixedSetup' in wo:
+                info['is_fixed_setup'] = bool(int(wo['IsFixedSetup']))
+            else:
+                info.setdefault('is_fixed_setup', False)
+        except Exception as e:
+            info.setdefault('is_fixed_setup', False)
+            logger.debug("WeekendOptions extraction skipped: %s", e)
 
         # Extract SplitTimeInfo → real iRacing sector boundaries
         try:
@@ -670,10 +709,56 @@ def load_demo_data() -> TelemetryData:
         press = base_psi + rng.normal(0, 0.3, total) + np.linspace(0, 1.5, total)
         data.set_channel(f'{corner}press', press)
 
-    # Shock deflections
-    for corner in ['LF', 'RF', 'LR', 'RR']:
+    # Shock deflections + velocities (iRacing shockVel is in m/s)
+    for corner, stiffness in [('LF', 1.0), ('RF', 1.0), ('LR', 0.9), ('RR', 0.9)]:
         defl = 15 + 10 * np.sin(lap_dist * 2 * np.pi * 5) + rng.normal(0, 2, total)
+        # Convert mm gradient → m/s: (mm/sample * Hz) / 1000
+        vel  = (np.gradient(defl) * 60) / 1000.0 + rng.normal(0, 0.02, total)
+        # Inject kerb spike events (>0.30 m/s threshold)
+        for spike_lap in [2, 5]:
+            spike_idx = spike_lap * samples_per_lap + samples_per_lap // 3
+            if spike_idx < total:
+                vel[spike_idx] = 0.55 * stiffness
         data.set_channel(f'{corner}shockDefl', defl)
+        data.set_channel(f'{corner}shockVel',  vel)
+
+    # Wheel speeds (slight slip relative to body speed)
+    for corner in ['LF', 'RF', 'LR', 'RR']:
+        slip_noise = rng.normal(0, 0.02, total)
+        wheel_spd = speed * (1 + slip_noise)
+        # Inject a lockup event on lap 3
+        lockup_start = 3 * samples_per_lap + samples_per_lap // 4
+        lockup_end   = lockup_start + 30
+        if lockup_end < total:
+            wheel_spd[lockup_start:lockup_end] *= 0.7  # locked = slower than car
+        data.set_channel(f'{corner}speed', wheel_spd)
+
+    # Roll and Pitch (radians — small angles)
+    roll  = 0.04 * np.sin(lat_accel * 0.5) + rng.normal(0, 0.005, total)
+    pitch = -0.03 * long_accel / 10.0 + rng.normal(0, 0.003, total)
+    data.set_channel('Roll',  roll)
+    data.set_channel('Pitch', pitch)
+
+    # Brake bias — one adjustment mid-session
+    brake_bias = np.full(total, 0.545)
+    mid = total // 2
+    brake_bias[mid:] = 0.540
+    data.set_channel('dcBrakeBias', brake_bias)
+
+    # VertAccel (for kerb detection) — spikes at lap-dist ~0.3 and ~0.7
+    vert_accel = rng.normal(9.81, 0.5, total)
+    for lap_i in range(num_laps):
+        for pct_offset in [0.3, 0.72]:
+            ki = lap_i * samples_per_lap + int(pct_offset * samples_per_lap)
+            if ki < total:
+                vert_accel[ki] += rng.choice([18.0, 22.0])  # kerb spike
+    data.set_channel('VertAccel', vert_accel)
+
+    # PlayerTrackSurface — mostly on-track (5), brief off-track on lap 4
+    surface = np.full(total, 5, dtype=float)
+    ot_start = 4 * samples_per_lap + samples_per_lap // 2
+    surface[ot_start:ot_start + 60] = 1.0   # off-track
+    data.set_channel('PlayerTrackSurface', surface)
 
     # Set core channels
     data.set_channel('LapDistPct', lap_dist)

@@ -8,6 +8,7 @@ import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 from core.ibt_parser import TelemetryData  # type: ignore[import-unresolved]
+from core import units
 try:
     from data.track_corners import resolve_corner_name, get_sectors  # type: ignore[import-unresolved]
 except ImportError:
@@ -304,7 +305,7 @@ class CornerAnalyzer:
         if cd.lap_entry_speeds and len(cd.lap_entry_speeds) >= 2:
             entry_std = float(np.std(cd.lap_entry_speeds))
             if entry_std > 5:
-                notes.append(f"Entry speed varies by ±{entry_std:.0f} km/h — work on carrying consistent speed into the braking zone.")
+                notes.append(f"Entry speed varies by ±{units.fmt_speed_both(entry_std, 0)} — work on carrying consistent speed into the braking zone.")
 
         # Braking pressure
         if cd.brake_pressure_avg > 0.85:
@@ -318,7 +319,7 @@ class CornerAnalyzer:
             avg_min = float(np.mean(cd.lap_min_speeds))
             speed_loss = avg_entry - avg_min
             if speed_loss > 80:
-                notes.append(f"Losing {speed_loss:.0f} km/h through this corner — check if you're over-slowing. Trail-brake deeper to maintain speed.")
+                notes.append(f"Losing {units.fmt_speed_both(speed_loss, 0)} through this corner — check if you're over-slowing. Trail-brake deeper to maintain speed.")
             elif speed_loss < 20 and cd.brake_pressure_avg > 0.3:
                 notes.append("Minimal speed loss — good corner. Focus on exit speed for time on the straight.")
 
@@ -455,7 +456,7 @@ class LapDeltaAnalyzer:
                 spd_diff = (cmp_avg_spd - ref_avg_spd) * 3.6
                 if abs(spd_diff) > 2:
                     faster_label = "faster" if spd_diff > 0 else "slower"
-                    parts.append(f"Comparison lap is {abs(spd_diff):.0f} km/h {faster_label} here.")
+                    parts.append(f"Comparison lap is {units.fmt_speed_both(abs(spd_diff), 0)} {faster_label} here.")
 
         # Check braking
         if brake is not None and lap_dist is not None:
@@ -503,7 +504,7 @@ def format_corner_summary(report: CornerAnalysisReport) -> str:
         label = cd.label
         lines.append(
             f"  {label} ({cd.brake_pct*100:.0f}-{cd.exit_pct*100:.0f}%): "
-            f"entry={entry}km/h, apex={apex}km/h, exit={exit_s}km/h, "
+            f"entry={entry} {units.speed_label()}, apex={apex} {units.speed_label()}, exit={exit_s} {units.speed_label()}, "
             f"time={cd.time_in_corner_s:.3f}s, delta=+{cd.time_delta:.3f}s, "
             f"peak_lat_G={cd.lat_g_peak:.1f}, consistency={cd.consistency_pct:.0f}%"
         )
@@ -516,7 +517,7 @@ def format_corner_summary(report: CornerAnalysisReport) -> str:
         if cd.lap_min_speeds and cd.lap_entry_speeds:
             speed_loss = float(np.mean(cd.lap_entry_speeds) - np.mean(cd.lap_min_speeds))
             if speed_loss > 80:
-                issues.append(f"over-slowing ({speed_loss:.0f}km/h loss)")
+                issues.append(f"over-slowing ({units.fmt_speed_both(speed_loss, 0)} loss)")
         if cd.lap_exit_speeds and cd.lap_min_speeds:
             recovery = float(np.mean(cd.lap_exit_speeds) - np.mean(cd.lap_min_speeds))
             if recovery < 15 and cd.throttle_exit_avg < 0.6:

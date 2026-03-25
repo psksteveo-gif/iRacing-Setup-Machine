@@ -6,11 +6,11 @@ import customtkinter as ctk
 from tkinter import messagebox
 
 from ui.theme import (DARK, PANEL, CARD, ACCENT, BLUE, TEXT, DIM, GREEN, YELLOW,
-                      RED, PURPLE, lbl, card_frame, stat_blk, sec_lbl, EmbedChart)
-from ui.track_map import TrackMapWidget, highlights_from_corners
+                      RED, PURPLE, lbl, card_frame, stat_blk, sec_lbl)
 from core.corner_analysis import CornerAnalyzer, CornerAnalysisReport, LapDeltaAnalyzer
 from core.ai_advisor import get_ai_recommendations_stream
 from core.config import get_api_key, save_cfg
+from core import units
 
 
 class CornersTabMixin:
@@ -23,11 +23,7 @@ class CornersTabMixin:
         self._cor_sc = ctk.CTkScrollableFrame(tab, fg_color="transparent")
         self._cor_sc.pack(fill='both', expand=True, padx=10, pady=8)
         self._cor_summary = ctk.CTkFrame(self._cor_sc, fg_color=PANEL, corner_radius=8)
-        self._cor_summary.pack(fill='x', pady=(0, 4))
-        self._cor_map = TrackMapWidget(self._cor_sc, figsize=(10, 2.8))
-        self._cor_map.pack(fill='x', pady=(0, 4))
-        self._cor_delta_chart = EmbedChart(self._cor_sc, figsize=(10, 2.5))
-        self._cor_delta_chart.pack(fill='x', pady=(0, 4))
+        self._cor_summary.pack(fill='x', pady=(0, 8))
         self._cor_cards = ctk.CTkFrame(self._cor_sc, fg_color="transparent")
         self._cor_cards.pack(fill='x')
         self._cor_ai_hdr = ctk.CTkFrame(self._cor_sc, fg_color=PANEL, height=44, corner_radius=8)
@@ -44,6 +40,89 @@ class CornersTabMixin:
         self._cor_ai_text.configure(state='disabled')
         self.cur_corner_report: CornerAnalysisReport | None = None
 
+    # ── Good / Bad classifier ─────────────────────────────────────────────
+    @staticmethod
+    def _corner_good_bad(cd) -> tuple:
+        """Return (goods: list[str], bads: list[str]) for a corner."""
+        goods, bads = [], []
+
+        # Consistency
+        if cd.consistency_pct >= 92:
+            goods.append(f"Very consistent corner times ({cd.consistency_pct:.0f}%)")
+        elif cd.consistency_pct >= 78:
+            goods.append(f"Reasonable consistency ({cd.consistency_pct:.0f}%)")
+        else:
+            bads.append(f"Inconsistent lap times ({cd.consistency_pct:.0f}%) — execution varies lap to lap")
+
+        # Brake point consistency
+        if cd.brake_point_consistency >= 92:
+            goods.append("Consistent brake marker")
+        elif cd.brake_point_consistency < 70:
+            bads.append("Brake point moves lap to lap — pick a fixed visual reference")
+
+        # Braking pressure
+        if cd.brake_pressure_avg > 0:
+            if cd.brake_pressure_avg > 0.88:
+                bads.append(f"Over-braking ({cd.brake_pressure_avg * 100:.0f}% avg pressure) — risk of lock-up; trail off earlier")
+            elif cd.brake_pressure_avg > 0.72:
+                goods.append(f"Strong, committed braking ({cd.brake_pressure_avg * 100:.0f}%)")
+            elif cd.brake_pressure_avg < 0.35:
+                bads.append(f"Light braking ({cd.brake_pressure_avg * 100:.0f}%) — you may be braking too early; try later, harder")
+
+        # Exit throttle
+        if cd.throttle_exit_avg > 0:
+            if cd.throttle_exit_avg >= 0.72:
+                goods.append(f"Aggressive exit throttle ({cd.throttle_exit_avg * 100:.0f}%) — good for drive out")
+            elif cd.throttle_exit_avg >= 0.50:
+                goods.append(f"Decent exit throttle ({cd.throttle_exit_avg * 100:.0f}%)")
+            else:
+                bads.append(f"Timid exit throttle ({cd.throttle_exit_avg * 100:.0f}%) — get on the power earlier at apex")
+
+        # Entry speed variation
+        if len(cd.lap_entry_speeds) >= 3:
+            entry_std = float(np.std(cd.lap_entry_speeds))
+            if entry_std <= 2.5:
+                goods.append("Consistent entry speed")
+            elif entry_std > 6:
+                bads.append(f"Entry speed varies ±{entry_std:.0f} km/h — braking distance inconsistency")
+
+        # Apex speed vs entry
+        if cd.lap_entry_speeds and cd.lap_min_speeds:
+            avg_entry = float(np.mean(cd.lap_entry_speeds))
+            avg_min   = float(np.mean(cd.lap_min_speeds))
+            ratio = avg_min / avg_entry if avg_entry > 0 else 0
+            if ratio >= 0.72:
+                goods.append(f"Good minimum speed through apex ({avg_min:.0f} km/h)")
+            elif ratio < 0.55:
+                bads.append(f"Heavy speed scrub at apex ({avg_min:.0f} km/h vs {avg_entry:.0f} km/h entry) — rotate earlier or carry more speed")
+
+        # Exit speed
+        if cd.lap_exit_speeds and cd.lap_min_speeds:
+            avg_exit = float(np.mean(cd.lap_exit_speeds))
+            avg_min  = float(np.mean(cd.lap_min_speeds))
+            recovery = avg_exit - avg_min
+            if recovery >= 20:
+                goods.append(f"Strong exit acceleration (+{recovery:.0f} km/h from apex)")
+            elif recovery < 8:
+                bads.append(f"Slow exit acceleration (+{recovery:.0f} km/h from apex) — trail brake less and open throttle sooner")
+
+        # Peak lateral G
+        if cd.lat_g_peak > 0:
+            if cd.lat_g_peak >= 2.5:
+                goods.append(f"High lateral load through corner ({cd.lat_g_peak:.1f}G) — good use of grip")
+            elif cd.lat_g_peak < 1.2:
+                bads.append(f"Low lateral load ({cd.lat_g_peak:.1f}G) — running a wide line or scrubbing speed unnecessarily")
+
+        # Time delta rating
+        if cd.time_delta <= 0.02:
+            goods.append("Near-optimal corner time — minimal time left on track")
+        elif cd.time_delta > 0.15:
+            bads.append(f"+{cd.time_delta:.3f}s lost vs best lap — high-priority corner to improve")
+        elif cd.time_delta > 0.06:
+            bads.append(f"+{cd.time_delta:.3f}s lost vs best lap — work in progress")
+
+        return goods, bads
+
     def _u_corners(self):
         d = self.cur_data
         if not d or d.num_laps < 1: return
@@ -56,65 +135,82 @@ class CornersTabMixin:
             for w in self._cor_summary.winfo_children(): w.destroy()
             lbl(self._cor_summary, "No corners detected — telemetry may lack sufficient braking data.", 12, color=DIM).pack(pady=10)
             return
-        # Track map — corners coloured green→yellow→red by time delta
-        hl = highlights_from_corners(report)
-        worst = report.corners[report.worst_corner]
-        dots = [{'pct': c.apex_pct, 'label': f"T{c.corner_num}",
-                 'color': RED if (c.corner_num - 1 == report.worst_corner) else DIM}
-                for c in report.corners]
-        self._cor_map.update(d, highlights=hl, corner_dots=dots,
-                             title="Corner Map — red = worst, green = best")
         # Summary bar
         for w in self._cor_summary.winfo_children(): w.destroy()
-        sf = ctk.CTkFrame(self._cor_summary, fg_color="transparent"); sf.pack(fill='x', padx=10, pady=8)
+        sf = ctk.CTkFrame(self._cor_summary, fg_color="transparent"); sf.pack(fill='x', padx=10, pady=10)
         stat_blk(sf, "Corners Detected", str(len(report.corners)), color=BLUE)
         stat_blk(sf, "Total Time Lost", f"+{report.total_time_lost:.3f}s", color=YELLOW)
         if report.corners:
             worst = report.corners[report.worst_corner]
-            stat_blk(sf, "Worst Corner", f"T{worst.corner_num} (+{worst.time_delta:.3f}s)", color=RED)
+            stat_blk(sf, "Worst Corner", f"{worst.label} (+{worst.time_delta:.3f}s)", color=RED)
             best_corner = min(report.corners, key=lambda c: c.time_delta)
-            stat_blk(sf, "Best Corner", f"T{best_corner.corner_num}", color=GREEN)
-        # Delta chart
-        c = self._cor_delta_chart; c.clear()
-        ax = c.std_ax("Corner Times — Avg vs Best", xlabel="Corner")
-        nums = [f"T{cd.corner_num}" for cd in report.corners]
-        x = np.arange(len(report.corners))
-        avgs = [cd.avg_time for cd in report.corners]
-        bests = [cd.best_time for cd in report.corners]
-        w = 0.35
-        cols = [RED if i == report.worst_corner else BLUE for i in range(len(report.corners))]
-        ax.bar(x - w / 2, avgs, w, label='Avg', color=cols, alpha=0.85)
-        ax.bar(x + w / 2, bests, w, label='Best', color=GREEN, alpha=0.85)
-        ax.set_xticks(x); ax.set_xticklabels(nums, color=DIM, fontsize=8)
-        ax.set_ylabel("seconds", color=DIM, fontsize=8)
-        ax.legend(fontsize=8, facecolor='#1c1228', edgecolor='#2a1a38', labelcolor=TEXT)
-        c.fig.tight_layout(pad=0.8); c.draw()
-        # Corner detail cards
+            stat_blk(sf, "Best Corner", best_corner.label, color=GREEN)
+
+        # ── Per-corner cards with Good / Bad breakdown ────────────────────
         for w in self._cor_cards.winfo_children(): w.destroy()
         for cd in report.corners:
             is_worst = cd.corner_num - 1 == report.worst_corner
-            cf = ctk.CTkFrame(self._cor_cards, fg_color="#1c1228", corner_radius=8)
-            cf.pack(fill='x', pady=4)
-            hdr = ctk.CTkFrame(cf, fg_color="transparent"); hdr.pack(fill='x', padx=12, pady=(8, 4))
-            corner_label = f"🔴 Turn {cd.corner_num}  ← WORST" if is_worst else f"🟢 Turn {cd.corner_num}"
-            lbl(hdr, corner_label, 13, bold=True, color=RED if is_worst else TEXT).pack(side='left')
-            lbl(hdr, f"{cd.brake_pct * 100:.0f}–{cd.exit_pct * 100:.0f}% track", 10, color=DIM).pack(side='right')
-            mr = ctk.CTkFrame(cf, fg_color="transparent"); mr.pack(fill='x', padx=8, pady=4)
-            stat_blk(mr, "Entry", f"{np.mean(cd.lap_entry_speeds):.0f} km/h" if cd.lap_entry_speeds else "—", color=BLUE)
-            stat_blk(mr, "Apex", f"{np.mean(cd.lap_min_speeds):.0f} km/h" if cd.lap_min_speeds else "—", color=YELLOW)
-            stat_blk(mr, "Exit", f"{np.mean(cd.lap_exit_speeds):.0f} km/h" if cd.lap_exit_speeds else "—", color=GREEN)
-            stat_blk(mr, "Time", f"{cd.time_in_corner_s:.3f}s" if cd.time_in_corner_s else "—")
-            stat_blk(mr, "Delta", f"+{cd.time_delta:.3f}s" if cd.time_delta > 0.001 else "—",
-                     color=RED if cd.time_delta > 0.1 else GREEN)
-            stat_blk(mr, "Peak G", f"{cd.lat_g_peak:.1f}G" if cd.lat_g_peak else "—", color=PURPLE)
+            border_col = RED if is_worst else BLUE
+            cf = ctk.CTkFrame(self._cor_cards, fg_color="#0E0A18",
+                              corner_radius=8, border_width=1, border_color=border_col)
+            cf.pack(fill='x', pady=5)
+
+            # ── Header ────────────────────────────────────────────────────
+            hdr = ctk.CTkFrame(cf, fg_color="#140E22", corner_radius=0)
+            hdr.pack(fill='x', padx=0, pady=0)
+            title = cd.corner_name if cd.corner_name else f"Turn {cd.corner_num}"
+            badge = f"  WORST  " if is_worst else (f"  +{cd.time_delta:.3f}s  " if cd.time_delta > 0.001 else "  BEST  ")
+            badge_col = RED if is_worst else (YELLOW if cd.time_delta > 0.05 else GREEN)
+            lbl(hdr, title, 13, bold=True, color=RED if is_worst else TEXT).pack(side='left', padx=14, pady=8)
+            ctk.CTkLabel(hdr, text=badge, font=ctk.CTkFont(size=11, weight='bold'),
+                         fg_color=badge_col, text_color="#000000",
+                         corner_radius=6).pack(side='left', padx=4, pady=8)
+            lbl(hdr, f"{cd.brake_pct * 100:.0f}–{cd.exit_pct * 100:.0f}% of lap", 9, color=DIM).pack(side='right', padx=14)
+
+            # ── Metrics row ───────────────────────────────────────────────
+            mr = ctk.CTkFrame(cf, fg_color="transparent"); mr.pack(fill='x', padx=8, pady=(6, 2))
+            stat_blk(mr, "Entry",       units.fmt_speed_from_kmh(float(np.mean(cd.lap_entry_speeds)), 0) if cd.lap_entry_speeds else "—", color=BLUE)
+            stat_blk(mr, "Apex",        units.fmt_speed_from_kmh(float(np.mean(cd.lap_min_speeds)),   0) if cd.lap_min_speeds   else "—", color=YELLOW)
+            stat_blk(mr, "Exit",        units.fmt_speed_from_kmh(float(np.mean(cd.lap_exit_speeds)),  0) if cd.lap_exit_speeds  else "—", color=GREEN)
+            stat_blk(mr, "Corner time", f"{cd.time_in_corner_s:.2f}s" if cd.time_in_corner_s else "—")
+            stat_blk(mr, "Peak G",      f"{cd.lat_g_peak:.1f}G"       if cd.lat_g_peak        else "—", color=PURPLE)
+            stat_blk(mr, "Brake press", f"{cd.brake_pressure_avg * 100:.0f}%" if cd.brake_pressure_avg else "—",
+                     color=RED if cd.brake_pressure_avg > 0.88 else TEXT)
+            stat_blk(mr, "Exit throttle", f"{cd.throttle_exit_avg * 100:.0f}%" if cd.throttle_exit_avg else "—",
+                     color=GREEN if cd.throttle_exit_avg >= 0.65 else YELLOW)
             stat_blk(mr, "Consistency", f"{cd.consistency_pct:.0f}%",
                      color=GREEN if cd.consistency_pct > 90 else YELLOW if cd.consistency_pct > 75 else RED)
-            if cd.coaching_note:
-                nf = ctk.CTkFrame(cf, fg_color="#100c18", corner_radius=6)
-                nf.pack(fill='x', padx=12, pady=(4, 8))
-                lbl(nf, "📋 Coach's Notes:", 10, bold=True, color=ACCENT).pack(anchor='w', padx=8, pady=(6, 2))
-                lbl(nf, cd.coaching_note, 10, color=TEXT, wraplength=800, justify='left', anchor='w').pack(
-                    fill='x', padx=8, pady=(0, 6))
+
+            # ── Good / Bad breakdown ──────────────────────────────────────
+            goods, bads = self._corner_good_bad(cd)
+            gb_row = ctk.CTkFrame(cf, fg_color="transparent"); gb_row.pack(fill='x', padx=12, pady=(4, 8))
+
+            # Good column
+            good_f = ctk.CTkFrame(gb_row, fg_color="#081A10", corner_radius=6)
+            good_f.pack(side='left', fill='both', expand=True, padx=(0, 4))
+            lbl(good_f, "✓  What's working", 10, bold=True, color=GREEN).pack(anchor='w', padx=10, pady=(7, 3))
+            if goods:
+                for g in goods:
+                    row = ctk.CTkFrame(good_f, fg_color="transparent"); row.pack(fill='x', padx=8, pady=1)
+                    lbl(row, "▸", 10, color=GREEN).pack(side='left', padx=(0, 4))
+                    lbl(row, g, 10, color=TEXT, wraplength=360, anchor='w', justify='left').pack(side='left', fill='x', expand=True)
+            else:
+                lbl(good_f, "No standout positives yet", 10, color=DIM).pack(anchor='w', padx=10, pady=2)
+            ctk.CTkFrame(good_f, fg_color="transparent", height=6).pack()
+
+            # Bad column
+            bad_f = ctk.CTkFrame(gb_row, fg_color="#1A0A0A", corner_radius=6)
+            bad_f.pack(side='left', fill='both', expand=True, padx=(4, 0))
+            lbl(bad_f, "✗  Fix next session", 10, bold=True, color=ACCENT).pack(anchor='w', padx=10, pady=(7, 3))
+            if bads:
+                for b in bads:
+                    row = ctk.CTkFrame(bad_f, fg_color="transparent"); row.pack(fill='x', padx=8, pady=1)
+                    lbl(row, "▸", 10, color=ACCENT).pack(side='left', padx=(0, 4))
+                    lbl(row, b, 10, color=TEXT, wraplength=360, anchor='w', justify='left').pack(side='left', fill='x', expand=True)
+            else:
+                lbl(bad_f, "Nothing critical to fix here", 10, color=DIM).pack(anchor='w', padx=10, pady=2)
+            ctk.CTkFrame(bad_f, fg_color="transparent", height=6).pack()
+
         # Reference Lap Delta
         if d.num_laps >= 2:
             best_lap = int(np.argmin(d.lap_times))
@@ -124,7 +220,7 @@ class CornersTabMixin:
             if delta and len(delta.segments) > 0:
                 dsf = ctk.CTkFrame(self._cor_cards, fg_color="#1c1228", corner_radius=8)
                 dsf.pack(fill='x', pady=(8, 4))
-                lbl(dsf, f"📊 Lap Delta Notes — Lap {cmp_lap + 1} vs Best (Lap {best_lap + 1})",
+                lbl(dsf, f"📊 Lap Delta — Lap {cmp_lap + 1} vs Best (Lap {best_lap + 1})",
                     12, bold=True, color=BLUE).pack(anchor='w', padx=12, pady=(8, 4))
                 for seg in delta.segments:
                     sf = ctk.CTkFrame(dsf, fg_color="#100c18", corner_radius=4)

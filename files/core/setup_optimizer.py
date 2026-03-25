@@ -35,6 +35,7 @@ class OptimizationResult:
     projected_balance: float     # estimated balance after changes
     fitness: float               # lower = better (internal score)
     description: str             # human-readable summary
+    fixed_setup: bool = False    # True = only fixed-setup-allowed params used
 
 
 # ── GA core ───────────────────────────────────────────────────────────────────
@@ -97,6 +98,15 @@ def _get_class_params(car_class: Optional[str]) -> List[str]:
 _BAL_DELTA = {'oversteer': 0.35, 'understeer': -0.35, 'neutral': 0.0,
                'more oversteer': 0.35, 'more understeer': -0.35}
 
+# Parameters available in fixed-setup events.
+# iRacing locks the setup file but allows in-car dc* adjustments and tire pressures.
+FIXED_SETUP_PARAMS = [
+    "tire_pressure",   # adjustable at pit stop / garage before race
+    "brake_bias",      # dcBrakeBias — in-car black box (almost every car)
+    "tc_level",        # dcTractionControl — where supported
+    "abs_level",       # dcABS — where supported
+]
+
 
 def optimize_setup(
     current_balance: float = 0.0,
@@ -109,6 +119,7 @@ def optimize_setup(
     balance_entry: float = 0.0,
     balance_mid: float = 0.0,
     balance_exit: float = 0.0,
+    fixed_setup: bool = False,
 ) -> OptimizationResult:
     """
     Run a genetic algorithm to find the optimal set of setup changes.
@@ -136,6 +147,10 @@ def optimize_setup(
         Mid-corner balance phase score.
     balance_exit : float
         Corner-exit (power-on) balance phase score.
+    fixed_setup : bool
+        When True, restrict changes to FIXED_SETUP_PARAMS only
+        (tire pressures + dc* in-car adjustments). Use for fixed-setup
+        series where the setup file is locked.
 
     Returns
     -------
@@ -148,7 +163,11 @@ def optimize_setup(
 
     # Build car-class-specific effect models and parameter list
     effect_models = _get_model_for_class(car_class)
-    local_params = _get_class_params(car_class)
+    if fixed_setup:
+        local_params = [p for p in FIXED_SETUP_PARAMS
+                        if p in _get_class_params(car_class) or p in FIXED_SETUP_PARAMS]
+    else:
+        local_params = _get_class_params(car_class)
     local_n = len(local_params)
 
     rng = np.random.RandomState(rng_seed)
@@ -322,6 +341,7 @@ def optimize_setup(
         projected_balance=projected_balance,
         fitness=best_fit,
         description=description,
+        fixed_setup=fixed_setup,
     )
 
 

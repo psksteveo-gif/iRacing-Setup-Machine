@@ -18,19 +18,42 @@ from typing import List, Optional, Tuple, Dict
 # Maps optimizer parameter keys → (garage label, unit, effect hint)
 # Labels match the exact text shown in the iRacing garage UI.
 PARAM_DISPLAY = {
-    'rear_wing':         ('Wing angle',              'click',  'Garage → Rear section. Higher = more rear downforce & drag, more understeer'),
-    'front_wing':        ('Front wing angle',        'click',  'Garage → Front section. Higher = more front downforce, less understeer'),
-    'rear_spring':       ('Rear Spring perch offset','click',  'Garage → Left/Right Rear. Higher offset = effectively stiffer, less rear grip'),
-    'front_spring':      ('Front Spring perch offset','click', 'Garage → Left/Right Front. Higher offset = effectively stiffer, less front grip'),
-    'rear_arb':          ('Rear ARB setting',        'click',  'Garage → Rear section. Higher = stiffer rear ARB, more oversteer'),
-    'front_arb':         ('Front ARB setting',       'click',  'Garage → Front section. Higher = stiffer front ARB, more understeer'),
-    'tire_pressure':     ('Starting pressure',        'psi',    'Garage → Tires tab. Adjust all four corners. Higher = less grip, quicker warm-up'),
-    'ride_height_rear':  ('Rear Ride height',        'click',  'Garage → Left/Right Rear. Higher = more rear ride height, less rear aero'),
-    'ride_height_front': ('Front Ride height',       'click',  'Garage → Left/Right Front. Higher = more front ride height, less front aero'),
-    'brake_bias':        ('Brake pressure bias',     '%',      'Garage → In-Car Dials. Higher % = more front braking, risk of front lock'),
-    'tc_level':          ('TC setting',              'level',  'Garage → In-Car Dials. Higher = more traction control intervention on exit'),
-    'abs_level':         ('ABS setting',             'level',  'Garage → In-Car Dials. Higher = more ABS intervention under braking'),
+    # TIRES/AERO tab
+    'tire_pressure':     ('Starting pressure',       'psi',   'TIRES/AERO tab → each corner tire section. Higher = less grip, quicker warm-up'),
+    'front_wing':        ('Front wing angle',        'click', 'TIRES/AERO tab → Aero section. Higher = more front downforce, less understeer'),
+    # CHASSIS tab
+    'front_arb':         ('Front ARB blades',        'click', 'CHASSIS tab → Front, Brakes, Lights section. Higher = stiffer front ARB, more understeer'),
+    'brake_bias':        ('Brake pressure bias',     '%',     'CHASSIS tab → In-Car Adjustments. Higher % = more front braking, risk of front lock'),
+    'abs_level':         ('ABS setting',             'level', 'CHASSIS tab → In-Car Adjustments. Higher = more ABS intervention under braking'),
+    'tc_level':          ('TC setting',              'level', 'CHASSIS tab → In-Car Adjustments. Higher = more traction control on exit'),
+    'ride_height_front': ('Front Ride height',       'click', 'CHASSIS tab → Left Front / Right Front corners. Higher = more front ride height, less front aero'),
+    'front_spring':      ('Front Spring perch offset','click','CHASSIS tab → Left Front / Right Front corners. Higher offset = effectively stiffer, less front grip'),
+    'ride_height_rear':  ('Rear Ride height',        'click', 'CHASSIS tab → Left Rear / Right Rear corners. Higher = more rear ride height, less rear aero'),
+    'rear_spring':       ('Rear Spring perch offset','click', 'CHASSIS tab → Left Rear / Right Rear corners. Higher offset = effectively stiffer, less rear grip'),
+    'rear_arb':          ('Rear ARB blades',         'click', 'CHASSIS tab → Rear section. Higher = stiffer rear ARB, more oversteer'),
+    'rear_wing':         ('Rear Wing Angle',         'click', 'CHASSIS tab → Rear section. Higher = more rear downforce & drag, more understeer'),
 }
+
+# ── Garage tab ordering ────────────────────────────────────────────────────────
+# Maps parameter key → (tab name, sort position within tab).
+# Positions match top-to-bottom order in iRacing's garage UI.
+PARAM_GARAGE_TAB: Dict[str, tuple] = {
+    'tire_pressure':     ('TIRES/AERO', 10),
+    'front_wing':        ('TIRES/AERO', 20),
+    'front_arb':         ('CHASSIS',    10),  # Front, Brakes, Lights — top of tab
+    'brake_bias':        ('CHASSIS',    20),  # In-Car Adjustments
+    'abs_level':         ('CHASSIS',    30),  # In-Car Adjustments
+    'tc_level':          ('CHASSIS',    40),  # In-Car Adjustments
+    'ride_height_front': ('CHASSIS',    50),  # LF / RF corners
+    'front_spring':      ('CHASSIS',    60),  # LF / RF corners
+    'ride_height_rear':  ('CHASSIS',    70),  # LR / RR corners
+    'rear_spring':       ('CHASSIS',    80),  # LR / RR corners
+    'rear_arb':          ('CHASSIS',    90),  # Rear section
+    'rear_wing':         ('CHASSIS',   100),  # Rear section
+}
+
+# Display order of tabs in the checklist UI
+GARAGE_TAB_ORDER = ['TIRES/AERO', 'CHASSIS', 'DAMPERS']
 
 
 @dataclass
@@ -42,6 +65,7 @@ class ChecklistItem:
     hint: str             # one-line effect description
     direction: str        # 'increase' | 'decrease'
     display: str          # formatted delta e.g. '+2 clicks'
+    garage_tab: str = ''         # iRacing garage tab e.g. 'TIRES/AERO', 'CHASSIS'
     current_value: str = ''      # current value from IBT e.g. '1'
     recommended_value: str = ''  # recommended value e.g. '2'
     affects_keys: List[str] = None
@@ -276,6 +300,7 @@ def build_checklist(changes: List[dict], setup=None,
                 recommended_value = (f"{rec_num:g} {suffix}".strip()
                                      if suffix else f"{rec_num:g}")
 
+        tab, _pos = PARAM_GARAGE_TAB.get(param, ('', 999))
         items.append(ChecklistItem(
             parameter=param,
             label=label,
@@ -284,10 +309,18 @@ def build_checklist(changes: List[dict], setup=None,
             hint=hint,
             direction=direction,
             display=display,
+            garage_tab=tab,
             current_value=current_value,
             recommended_value=recommended_value,
             affects_keys=affects,
         ))
+
+    def _sort_key(item: ChecklistItem):
+        tab_idx = GARAGE_TAB_ORDER.index(item.garage_tab) if item.garage_tab in GARAGE_TAB_ORDER else 99
+        _, pos = PARAM_GARAGE_TAB.get(item.parameter, ('', 999))
+        return (tab_idx, pos)
+
+    items.sort(key=_sort_key)
     return items
 
 

@@ -496,6 +496,88 @@ class HistoryTracker:
         self.entries = []
         self.save()
 
+    def setup_impact_summary(
+        self,
+        car: Optional[str] = None,
+        track: Optional[str] = None,
+        min_sessions: int = 2,
+    ) -> List[Dict]:
+        """
+        Analyse which setup parameter changes correlated with lap time improvements.
+
+        For every parameter that was changed at least *min_sessions* times,
+        compute the average lap_delta before vs after the change.
+
+        Returns a list of dicts sorted by impact (biggest improvement first):
+            {param, change_direction, avg_delta_s, sessions, example_before, example_after}
+
+        Positive avg_delta_s = change made things slower on average.
+        Negative avg_delta_s = change made things faster on average.
+        """
+        entries = self.get_history(car, track)
+        # Only entries that have a lap_delta AND changes_from_prev
+        relevant = [
+            e for e in entries
+            if e.lap_delta is not None and e.changes_from_prev
+        ]
+        if not relevant:
+            return []
+
+        # Collect (param, direction, delta) tuples
+        from collections import defaultdict
+        param_data: Dict[str, List[float]] = defaultdict(list)
+        param_examples: Dict[str, tuple] = {}
+
+        for entry in relevant:
+            for ch in entry.changes_from_prev:
+                param = ch.get('param', '')
+                before = ch.get('before', '')
+                after  = ch.get('after', '')
+                if not param:
+                    continue
+                param_data[param].append(entry.lap_delta)
+                if param not in param_examples:
+                    param_examples[param] = (before, after)
+
+        results = []
+        for param, deltas in param_data.items():
+            if len(deltas) < min_sessions:
+                continue
+            avg_delta = sum(deltas) / len(deltas)
+            before_ex, after_ex = param_examples.get(param, ("—", "—"))
+            results.append({
+                "param":          param,
+                "avg_delta_s":    round(avg_delta, 3),
+                "sessions":       len(deltas),
+                "example_before": before_ex,
+                "example_after":  after_ex,
+            })
+
+        # Sort: biggest improvement (most negative delta) first
+        results.sort(key=lambda x: x["avg_delta_s"])
+        return results
+
+    def format_impact_for_prompt(
+        self,
+        car: Optional[str] = None,
+        track: Optional[str] = None,
+    ) -> str:
+        """Return a compact text block for AI prompt injection."""
+        impacts = self.setup_impact_summary(car, track)
+        if not impacts:
+            return ""
+        scope = f" at {track}" if track else ""
+        lines = [f"Setup change impact history for {car or 'this car'}{scope}:"]
+        for item in impacts[:8]:
+            delta_s = item["avg_delta_s"]
+            direction = "improved" if delta_s < 0 else "slower"
+            lines.append(
+                f"  • {item['param']}: avg {abs(delta_s):.3f}s {direction} "
+                f"after change  ({item['sessions']} sessions, "
+                f"e.g. {item['example_before']} → {item['example_after']})"
+            )
+        return "\n".join(lines)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FUEL STRATEGY CALCULATOR

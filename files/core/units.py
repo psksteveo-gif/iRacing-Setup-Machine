@@ -36,6 +36,12 @@ def speed_from_kmh(kmh: float) -> float:
 def fmt_speed_from_kmh(kmh: float, decimals: int = 1) -> str:
     return f"{speed_from_kmh(kmh):.{decimals}f} {speed_label()}"
 
+def fmt_speed_both(kmh: float, decimals: int = 0) -> str:
+    """Show preferred unit with the other in parentheses, e.g. '60 mph (97 km/h)'."""
+    if _speed == 'mph':
+        return f"{kmh * 0.621371:.{decimals}f} mph ({kmh:.{decimals}f} km/h)"
+    return f"{kmh:.{decimals}f} km/h ({kmh * 0.621371:.{decimals}f} mph)"
+
 
 # ── Temperature ───────────────────────────────────────────────────────────────
 
@@ -47,3 +53,10 @@ def fmt_temp(celsius: float, decimals: int = 1) -> str:
     if _temp == 'f':
         return f"{celsius * 9 / 5 + 32:.{decimals}f}°F"
     return f"{celsius:.{decimals}f}°C"
+
+def fmt_temp_both(celsius: float, decimals: int = 1) -> str:
+    """Show preferred unit with the other in parentheses, e.g. '200°F (93°C)'."""
+    f_val = celsius * 9 / 5 + 32
+    if _temp == 'f':
+        return f"{f_val:.{decimals}f}°F ({celsius:.{decimals}f}°C)"
+    return f"{celsius:.{decimals}f}°C ({f_val:.{decimals}f}°F)"

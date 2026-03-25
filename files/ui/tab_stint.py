@@ -9,6 +9,7 @@ from ui.theme import (DARK, PANEL, CARD, ACCENT, BLUE, TEXT, DIM, GREEN, YELLOW,
 from core.analysis_engine import format_laptime
 from core.advanced_analysis import FuelStrategyAnalyzer
 from core.tire_wear_prediction import predict_tire_wear
+from core import units
 
 
 class StintTabMixin:
@@ -309,8 +310,8 @@ class StintTabMixin:
             return
 
         channels = [
-            ('OilTemp',      'Oil Temp',   RED,    '°C'),
-            ('WaterTemp',    'Water Temp', BLUE,   '°C'),
+            ('OilTemp',      'Oil Temp',   RED,    units.temp_label()),
+            ('WaterTemp',    'Water Temp', BLUE,   units.temp_label()),
         ]
         ax = c.std_ax("Engine Temperatures per Lap", xlabel="Lap")
         ax2 = None
@@ -324,7 +325,8 @@ class StintTabMixin:
             lap_vals = []
             for li in range(d.num_laps):
                 s = d.lap_boundaries[li]; e = d.lap_boundaries[li + 1]
-                lap_vals.append(float(np.mean(ch[s:e])))
+                c_val = float(np.mean(ch[s:e]))
+                lap_vals.append(c_val * 9/5 + 32 if units._temp == 'f' else c_val)
             ax.plot(range(1, len(lap_vals) + 1), lap_vals, 'o-', color=col,
                     lw=1.5, label=label, alpha=0.9)
 
@@ -346,7 +348,7 @@ class StintTabMixin:
             ax.text(0.5, 0.5, "No engine temp channels in this IBT\n(OilTemp, WaterTemp)",
                     transform=ax.transAxes, ha='center', va='center', color=DIM, fontsize=11)
         else:
-            ax.set_ylabel("°C", color=DIM, fontsize=9)
+            ax.set_ylabel(units.temp_label(), color=DIM, fontsize=9)
             # Combine legends
             h1, l1 = ax.get_legend_handles_labels()
             if ax2:

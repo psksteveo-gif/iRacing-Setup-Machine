@@ -413,20 +413,100 @@ def clamp_to_legal(
     return result
 
 
-def bounds_summary_for_prompt(car_class) -> str:
+def bounds_summary_for_prompt(car_class, car_name: str = "") -> str:
     """
-    Return a compact plain-text summary of all legal ranges for a car class.
-    Intended to be included in an AI prompt so Claude knows what values are legal.
+    Return a compact plain-text summary of legal ranges for a car.
+
+    Preference order:
+      1. Real observed ranges from CarParamDB (learned from the user's own IBT
+         sessions for this specific car) — most accurate.
+      2. Hardcoded class-level approximations — fallback only.
+
+    Intended to be included in an AI prompt so Claude knows what values are
+    legal for this exact car.
     """
+    # ── Try real per-car data first ──────────────────────────────────────────
+    if car_name:
+        try:
+            real_summary = _real_bounds_summary(car_name)
+            if real_summary:
+                return real_summary
+        except Exception:
+            pass
+
+    # ── Fall back to class-level hardcoded approximations ───────────────────
     resolved = _resolve_car_class(car_class)
     bounds = get_bounds(resolved)
-    lines = [f"Legal parameter ranges for {resolved.value.upper()}:"]
+    lines = [
+        f"Setup parameter ranges for {resolved.value.upper()} "
+        f"(class-level approximation — load more sessions to improve accuracy):"
+    ]
     for key, b in bounds.items():
         name = b.display_name or key
         lines.append(
             f"  {name}: {b.min_val:.3g}–{b.max_val:.3g} {b.unit} "
             f"(step {b.step:.3g})"
         )
+    return "\n".join(lines)
+
+
+def _real_bounds_summary(car_name: str) -> str:
+    """
+    Build a bounds summary from CarParamDB real data for *car_name*.
+    Returns empty string if no data is available.
+    """
+    from core.car_params_scanner import get_db, _normalise_car_key
+    db = get_db()
+    car_key = _normalise_car_key(car_name)
+    params = db.get_car_params(car_key)
+    if not params:
+        return ""
+
+    # Only include adjustable setup parameters (exclude telemetry/read-only)
+    _SKIP = {
+        "UpdateCount", "FuelLowWarning", "CrossWeight",
+        "FrontWeight", "CornerWeight",
+    }
+    lines = [
+        f"Setup parameters for {car_name} "
+        f"(sourced from your iRacing telemetry — {len(params)} parameters):"
+    ]
+    for path, rec in sorted(params.items()):
+        last_part = path.split(".")[-1]
+        if any(last_part == s for s in _SKIP):
+            continue
+        unit = rec["unit"] or ""
+        obs_min = rec["obs_min"]
+        obs_max = rec["obs_max"]
+        typical = rec["typical"]
+        samples = rec["samples"]
+        unit_str = f" {unit}" if unit else ""
+        if obs_min == obs_max:
+            lines.append(f"  {path}: {obs_min:.4g}{unit_str}  (fixed, n={samples})")
+        else:
+            lines.append(
+                f"  {path}: observed {obs_min:.4g}–{obs_max:.4g}{unit_str}  "
+                f"typical={typical:.4g}{unit_str}  (n={samples})"
+            )
+
+    # Append real tire pressure data if available
+    try:
+        from core.tire_pressure_db import get_tire_pressure_db, CORNERS
+        tp_db = get_tire_pressure_db()
+        # Use a neutral mid-range track temp for the summary (25 °C)
+        pressure_parts = []
+        for corner in CORNERS:
+            delta = tp_db.get_delta(car_name, corner, 25.0)
+            if delta is not None:
+                pressure_parts.append(f"{corner}: +{delta:.1f} psi rise at 25°C")
+        if pressure_parts:
+            lines.append(
+                "  Cold→Hot pressure rise (learned from your sessions): "
+                + ", ".join(pressure_parts)
+            )
+    except Exception:
+        pass
+
     return "\n".join(lines)
 
 

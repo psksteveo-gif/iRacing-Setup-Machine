@@ -193,6 +193,197 @@ class TrackMapWidget(EmbedChart):
         self.draw()
 
 
+    def gear_overlay(self, data, lap_idx: int = 0, title: str = "Gear Map"):
+        """
+        Colour the track by gear number for the given lap.
+        Low gears = red/orange, high gears = green/blue.
+        """
+        self.clear()
+        from core.racing_line import reconstruct_racing_line
+        ax = self.fig.add_subplot(111, facecolor='#0d1b2a')
+        ax.set_aspect('equal')
+        ax.axis('off')
+        self.fig.patch.set_facecolor(PANEL)
+
+        rl = reconstruct_racing_line(data, lap_idx=lap_idx)
+        if rl is None or len(rl.x) < 20:
+            ax.text(0.5, 0.5, "Insufficient telemetry for gear map",
+                    ha='center', va='center', color=DIM, fontsize=11,
+                    transform=ax.transAxes)
+            self.draw()
+            return
+
+        gear_ch = data.get_channel('Gear')
+        dist_ch = data.get_channel('LapDistPct')
+        if gear_ch is None or dist_ch is None:
+            ax.text(0.5, 0.5, "No Gear channel in telemetry",
+                    ha='center', va='center', color=DIM, fontsize=11,
+                    transform=ax.transAxes)
+            self.draw()
+            return
+
+        bounds = data.lap_boundaries
+        if len(bounds) <= lap_idx + 1:
+            self.draw()
+            return
+
+        s, e = bounds[lap_idx], bounds[lap_idx + 1]
+        gear_lap = np.asarray(gear_ch[s:e], float)
+        dist_lap = np.asarray(dist_ch[s:e], float)
+
+        # Draw grey base track
+        denom = max(rl.x.max() - rl.x.min(), rl.y.max() - rl.y.min(), 1e-6)
+        nx = (rl.x - rl.x.mean()) / denom
+        ny = (rl.y - rl.y.mean()) / denom
+        ax.plot(nx, ny, color='#2a3a5a', lw=7, solid_capstyle='round', zorder=1)
+
+        # Gear colour map: 1=red, 2=orange, 3=yellow, 4=lime, 5=cyan, 6=blue, 7+=purple
+        _gear_colors = {1: '#e74c3c', 2: '#e67e22', 3: '#f1c40f',
+                        4: '#2ecc71', 5: '#1abc9c', 6: '#3498db', 7: '#9b59b6'}
+        max_gear = max(int(g) for g in gear_lap if g > 0) if any(g > 0 for g in gear_lap) else 7
+        plotted_gears: set = set()
+
+        # Walk the track and colour segments
+        n = len(rl.dist_pct)
+        for frame_i in range(len(dist_lap) - 1):
+            g = int(gear_lap[frame_i])
+            if g <= 0:
+                continue
+            d0, d1 = float(dist_lap[frame_i]), float(dist_lap[frame_i + 1])
+            # Find the corresponding track positions
+            idx = np.searchsorted(rl.dist_pct, d0)
+            if idx >= n - 1:
+                idx = n - 2
+            px = (rl.x[idx] - rl.x.mean()) / denom
+            py = (rl.y[idx] - rl.y.mean()) / denom
+            px2 = (rl.x[min(idx+1, n-1)] - rl.x.mean()) / denom
+            py2 = (rl.y[min(idx+1, n-1)] - rl.y.mean()) / denom
+            col = _gear_colors.get(g, '#9b59b6')
+            lbl_arg = f"Gear {g}" if g not in plotted_gears else '_nolegend_'
+            ax.plot([px, px2], [py, py2], color=col, lw=5,
+                    solid_capstyle='round', zorder=2, label=lbl_arg, alpha=0.85)
+            plotted_gears.add(g)
+
+        # Start marker
+        ax.scatter(nx[0], ny[0], s=80, color='white', zorder=8, marker='D')
+        ax.set_title(title, color=TEXT, fontsize=12, pad=6)
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            # Sort by gear number
+            pairs = sorted(zip(labels, handles),
+                           key=lambda p: int(p[0].split()[-1]) if p[0].startswith('Gear') else 99)
+            labels2, handles2 = zip(*pairs) if pairs else ([], [])
+            ax.legend(list(handles2), list(labels2), loc='best', fontsize=9,
+                      facecolor='#1e2845', edgecolor='#2a3050',
+                      labelcolor=TEXT, markerscale=0.9, framealpha=0.85)
+        self.fig.tight_layout(pad=0.4)
+        self.draw()
+
+    def animate_replay(self, data, lap_idx: int = 0, speed_mult: float = 8.0):
+        """
+        Animate a dot travelling around the track for the given lap.
+        speed_mult controls playback speed (8x = 8× faster than real-time).
+        Calls self.draw() on each frame via Tkinter after().
+        """
+        from core.racing_line import reconstruct_racing_line
+
+        rl = reconstruct_racing_line(data, lap_idx=lap_idx)
+        bounds = data.lap_boundaries
+        if rl is None or len(rl.x) < 20 or len(bounds) <= lap_idx + 1:
+            return
+
+        # Build the normalised track
+        denom = max(rl.x.max() - rl.x.min(), rl.y.max() - rl.y.min(), 1e-6)
+        nx = (rl.x - rl.x.mean()) / denom
+        ny = (rl.y - rl.y.mean()) / denom
+
+        # Speed channel for dot colour
+        speed_ch = data.get_channel('Speed')
+        dist_ch  = data.get_channel('LapDistPct')
+        s, e = bounds[lap_idx], bounds[lap_idx + 1]
+        lap_dist = np.asarray(dist_ch[s:e], float) if dist_ch is not None else None
+        lap_speed = np.asarray(speed_ch[s:e], float) if speed_ch is not None else None
+
+        tick = float(getattr(data, 'tick_rate', None) or 60)
+        # ms per IBT frame at real time, divided by speed_mult
+        ms_per_frame = max(1, int(1000.0 / (tick * speed_mult)))
+
+        n_frames = e - s
+        self._replay_frame = 0
+        self._replay_running = True
+
+        # Draw static base
+        self.clear()
+        ax = self.fig.add_subplot(111, facecolor='#0d1b2a')
+        ax.set_aspect('equal')
+        ax.axis('off')
+        self.fig.patch.set_facecolor(PANEL)
+        ax.plot(nx, ny, color='#2a3a5a', lw=6, solid_capstyle='round', zorder=1)
+        ax.plot(nx, ny, color='#1e2845', lw=4, solid_capstyle='round', zorder=2)
+        ax.scatter(nx[0], ny[0], s=80, color='white', zorder=8, marker='D')
+        # Speed-coloured trail placeholder
+        self._replay_dot, = ax.plot([], [], 'o', ms=10, color=ACCENT, zorder=9)
+        self._replay_trail_x = []
+        self._replay_trail_y = []
+        self._replay_trail_line, = ax.plot([], [], '-', color=ACCENT, lw=2, alpha=0.5, zorder=8)
+        ax.set_title("Lap Replay — ▶", color=TEXT, fontsize=12, pad=6)
+        self._replay_ax = ax
+        self._replay_nx = nx
+        self._replay_ny = ny
+        self._replay_rl = rl
+        self._replay_denom = denom
+        self._replay_lap_dist = lap_dist
+        self._replay_lap_speed = lap_speed
+        self._replay_n_frames = n_frames
+        self.draw()
+
+        def _step():
+            if not self._replay_running:
+                return
+            fi = self._replay_frame
+            if fi >= self._replay_n_frames:
+                self._replay_frame = 0
+                self._replay_trail_x.clear()
+                self._replay_trail_y.clear()
+                self.canvas.get_tk_widget().after(500, _step)
+                return
+            if self._replay_lap_dist is not None and fi < len(self._replay_lap_dist):
+                d_pct = float(self._replay_lap_dist[fi])
+                idx = int(np.searchsorted(self._replay_rl.dist_pct, d_pct))
+                idx = min(idx, len(self._replay_nx) - 1)
+                px, py = float(self._replay_nx[idx]), float(self._replay_ny[idx])
+                # Colour dot by speed
+                col = ACCENT
+                if self._replay_lap_speed is not None and fi < len(self._replay_lap_speed):
+                    sp = float(self._replay_lap_speed[fi])
+                    sp_max = float(self._replay_lap_speed.max()) if self._replay_lap_speed is not None else 200
+                    ratio = min(sp / max(sp_max, 1), 1.0)
+                    # Green (fast) → red (slow)
+                    r = int((1 - ratio) * 220)
+                    g = int(ratio * 200)
+                    col = f'#{r:02x}{g:02x}50'
+                self._replay_dot.set_data([px], [py])
+                self._replay_dot.set_color(col)
+                self._replay_trail_x.append(px)
+                self._replay_trail_y.append(py)
+                if len(self._replay_trail_x) > 60:
+                    self._replay_trail_x.pop(0)
+                    self._replay_trail_y.pop(0)
+                self._replay_trail_line.set_data(self._replay_trail_x, self._replay_trail_y)
+                try:
+                    self.canvas.draw_idle()
+                except Exception:
+                    pass
+            self._replay_frame += 1
+            self.canvas.get_tk_widget().after(ms_per_frame, _step)
+
+        self.canvas.get_tk_widget().after(ms_per_frame, _step)
+
+    def stop_replay(self):
+        """Stop any running lap replay animation."""
+        self._replay_running = False
+
+
 def _norm_pts(hx, hy, ref_x, ref_y):
     """Normalise a subset of points using the same scale as the full track."""
     denom = max(ref_x.max() - ref_x.min(), ref_y.max() - ref_y.min(), 1e-6)

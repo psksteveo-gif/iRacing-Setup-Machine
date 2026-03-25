@@ -15,6 +15,36 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+_KEYRING_SERVICE = "OptimalSector"
+_KEYRING_REFRESH_TOKEN = "cloud_refresh_token"
+
+
+def _keyring_set(value: str) -> bool:
+    try:
+        import keyring
+        keyring.set_password(_KEYRING_SERVICE, _KEYRING_REFRESH_TOKEN, value)
+        return True
+    except Exception as exc:
+        logger.warning("Could not store refresh token in keyring: %s", exc)
+        return False
+
+
+def _keyring_get() -> Optional[str]:
+    try:
+        import keyring
+        return keyring.get_password(_KEYRING_SERVICE, _KEYRING_REFRESH_TOKEN)
+    except Exception as exc:
+        logger.warning("Could not read refresh token from keyring: %s", exc)
+        return None
+
+
+def _keyring_delete() -> None:
+    try:
+        import keyring
+        keyring.delete_password(_KEYRING_SERVICE, _KEYRING_REFRESH_TOKEN)
+    except Exception:
+        pass
+
 # ── Tier feature matrix (mirrors backend/config.py) ───────────────────────
 
 TIER_FEATURES: dict[str, set[str]] = {
@@ -31,8 +61,7 @@ TIER_FEATURES: dict[str, set[str]] = {
         "pdf_export",      "csv_export",
         "ai_advisor",      "session_history",
         "consistency_score", "ml_prediction",
-        "cloud_sync",      "reference_lap",
-        "stint_analysis",
+        "reference_lap",   "stint_analysis",
     },
     "team": {
         "telemetry_basic", "telemetry_advanced",
@@ -41,11 +70,8 @@ TIER_FEATURES: dict[str, set[str]] = {
         "pdf_export",      "csv_export",
         "ai_advisor",      "session_history",
         "consistency_score", "ml_prediction",
-        "cloud_sync",      "reference_lap",
-        "stint_analysis",  "teams",
-        "coach_view",      "shared_library",
-        "setup_sharing",   "discord_webhook",
-        "api_access",
+        "reference_lap",   "stint_analysis",
+        "teams",           "coach_view",
     },
 }
 
@@ -59,13 +85,10 @@ UPGRADE_MESSAGES: dict[str, str] = {
     "session_history":  "Session history & trends require Pro. Upgrade to track your pace over time.",
     "consistency_score":"Consistency scoring requires Pro.",
     "ml_prediction":    "ML lap time prediction requires Pro.",
-    "cloud_sync":       "Cloud sync requires Pro. Upgrade to save sessions to the cloud and access them anywhere.",
     "reference_lap":    "Reference lap comparison requires Pro.",
     "stint_analysis":   "Stint analysis requires Pro.",
     "teams":            "Team features require a Team subscription.",
     "coach_view":       "Coach view requires a Team subscription.",
-    "shared_library":   "Shared setup library requires a Team subscription.",
-    "setup_sharing":    "Setup sharing requires a Team subscription.",
 }
 
 
@@ -95,6 +118,7 @@ class LicenseState:
         self.is_authenticated = True
         self.access_token = access_token
         self.refresh_token = refresh_token
+        _keyring_set(refresh_token)
         self._save_cache()
         logger.info("Logged in as %s (tier=%s)", email, tier)
 
@@ -106,6 +130,7 @@ class LicenseState:
         self.is_authenticated = False
         self.access_token = None
         self.refresh_token = None
+        _keyring_delete()
         self._delete_cache()
         logger.info("Logged out")
 
@@ -136,7 +161,7 @@ class LicenseState:
                 "email": self.email,
                 "display_name": self.display_name,
                 "tier": self.tier,
-                "refresh_token": self.refresh_token,
+                # refresh_token is stored in OS keyring, not here
             }
             with open(self._cache_path, "w", encoding="utf-8") as f:
                 json.dump(data, f)
@@ -161,7 +186,17 @@ class LicenseState:
             self.email = data.get("email")
             self.display_name = data.get("display_name")
             self.tier = data.get("tier", "free")
-            self.refresh_token = data.get("refresh_token")
+            # Migrate plaintext token from old cache files if present
+            legacy_token = data.pop("refresh_token", None)
+            if legacy_token:
+                _keyring_set(legacy_token)
+                # Rewrite cache without the token
+                try:
+                    with open(self._cache_path, "w", encoding="utf-8") as f:
+                        json.dump(data, f)
+                except Exception:
+                    pass
+            self.refresh_token = _keyring_get()
             self.is_authenticated = bool(self.user_id and self.refresh_token)
             return self.is_authenticated
         except Exception as exc:

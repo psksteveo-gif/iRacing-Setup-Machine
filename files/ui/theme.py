@@ -10,10 +10,18 @@ import matplotlib.pyplot as plt
 from core.analysis_engine import Severity
 
 # ── Theme Constants ───────────────────────────────────────────────────────────
-DARK = "#0c0a12"; PANEL = "#140e1e"; CARD = "#1e1530"
-ACCENT = "#c85a17"; BLUE = "#9d4edd"; TEXT = "#f0e8ff"
-DIM = "#7a6b8a"; GREEN = "#2ecc71"; YELLOW = "#f39c12"
-RED = "#e74c3c"; PURPLE = "#b06fe0"
+DARK   = "#0A0A0A"   # deep black background
+PANEL  = "#0E0A18"   # very dark purple-black panels
+CARD   = "#140E22"   # dark purple-black cards
+ACCENT = "#C85A17"   # burnt orange — primary buttons, key numbers, alerts
+BLUE   = "#9D4EDD"   # vibrant medium purple — headers, borders, icons
+TEXT   = "#EDE8FF"   # pale lavender off-white — main readable text
+DIM    = "#6B5C80"   # muted purple — secondary / hint text
+GREEN  = "#2ecc71"
+YELLOW = "#f39c12"
+RED    = "#e74c3c"
+PURPLE = "#9D4EDD"
+CARD_BORDER = "#5B2D8E"   # vibrant purple for card borders / drop-shadow effect
 SEV_COLOR = {Severity.CRITICAL: RED, Severity.WARNING: YELLOW, Severity.INFO: BLUE}
 
 # ── Helper Functions ──────────────────────────────────────────────────────────
@@ -24,7 +32,14 @@ def lbl(parent, text, size=11, bold=False, color=TEXT, **kw):
         text_color=color, **kw)
 
 def card_frame(parent, **kw):
-    return ctk.CTkFrame(parent, fg_color=CARD, corner_radius=8, **kw)
+    return ctk.CTkFrame(parent, fg_color=CARD, corner_radius=8,
+                        border_width=1, border_color=CARD_BORDER, **kw)
+
+
+def bordered_card(parent, **kw):
+    """Card with a prominent purple border — use for highlighted sections."""
+    return ctk.CTkFrame(parent, fg_color=CARD, corner_radius=8,
+                        border_width=1, border_color=BLUE, **kw)
 
 def sec_lbl(parent, text):
     lbl(parent, text, 14, bold=True, color=PURPLE).pack(anchor='w', pady=(10, 2))
@@ -108,11 +123,16 @@ class EmbedChart(ctk.CTkFrame):
     def std_ax(self, title="", xlabel="Track %"):
         ax = self.fig.add_subplot(111, facecolor='#100c18')
         ax.set_title(title, color=TEXT, fontsize=13, pad=6)
-        ax.tick_params(colors=DIM, labelsize=10)
-        for sp in ax.spines.values(): sp.set_color('#3a2850')
-        ax.spines['top'].set_visible(False); ax.spines['right'].set_visible(False)
-        ax.set_xlabel(xlabel, color=DIM, fontsize=11)
-        ax.grid(True, alpha=0.1, color='#3a2850')
+        ax.tick_params(colors=DIM, labelsize=10, which='both')
+        for sp in ax.spines.values():
+            sp.set_color('#3a2850')
+            sp.set_alpha(0.4)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.set_xlabel(xlabel, color=DIM, fontsize=10)
+        ax.yaxis.grid(True, alpha=0.15, color='#3a2850', linewidth=0.8)
+        ax.xaxis.grid(False)
+        ax.set_axisbelow(True)
         return ax
 
 

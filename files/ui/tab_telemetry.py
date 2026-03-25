@@ -11,6 +11,7 @@ from ui.theme import (DARK, PANEL, CARD, ACCENT, BLUE, TEXT, DIM, GREEN, YELLOW,
                       RED, PURPLE, lbl, EmbedChart)
 from core.analysis_engine import DOWNSAMPLE_CHART, DOWNSAMPLE_LAP, format_laptime
 from core.lap_overlay import extract_lap_trace, compare_laps
+from core import units
 from core.corner_analysis import LapDeltaAnalyzer
 from core.racing_line import reconstruct_racing_line, speed_colormap
 from core import units
@@ -40,7 +41,7 @@ class TelemetryTabMixin:
         "Tire Pressures": (['LFpress', 'RFpress', 'LRpress', 'RRpress'], ['LF', 'RF', 'LR', 'RR'], [BLUE, RED, GREEN, YELLOW]),
         "Brake Line Pressure": (['LFbrakeLinePress', 'RFbrakeLinePress', 'LRbrakeLinePress', 'RRbrakeLinePress'], ['LF', 'RF', 'LR', 'RR'], [BLUE, RED, GREEN, YELLOW]),
         "RPM + Gear": (['RPM', 'Gear'], ['RPM', 'Gear'], [BLUE, YELLOW]),
-        "Engine Temps": (['OilTemp', 'WaterTemp'], ['Oil °C', 'Water °C'], [RED, BLUE]),
+        "Engine Temps": (['OilTemp', 'WaterTemp'], [f'Oil {units.temp_label()}', f'Water {units.temp_label()}'], [RED, BLUE]),
         "Lap Delta to Best": (['LapDeltaToBestLap'], ['Delta (s)'], [ACCENT]),
         "Lap Delta to Optimal": (['LapDeltaToOptimalLap'], ['Delta (s)'], [GREEN]),
         "Wheel Slip (Speed diff)": (['LFspeed', 'RFspeed', 'LRspeed', 'RRspeed'], ['LF', 'RF', 'LR', 'RR'], [BLUE, RED, GREEN, YELLOW]),
@@ -53,6 +54,10 @@ class TelemetryTabMixin:
         "Track Map — Speed": None,
         "Track Map — Braking": None,
         "Track Map — Throttle/Brake Zones": None,
+        "Track Map — Lateral G": None,
+        "Track Map — Tire Slip": None,
+        "Track Map — ABS Activity": None,
+        "Track Map — Fuel Rate": None,
         "Reference Lap Delta": None,
         "Reference Lap — External Delta": None,
         "Track Map — Events Heatmap": None,
@@ -130,6 +135,8 @@ class TelemetryTabMixin:
         self._tc = EmbedChart(tab, figsize=(10, 4)); self._tc.pack(fill='both', expand=True, padx=10, pady=(4, 8))
 
     def _rebuild_lap_checks(self):
+        if not hasattr(self, '_lap_frame'):
+            return
         for w in self._lap_frame.winfo_children(): w.destroy()
         self._lap_checks = []
         if not self.cur_data:
@@ -506,6 +513,56 @@ class TelemetryTabMixin:
             self._draw_track_map_events(ax, c, xs, ys, x, y, s, e, step, track_estimated); return
         if "Braking" in sel and brake is not None and len(brake) > e:
             cv = brake[s:e][::step]; cmap_name = 'Reds'; clabel = 'Brake Pressure'
+        elif "Lateral G" in sel:
+            lat_g = d.get_channel('LatAccel')
+            if lat_g is not None and len(lat_g) > e:
+                cv = np.abs(lat_g[s:e][::step]); cmap_name = 'RdYlGn_r'; clabel = 'Lateral G (m/s²)'
+            else:
+                ax.plot(xs, ys, color=BLUE, lw=1.5, alpha=0.9)
+                ax.set_title("Track Map — Lateral G (no LatAccel data)", color=DIM, fontsize=10)
+                c.fig.tight_layout(pad=0.5); c.draw(); return
+        elif "Tire Slip" in sel:
+            spd = speed
+            wch_rear_l = d.get_channel('LRspeed'); wch_rear_r = d.get_channel('RRspeed')
+            wch_front_l = d.get_channel('LFspeed'); wch_front_r = d.get_channel('RFspeed')
+            if spd is not None and len(spd) > e and any(
+                    ch is not None and len(ch) > e for ch in [wch_rear_l, wch_rear_r, wch_front_l, wch_front_r]):
+                spd_seg = spd[s:e]
+                denom = np.where(spd_seg > 0.1, spd_seg, np.nan)
+                # Use max absolute slip across all available wheels
+                slip_vals = []
+                for wch in [wch_rear_l, wch_rear_r]:
+                    if wch is not None and len(wch) > e:
+                        slip_vals.append(np.abs((wch[s:e] - spd_seg) / denom))
+                for wch in [wch_front_l, wch_front_r]:
+                    if wch is not None and len(wch) > e:
+                        slip_vals.append(np.abs((spd_seg - wch[s:e]) / denom))
+                if slip_vals:
+                    slip_max = np.nanmax(np.stack(slip_vals, axis=0), axis=0)
+                    cv = np.clip(slip_max[::step], 0, 0.5); cmap_name = 'hot'; clabel = 'Slip Ratio'
+                else:
+                    ax.plot(xs, ys, color=BLUE, lw=1.5, alpha=0.9)
+                    c.fig.tight_layout(pad=0.5); c.draw(); return
+            else:
+                ax.plot(xs, ys, color=BLUE, lw=1.5, alpha=0.9)
+                ax.set_title("Track Map — Tire Slip (no wheel speed data)", color=DIM, fontsize=10)
+                c.fig.tight_layout(pad=0.5); c.draw(); return
+        elif "ABS" in sel:
+            abs_ch = d.get_channel('BrakeABSactive')
+            if abs_ch is not None and len(abs_ch) > e:
+                cv = abs_ch[s:e][::step].astype(float); cmap_name = 'Reds'; clabel = 'ABS Active'
+            else:
+                ax.plot(xs, ys, color=BLUE, lw=1.5, alpha=0.9)
+                ax.set_title("Track Map — ABS Activity (no ABS data)", color=DIM, fontsize=10)
+                c.fig.tight_layout(pad=0.5); c.draw(); return
+        elif "Fuel Rate" in sel:
+            fr_ch = d.get_channel('FuelUsePerHour')
+            if fr_ch is not None and len(fr_ch) > e:
+                cv = fr_ch[s:e][::step]; cmap_name = 'YlOrRd'; clabel = 'Fuel Use (L/hr)'
+            else:
+                ax.plot(xs, ys, color=BLUE, lw=1.5, alpha=0.9)
+                ax.set_title("Track Map — Fuel Rate (no fuel data)", color=DIM, fontsize=10)
+                c.fig.tight_layout(pad=0.5); c.draw(); return
         elif speed is not None and len(speed) > e:
             cv = speed[s:e][::step] * units.speed_factor(); cmap_name = 'plasma'; clabel = f'Speed ({units.speed_label()})'
         else:
