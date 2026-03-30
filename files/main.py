@@ -75,6 +75,7 @@ from core.ai_advisor          import (get_ai_recommendations_sync, get_ai_recomm
                                        ask_setup_question_stream, generate_session_note_stream,
                                        generate_tech_legal_setup_stream,
                                        get_setup_recommendation_stream,
+                                       parse_ai_response,
                                        _MODEL_HAIKU, _MODEL_SONNET)
 from core.tech_inspector      import (validate_setup, clamp_to_legal, tech_fail_reasons,
                                       get_bounds, bounds_summary_for_prompt)
@@ -105,12 +106,181 @@ from ui.obs_overlay           import OBSOverlay
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
+# ── Custom fonts ───────────────────────────────────────────────────────────────
+_FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "fonts")
+for _font_file in ("BarlowCondensed-SemiBold.ttf", "Barlow-Regular.ttf", "JetBrainsMono-Regular.ttf"):
+    _font_path = os.path.join(_FONT_DIR, _font_file)
+    if os.path.isfile(_font_path):
+        try:
+            ctk.FontManager.load_font(_font_path)
+        except Exception as _fe:
+            logging.getLogger(__name__).warning("Could not load font %s: %s", _font_file, _fe)
+
 from ui.theme import (DARK, PANEL, CARD, ACCENT, BLUE, TEXT, DIM, GREEN, YELLOW,
                       RED, PURPLE, CARD_BORDER, SEV_COLOR, lbl, card_frame, sec_lbl,
                       stat_blk, _Tooltip, EmbedChart, IssueCard)
 from ui.tab_telemetry import TelemetryTabMixin
 from ui.tab_corners import CornersTabMixin
 from ui.tab_stint import StintTabMixin
+
+
+# ── AI recommendation card renderer ───────────────────────────────────────────
+
+def render_recommendations(parent_frame, json_response: str):
+    """Render AI JSON response as structured cards using the design system renderer."""
+    from ui.ds_ai_renderer import render_ai_response
+    render_ai_response(parent_frame, json_response)
+
+
+def _render_recommendations_legacy(parent_frame, json_response: str):
+    """
+    Parse a JSON AI response string and render styled recommendation cards
+    into parent_frame (a CTkScrollableFrame). Clears existing children first.
+    (Legacy implementation kept for reference — no longer called.)
+    """
+    for widget in parent_frame.winfo_children():
+        widget.destroy()
+
+    import json as _json
+    try:
+        data = _json.loads(json_response)
+    except _json.JSONDecodeError:
+        ctk.CTkLabel(parent_frame, text="Response parse error — raw JSON was malformed.",
+                     text_color="#E84040").pack(pady=20)
+        return
+
+    # ── Data warnings banner ──────────────────────────────────────────────────
+    if data.get("data_warnings"):
+        warn_frame = ctk.CTkFrame(parent_frame, fg_color="#1A1410",
+                                  border_color="#3A2800", border_width=1, corner_radius=4)
+        warn_frame.pack(fill="x", padx=14, pady=(10, 0))
+        ctk.CTkLabel(warn_frame, text="⚠  DATA WARNINGS",
+                     font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color="#F0A830").pack(anchor="w", padx=12, pady=(8, 4))
+        for w in data["data_warnings"]:
+            ctk.CTkLabel(warn_frame, text=f"  {w}",
+                         font=ctk.CTkFont(size=12), text_color="#8A8890",
+                         wraplength=900, justify="left").pack(anchor="w", padx=12, pady=1)
+        ctk.CTkLabel(warn_frame, text="").pack(pady=4)
+
+    # ── Reliable signals row ──────────────────────────────────────────────────
+    signals = data.get("reliable_signals", [])
+    if signals:
+        sr = ctk.CTkFrame(parent_frame, fg_color="transparent")
+        sr.pack(fill="x", padx=14, pady=(8, 4))
+        _rel_color = {"high": GREEN, "medium": YELLOW, "low": DIM}
+        for sig in signals[:5]:
+            rel_color = _rel_color.get(sig.get("reliability", "low"), DIM)
+            sf = ctk.CTkFrame(sr, fg_color="#0F0F13",
+                              border_width=1, border_color="#1E1E26", corner_radius=4)
+            sf.pack(side="left", padx=(0, 6), pady=2)
+            ctk.CTkLabel(sf, text=sig.get("signal", ""),
+                         font=ctk.CTkFont(size=9), text_color="#4A4858").pack(
+                anchor="w", padx=10, pady=(6, 0))
+            ctk.CTkLabel(sf, text=sig.get("value", ""),
+                         font=ctk.CTkFont(size=13, weight="bold"),
+                         text_color=rel_color).pack(anchor="w", padx=10, pady=(0, 6))
+
+    # ── Recommendation cards ──────────────────────────────────────────────────
+    _SEV_COLOR = {"critical": "#E84040", "medium": "#F0A830", "advisory": "#4A9EE8"}
+    _PRI_COLOR = {1: "#E84040", 2: "#F0A830", 3: "#4A9EE8"}
+
+    for rec in data.get("recommendations", []):
+        sev       = rec.get("severity", "advisory")
+        sev_color = _SEV_COLOR.get(sev, "#8A8890")
+        pri       = rec.get("priority", 0)
+        pri_color = _PRI_COLOR.get(pri, "#8A8890")
+
+        card = ctk.CTkFrame(parent_frame, fg_color="#14141A",
+                            border_color="#1E1E26", border_width=1, corner_radius=5)
+        card.pack(fill="x", padx=14, pady=(8, 0))
+
+        # Header row
+        header = ctk.CTkFrame(card, fg_color="transparent")
+        header.pack(fill="x", padx=14, pady=(12, 8))
+
+        ctk.CTkLabel(header, text=str(pri),
+                     font=ctk.CTkFont(size=14, weight="bold"),
+                     text_color=pri_color, width=28, height=28,
+                     fg_color="#14141A", corner_radius=14).pack(side="left", padx=(0, 10))
+
+        title_group = ctk.CTkFrame(header, fg_color="transparent")
+        title_group.pack(side="left", fill="x", expand=True)
+        ctk.CTkLabel(title_group, text=rec.get("title", ""),
+                     font=ctk.CTkFont(size=16, weight="bold"),
+                     text_color="#F0EEE8").pack(anchor="w")
+        sub = rec.get("subtitle", "") or rec.get("parameter", "")
+        if sub:
+            ctk.CTkLabel(title_group, text=sub,
+                         font=ctk.CTkFont(size=11),
+                         text_color="#8A8890").pack(anchor="w")
+
+        ctk.CTkLabel(header, text=sev.upper(),
+                     font=ctk.CTkFont(size=11, weight="bold"),
+                     text_color=sev_color,
+                     fg_color="#14141A", corner_radius=3).pack(side="right")
+
+        # Change block
+        frm = rec.get("from_value", "")
+        to  = rec.get("to_value", "")
+        if rec.get("parameter") or frm or to:
+            change = ctk.CTkFrame(card, fg_color="#0F0F13",
+                                  border_color="#1E1E26", border_width=1, corner_radius=4)
+            change.pack(fill="x", padx=14, pady=(0, 10))
+            row = ctk.CTkFrame(change, fg_color="transparent")
+            row.pack(padx=14, pady=10)
+            ctk.CTkLabel(row, text="PARAMETER",
+                         font=ctk.CTkFont(size=10), text_color="#4A4858").pack(side="left", padx=(0, 8))
+            ctk.CTkLabel(row, text=rec.get("parameter", ""),
+                         font=ctk.CTkFont(size=13), text_color="#F0EEE8").pack(side="left", padx=(0, 12))
+            if frm:
+                ctk.CTkLabel(row, text=frm,
+                             font=ctk.CTkFont(size=14, weight="bold"),
+                             text_color="#E84040").pack(side="left")
+                ctk.CTkLabel(row, text=" → ",
+                             font=ctk.CTkFont(size=13), text_color="#4A4858").pack(side="left")
+            if to:
+                ctk.CTkLabel(row, text=to,
+                             font=ctk.CTkFont(size=14, weight="bold"),
+                             text_color="#2ECC8E").pack(side="left")
+
+        # Reason bullets
+        for reason in rec.get("reasons", []):
+            r = ctk.CTkFrame(card, fg_color="transparent")
+            r.pack(fill="x", padx=14, pady=1)
+            ctk.CTkLabel(r, text="—",
+                         font=ctk.CTkFont(size=13), text_color="#E8611A",
+                         width=16).pack(side="left", anchor="n", pady=2)
+            ctk.CTkLabel(r, text=reason,
+                         font=ctk.CTkFont(size=13), text_color="#8A8890",
+                         wraplength=860, justify="left").pack(side="left", anchor="w", padx=6)
+
+        # Impact block
+        impact = rec.get("impact", {})
+        if impact.get("metric") or impact.get("value"):
+            ib = ctk.CTkFrame(card, fg_color="#0F0F13",
+                              border_color="#1E1E26", border_width=1, corner_radius=4)
+            ib.pack(fill="x", padx=14, pady=(8, 0))
+            ib_row = ctk.CTkFrame(ib, fg_color="transparent")
+            ib_row.pack(fill="x", padx=12, pady=8)
+            ctk.CTkLabel(ib_row, text=impact.get("metric", "Expected Impact"),
+                         font=ctk.CTkFont(size=10), text_color="#4A4858").pack(side="left")
+            ctk.CTkLabel(ib_row, text=impact.get("value", ""),
+                         font=ctk.CTkFont(size=13, weight="bold"),
+                         text_color="#2ECC8E").pack(side="right")
+
+        # Driver note
+        if rec.get("driver_note"):
+            note = ctk.CTkFrame(card, fg_color="#100D0A", corner_radius=0)
+            note.pack(fill="x", pady=(10, 0))
+            ctk.CTkLabel(note, text="DRIVER NOTE",
+                         font=ctk.CTkFont(size=10),
+                         text_color="#E8611A").pack(anchor="w", padx=14, pady=(8, 2))
+            ctk.CTkLabel(note, text=rec["driver_note"],
+                         font=ctk.CTkFont(size=13), text_color="#8A8890",
+                         wraplength=880, justify="left").pack(anchor="w", padx=14, pady=(0, 10))
+
+        ctk.CTkLabel(card, text="").pack(pady=2)
 from core.config import (get_api_key as _get_api_key, set_api_key as _set_api_key,
                           load_cfg, save_cfg)
 from core.race_engineer import DriverProfileManager, RaceEngineer
@@ -2961,42 +3131,115 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
     # ══════════════════════════════════════════════════════════════════════════
     def _t_ai(self, parent=None):
         tab = parent if parent is not None else self.tv.tab("AI"); tab.configure(fg_color=DARK)
-        hdr=ctk.CTkFrame(tab,fg_color=PANEL,height=50,corner_radius=8)
-        hdr.pack(fill='x',padx=10,pady=(8,4)); hdr.pack_propagate(False)
-        lbl(hdr,"🤖  Claude AI Setup Recommendations",13,bold=True).pack(side='left',padx=14)
-        # Steven persona badge (hidden until persona unlocks)
-        self._alex_badge = lbl(hdr,"🏁 Steven Mode",11,color="#2ecc71")
-        if self._race_engineer is not None:
-            self._alex_badge.pack(side='left',padx=(4,0))
-        self._ais=lbl(hdr,"",11,color=DIM); self._ais.pack(side='right',padx=8)
-        self._aib=ctk.CTkButton(hdr,text="Get Recommendations",width=170,height=32,
-            fg_color=ACCENT,hover_color="#a03010",command=self._get_ai)
-        self._aib.pack(side='right',padx=8)
+
+        # ── Panel header ──────────────────────────────────────────────────────
+        hdr = ctk.CTkFrame(tab, fg_color="#0E0E14", corner_radius=8,
+                           border_width=1, border_color="#1E1E28")
+        hdr.pack(fill='x', padx=10, pady=(8, 4))
+
+        hdr_left = ctk.CTkFrame(hdr, fg_color="transparent")
+        hdr_left.pack(side='left', padx=14, pady=10)
+
+        icon_frame = ctk.CTkFrame(hdr_left, fg_color="#2A1A0A",
+                                  corner_radius=4, width=28, height=28,
+                                  border_width=1, border_color="#5A3010")
+        icon_frame.pack(side='left', padx=(0, 10))
+        icon_frame.pack_propagate(False)
+        lbl(icon_frame, "✦", 13, bold=True, color=ACCENT).place(relx=0.5, rely=0.5, anchor='center')
+
+        title_col = ctk.CTkFrame(hdr_left, fg_color="transparent")
+        title_col.pack(side='left')
+        lbl(title_col, "CLAUDE AI  SETUP RECOMMENDATIONS", 13, bold=True).pack(anchor='w')
+        self._ai_hdr_sub = lbl(title_col, "Load a session to begin analysis", 11, color=DIM)
+        self._ai_hdr_sub.pack(anchor='w')
+
+        hdr_right = ctk.CTkFrame(hdr, fg_color="transparent")
+        hdr_right.pack(side='right', padx=10, pady=8)
+
+        self._ais = ctk.CTkLabel(hdr_right, text="",
+            font=ctk.CTkFont(size=11), text_color=DIM,
+            fg_color="#0A1A0A", corner_radius=3)
+        self._ais.pack(side='left', padx=(0, 6))
+
+        self._ai_evo_btn = ctk.CTkButton(hdr_right, text="Evolution", width=90, height=30,
+            fg_color="#1A1A22", hover_color=ACCENT,
+            border_width=1, border_color="#2A2A38",
+            font=ctk.CTkFont(size=12), text_color=DIM,
+            command=self._get_evolution_summary)
+        self._ai_evo_btn.pack(side='left', padx=(0, 6))
+
+        self._aib = ctk.CTkButton(hdr_right, text="Get Recommendations", width=160, height=30,
+            fg_color=ACCENT, hover_color="#a03010",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self._get_ai)
+        self._aib.pack(side='left')
         _Tooltip(self._aib, "Send your telemetry data to the AI for setup and driving recommendations.")
-        self._ai_evo_btn = ctk.CTkButton(hdr, text="📈 Evolution", width=110, height=32,
-            fg_color=CARD, hover_color=ACCENT, command=self._get_evolution_summary)
-        self._ai_evo_btn.pack(side='right', padx=4)
-        # ── Quick setup question bar ──────────────────────────────────────────
-        qf=ctk.CTkFrame(tab,fg_color=PANEL,height=40,corner_radius=8)
-        qf.pack(fill='x',padx=10,pady=(0,4)); qf.pack_propagate(False)
-        lbl(qf,"Ask:",11,color=DIM).pack(side='left',padx=(10,6))
-        self._ai_q=ctk.CTkEntry(qf,
-            placeholder_text="e.g. What if I soften the front ARB 2 clicks?",
-            fg_color=CARD,border_color="#2a1a38",height=28)
-        self._ai_q.pack(side='left',fill='x',expand=True,padx=(0,6))
-        self._ai_q.bind('<Return>', lambda e: self._ask_setup_question())
-        self._ai_qb=ctk.CTkButton(qf,text="Ask",width=60,height=28,
-            fg_color=BLUE,hover_color="#1a5a8a",command=self._ask_setup_question)
-        self._ai_qb.pack(side='right',padx=(0,8))
-        # ── Conversation chat log ─────────────────────────────────────────────
-        self._ai_chat_sc = ctk.CTkScrollableFrame(tab, fg_color=CARD, corner_radius=8, height=220)
-        self._ai_chat_sc.pack(fill='x', padx=10, pady=(0, 4))
-        # ── Main recommendations box ──────────────────────────────────────────
-        self._ait=ctk.CTkTextbox(tab,fg_color=PANEL,text_color=TEXT,
-            font=ctk.CTkFont(family="Helvetica",size=15),wrap='word')
-        self._ait.pack(fill='both',expand=True,padx=10,pady=(0,8))
-        self._ait.insert('1.0',"Load a session then click 'Get Recommendations'.\nRequires Anthropic API key in Settings (⚙).")
+
+        # Steven persona badge (hidden until persona unlocks)
+        self._alex_badge = lbl(hdr_left, "🏁 Steven Mode", 11, color="#2ecc71")
+        if self._race_engineer is not None:
+            self._alex_badge.pack(side='left', padx=(8, 0))
+
+        # ── Recommendations card area ─────────────────────────────────────────
+        self._ai_cards_sc = ctk.CTkScrollableFrame(tab, fg_color="#0A0A0E", corner_radius=8,
+                                                    border_width=1, border_color="#1E1E28",
+                                                    scrollbar_button_color="#2A2A38",
+                                                    scrollbar_button_hover_color=ACCENT)
+        self._ai_cards_sc.pack(fill='both', expand=True, padx=10, pady=(0, 0))
+        # Placeholder shown before first analysis
+        self._ai_placeholder = lbl(self._ai_cards_sc,
+            "Load a session then click 'Get Recommendations'.\nRequires Anthropic API key in Settings (⚙).",
+            13, color=DIM)
+        self._ai_placeholder.pack(expand=True, pady=40)
+        # Streaming progress label (shown while Claude responds)
+        self._ai_stream_lbl = lbl(self._ai_cards_sc, "", 12, color=DIM)
+        # Backward-compat alias so existing code paths that write to _ait still work
+        # (ask/chat paths use _ait; we keep a hidden textbox off-screen for buffering)
+        self._ait = ctk.CTkTextbox(tab, fg_color=DARK, text_color=TEXT, wrap='word',
+                                   width=1, height=1)
+        self._ait.insert('1.0', '')
         self._ait.configure(state='disabled')
+
+        # ── Conversation chat log (collapsible, shown below textbox) ─────────
+        self._ai_chat_sc = ctk.CTkScrollableFrame(tab, fg_color="#0A0A0E", corner_radius=0,
+                                                   height=180, border_width=1,
+                                                   border_color="#1E1E28")
+        self._ai_chat_sc.pack(fill='x', padx=10, pady=(4, 0))
+
+        # ── Ask bar ───────────────────────────────────────────────────────────
+        ask_bar = ctk.CTkFrame(tab, fg_color="#0E0E14", corner_radius=0,
+                               border_width=1, border_color="#1E1E28")
+        ask_bar.pack(fill='x', padx=10, pady=(0, 8))
+
+        ask_inner = ctk.CTkFrame(ask_bar, fg_color="#080810",
+                                 corner_radius=4, border_width=1, border_color="#2A2A38")
+        ask_inner.pack(side='left', fill='x', expand=True, padx=10, pady=8)
+
+        lbl(ask_inner, "ASK", 10, bold=True, color=ACCENT).pack(side='left', padx=(12, 8))
+        self._ai_q = ctk.CTkEntry(ask_inner,
+            placeholder_text="e.g. What if I soften the front ARB 2 clicks?",
+            fg_color="transparent", border_width=0, height=36,
+            font=ctk.CTkFont(size=13))
+        self._ai_q.pack(side='left', fill='x', expand=True)
+        self._ai_q.bind('<Return>', lambda e: self._ask_setup_question())
+
+        self._ai_qb = ctk.CTkButton(ask_bar, text="Send →", width=80, height=36,
+            fg_color=ACCENT, hover_color="#a03010",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            command=self._ask_setup_question)
+        self._ai_qb.pack(side='right', padx=(0, 10), pady=8)
+
+    def _update_ai_stats_row(self):
+        """Update the AI panel subtitle with issue count, track, and car."""
+        if not hasattr(self, '_ai_hdr_sub'):
+            return
+        data = getattr(self, 'cur_data', None)
+        rpt  = getattr(self, 'cur_rpt', None)
+        if data and rpt:
+            issues = len(rpt.issues) if rpt.issues else 0
+            self._ai_hdr_sub.configure(
+                text=f"{issues} issue{'s' if issues != 1 else ''} identified  ·  {data.track_name}  ·  {data.car_name}"
+            )
 
     def _get_ai(self):
         if not self.cur_rpt: messagebox.showwarning("No Session","Load a session first."); return
@@ -3016,15 +3259,18 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         cache_key = next((i for i,(d,_) in enumerate(self.sessions) if d is self.cur_data), None)
         if cache_key is not None and cache_key in self._ai_cache:
             self._ai_last_text = self._ai_cache[cache_key]
-            self._ait.configure(state='normal'); self._ait.delete('1.0','end')
-            self._ait.insert('1.0', self._ai_last_text); self._ait.configure(state='disabled')
-            self._ais.configure(text="✅ Cached")
+            render_recommendations(self._ai_cards_sc, self._ai_last_text)
+            self._ais.configure(text="  ✅  Cached  ", text_color=GREEN,
+                                fg_color="#0A1A0A", corner_radius=3)
             return
         key=_get_api_key().strip()
         if not key: messagebox.showwarning("API Key Needed","Set your key in Settings."); self._settings(); return
-        self._aib.configure(state='disabled',text="Analyzing…")
-        self._ais.configure(text="⏳ Streaming from Claude…")
-        self._ait.configure(state='normal'); self._ait.delete('1.0','end')
+        self._aib.configure(state='disabled', text="Analyzing…")
+        self._ais.configure(text="  ⏳ Streaming…  ", text_color=YELLOW,
+                            fg_color="#1A1600", corner_radius=3)
+        self._clear_ai_cards()
+        if hasattr(self, '_ai_stream_lbl'):
+            self._ai_stream_lbl.pack(pady=20)
         self._ai_last_text = ""
         self._ai_cancel = threading.Event()
         cancel = self._ai_cancel  # capture for closure
@@ -3074,15 +3320,32 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self.after(90_000, _ai_timeout)
 
     def _on_ai_chunk(self, chunk):
-        self._ait.configure(state='normal')
-        self._ait.insert('end', chunk)
-        self._ait.see('end')
-        self._ait.configure(state='disabled')
         self._ai_last_text += chunk
+        # Update streaming progress counter in the cards area
+        char_count = len(self._ai_last_text)
+        if hasattr(self, '_ai_stream_lbl'):
+            self._ai_stream_lbl.configure(text=f"⏳ Receiving response… ({char_count} chars)")
 
     def _on_ai_done(self):
         self._aib.configure(state='normal', text="Get Recommendations")
-        self._ais.configure(text="✅ Done")
+        self._ais.configure(text="  ✅  Analysis Complete  ", text_color=GREEN,
+                            fg_color="#0A1A0A", corner_radius=3)
+        # Extract the JSON block and render cards
+        parsed = parse_ai_response(self._ai_last_text)
+        if parsed:
+            import json as _json
+            render_recommendations(self._ai_cards_sc, _json.dumps(parsed))
+        else:
+            # Fallback: show raw text in a card when JSON parse fails
+            self._clear_ai_cards()
+            fb = ctk.CTkFrame(self._ai_cards_sc, fg_color="#14141A", corner_radius=5,
+                              border_width=1, border_color="#1E1E26")
+            fb.pack(fill='x', padx=14, pady=8)
+            tb = ctk.CTkTextbox(fb, fg_color="transparent", text_color=TEXT,
+                                wrap='word', font=ctk.CTkFont(size=13), height=300)
+            tb.pack(fill='both', expand=True, padx=8, pady=8)
+            tb.insert('1.0', self._ai_last_text)
+            tb.configure(state='disabled')
         # Cache result for this session
         if self.cur_data and self._ai_last_text:
             idx = next((i for i,(d,_) in enumerate(self.sessions) if d is self.cur_data), None)
@@ -3091,10 +3354,163 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
 
     def _mark_ai_incomplete(self):
         """Flag that the AI response was not fully received."""
-        self._ait.configure(state='normal')
-        self._ait.insert('end', '\n\n⚠ Response may be incomplete.')
-        self._ait.configure(state='disabled')
-        self._ais.configure(text="⚠ Incomplete")
+        self._ais.configure(text="⚠ Incomplete", text_color=YELLOW, fg_color="transparent")
+
+    def _clear_ai_cards(self):
+        """Remove all widgets from the cards scroll area."""
+        for w in self._ai_cards_sc.winfo_children():
+            w.destroy()
+
+    def _render_ai_cards(self, data: dict):
+        """Delegate to the module-level render_recommendations using buffered raw text."""
+        import json as _json
+        render_recommendations(self._ai_cards_sc, _json.dumps(data))
+
+    def _render_ai_cards_raw(self, data: dict):
+        """Render structured JSON recommendations as styled cards (internal impl)."""
+        self._clear_ai_cards()
+        sc = self._ai_cards_sc
+
+        # ── Data warnings banner ──────────────────────────────────────────────
+        if data.get('data_warnings'):
+            warn_frame = ctk.CTkFrame(sc, fg_color="#1A1410",
+                                      border_color="#3A2800", border_width=1,
+                                      corner_radius=4)
+            warn_frame.pack(fill='x', padx=14, pady=(10, 0))
+            ctk.CTkLabel(warn_frame, text="⚠  DATA WARNINGS",
+                         font=ctk.CTkFont(size=11, weight="bold"),
+                         text_color="#F0A830").pack(anchor='w', padx=12, pady=(8, 4))
+            for w in data['data_warnings']:
+                ctk.CTkLabel(warn_frame, text=f"  {w}",
+                             font=ctk.CTkFont(size=12),
+                             text_color="#8A8890",
+                             wraplength=900, justify='left').pack(anchor='w', padx=12, pady=1)
+            ctk.CTkLabel(warn_frame, text="").pack(pady=4)
+
+        # ── Reliable signals row ──────────────────────────────────────────────
+        signals = data.get('reliable_signals', [])
+        if signals:
+            sr = ctk.CTkFrame(sc, fg_color="transparent")
+            sr.pack(fill='x', padx=14, pady=(8, 4))
+            _rel_color = {'high': GREEN, 'medium': YELLOW, 'low': DIM}
+            for sig in signals[:5]:
+                rel_color = _rel_color.get(sig.get('reliability', 'low'), DIM)
+                sf = ctk.CTkFrame(sr, fg_color="#0F0F13",
+                                  border_width=1, border_color="#1E1E26", corner_radius=4)
+                sf.pack(side='left', padx=(0, 6), pady=2)
+                ctk.CTkLabel(sf, text=sig.get('signal', ''),
+                             font=ctk.CTkFont(size=9), text_color="#4A4858").pack(
+                    anchor='w', padx=10, pady=(6, 0))
+                ctk.CTkLabel(sf, text=sig.get('value', ''),
+                             font=ctk.CTkFont(size=13, weight="bold"),
+                             text_color=rel_color).pack(anchor='w', padx=10, pady=(0, 6))
+
+        # ── Recommendation cards ──────────────────────────────────────────────
+        _SEV_COLOR = {'critical': "#E84040", 'medium': "#F0A830", 'advisory': "#4A9EE8"}
+        _PRI_COLOR = {1: "#E84040", 2: "#F0A830", 3: "#4A9EE8"}
+
+        for rec in data.get('recommendations', []):
+            sev       = rec.get('severity', 'advisory')
+            sev_color = _SEV_COLOR.get(sev, "#8A8890")
+            pri       = rec.get('priority', 0)
+            pri_color = _PRI_COLOR.get(pri, "#8A8890")
+
+            card = ctk.CTkFrame(sc, fg_color="#14141A",
+                                border_color="#1E1E26", border_width=1, corner_radius=5)
+            card.pack(fill='x', padx=14, pady=(8, 0))
+
+            # ── Header row ────────────────────────────────────────────────────
+            header = ctk.CTkFrame(card, fg_color="transparent")
+            header.pack(fill='x', padx=14, pady=(12, 8))
+
+            # Priority circle
+            pnum = ctk.CTkLabel(header, text=str(pri),
+                                font=ctk.CTkFont(size=14, weight="bold"),
+                                text_color=pri_color, width=28, height=28,
+                                fg_color="#14141A", corner_radius=14)
+            pnum.pack(side='left', padx=(0, 10))
+
+            # Title group
+            title_group = ctk.CTkFrame(header, fg_color="transparent")
+            title_group.pack(side='left', fill='x', expand=True)
+            ctk.CTkLabel(title_group, text=rec.get('title', ''),
+                         font=ctk.CTkFont(size=16, weight="bold"),
+                         text_color="#F0EEE8").pack(anchor='w')
+            sub = rec.get('subtitle', '') or rec.get('parameter', '')
+            if sub:
+                ctk.CTkLabel(title_group, text=sub,
+                             font=ctk.CTkFont(size=11),
+                             text_color="#8A8890").pack(anchor='w')
+
+            # Severity badge
+            ctk.CTkLabel(header, text=sev.upper(),
+                         font=ctk.CTkFont(size=11, weight="bold"),
+                         text_color=sev_color,
+                         fg_color="#14141A", corner_radius=3).pack(side='right')
+
+            # ── Change block ──────────────────────────────────────────────────
+            frm = rec.get('from_value', '')
+            to  = rec.get('to_value', '')
+            if rec.get('parameter') or frm or to:
+                change = ctk.CTkFrame(card, fg_color="#0F0F13",
+                                      border_color="#1E1E26", border_width=1, corner_radius=4)
+                change.pack(fill='x', padx=14, pady=(0, 10))
+                row = ctk.CTkFrame(change, fg_color="transparent")
+                row.pack(padx=14, pady=10)
+                ctk.CTkLabel(row, text="PARAMETER",
+                             font=ctk.CTkFont(size=10), text_color="#4A4858").pack(side='left', padx=(0, 8))
+                ctk.CTkLabel(row, text=rec.get('parameter', ''),
+                             font=ctk.CTkFont(size=13), text_color="#F0EEE8").pack(side='left', padx=(0, 12))
+                if frm:
+                    ctk.CTkLabel(row, text=frm,
+                                 font=ctk.CTkFont(size=14, weight="bold"),
+                                 text_color="#E84040").pack(side='left')
+                    ctk.CTkLabel(row, text=" → ",
+                                 font=ctk.CTkFont(size=13),
+                                 text_color="#4A4858").pack(side='left')
+                if to:
+                    ctk.CTkLabel(row, text=to,
+                                 font=ctk.CTkFont(size=14, weight="bold"),
+                                 text_color="#2ECC8E").pack(side='left')
+
+            # ── Reason bullets ────────────────────────────────────────────────
+            for reason in rec.get('reasons', []):
+                r = ctk.CTkFrame(card, fg_color="transparent")
+                r.pack(fill='x', padx=14, pady=1)
+                ctk.CTkLabel(r, text="—",
+                             font=ctk.CTkFont(size=13), text_color="#E8611A",
+                             width=16).pack(side='left', anchor='n', pady=2)
+                ctk.CTkLabel(r, text=reason,
+                             font=ctk.CTkFont(size=13), text_color="#8A8890",
+                             wraplength=860, justify='left').pack(side='left', anchor='w', padx=6)
+
+            # ── Impact block ──────────────────────────────────────────────────
+            impact = rec.get('impact', {})
+            if impact.get('metric') or impact.get('value'):
+                ib = ctk.CTkFrame(card, fg_color="#0F0F13",
+                                  border_color="#1E1E26", border_width=1, corner_radius=4)
+                ib.pack(fill='x', padx=14, pady=(8, 0))
+                ib_row = ctk.CTkFrame(ib, fg_color="transparent")
+                ib_row.pack(fill='x', padx=12, pady=8)
+                ctk.CTkLabel(ib_row, text=impact.get('metric', 'Expected Impact'),
+                             font=ctk.CTkFont(size=10), text_color="#4A4858").pack(side='left')
+                ctk.CTkLabel(ib_row, text=impact.get('value', ''),
+                             font=ctk.CTkFont(size=13, weight="bold"),
+                             text_color="#2ECC8E").pack(side='right')
+
+            # ── Driver note ───────────────────────────────────────────────────
+            if rec.get('driver_note'):
+                note = ctk.CTkFrame(card, fg_color="#100D0A", corner_radius=0)
+                note.pack(fill='x', pady=(10, 0))
+                ctk.CTkLabel(note, text="DRIVER NOTE",
+                             font=ctk.CTkFont(size=10),
+                             text_color="#E8611A").pack(anchor='w', padx=14, pady=(8, 2))
+                ctk.CTkLabel(note, text=rec['driver_note'],
+                             font=ctk.CTkFont(size=13), text_color="#8A8890",
+                             wraplength=880, justify='left').pack(anchor='w', padx=14, pady=(0, 10))
+
+            # bottom spacer
+            ctk.CTkLabel(card, text="").pack(pady=2)
 
     def _get_evolution_summary(self):
         """Stream a session-vs-history evolution debrief from Steven."""
@@ -7794,6 +8210,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self._rebuild_lap_checks()
         self._stale_tabs = {"Dashboard","Issues","Driver","Sectors","Corners","Strategy"}
         self._update_fixed_badge()
+        self._update_ai_stats_row()
         self._refresh_active_tab()
 
     def _update_fixed_badge(self):

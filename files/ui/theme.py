@@ -153,3 +153,7 @@ class IssueCard(ctk.CTkFrame):
     def _toggle(self, _=None):
         self._open = not self._open
         (self._d.pack(fill='x') if self._open else self._d.pack_forget())
+
+
+# ── Design System re-exports ───────────────────────────────────────────────────
+from ui.ds_theme import COLORS, FONTS, RADIUS, SPACING, SEVERITY, TABS, AI_SUBTABS

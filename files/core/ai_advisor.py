@@ -6,9 +6,33 @@ Supports both blocking and streaming modes.
 
 import time
 import threading
+import json
+import re
 from typing import Generator
 from core.analysis_engine import AnalysisReport, Severity, format_laptime  # type: ignore[import-unresolved]
 from core import units
+from core.knowledge_base import COACHING_KNOWLEDGE_BASE
+
+
+def parse_ai_response(text: str) -> dict | None:
+    """
+    Extract and parse the JSON object from a Claude response.
+    Returns the parsed dict on success, None if parsing fails.
+    Handles markdown code fences and leading/trailing prose.
+    """
+    if not text:
+        return None
+    # Strip markdown code fences if present
+    cleaned = re.sub(r'```(?:json)?\s*', '', text).strip()
+    # Find the outermost { ... } block
+    start = cleaned.find('{')
+    end   = cleaned.rfind('}')
+    if start == -1 or end == -1 or end <= start:
+        return None
+    try:
+        return json.loads(cleaned[start:end + 1])
+    except json.JSONDecodeError:
+        return None
 
 # ── Rate limiter ──────────────────────────────────────────────────────────
 _MIN_INTERVAL_S = 10  # minimum seconds between API calls
@@ -455,7 +479,7 @@ Any recommendation that violates these bounds will cause the driver to FAIL tech
     except Exception:
         pass
 
-    return f"""You are an expert iRacing setup engineer. Analyze this telemetry session and provide specific, actionable setup recommendations.
+    return f"""Analyze this iRacing telemetry session and return JSON recommendations.
 
 Car: {car_name}
 Track: {track_name}
@@ -470,10 +494,7 @@ Tire Temperatures:
 {tire_text if tire_text else "No tire data available."}
 {setup_text}{sector_text}{style_text}{stint_text}{fuel_text}{fuel_sector_text}{grip_text}{phase_text}{susp_text}{engine_text}{vert_text}{grip_text_extra}{slip_text}{abs_text}{ride_h_text}{damper_text}{body_text}{brake_press_text}
 {corner_text}{historical_section}{tech_section}
-For EACH corner with issues, provide a specific setup change recommendation that addresses the problem at that corner. Reference corners by name (e.g. "Eau Rouge entry" or "T3 Andretti Hairpin") where names are available.
-
-Provide 3-5 specific setup changes with expected impact, prioritizing the worst corners. Reference actual current values when available. Distinguish between driver technique issues (brake point, throttle timing) and car setup issues (balance, springs, ARB, aero). Be concise and practical.
-At the end of your response, add a one-line tech inspection summary: either "✅ All recommended values are within legal limits." or list any parameters that could not be confirmed within bounds."""
+Return 3–5 prioritised recommendations. Use from_value/to_value for concrete setup changes. Distinguish driver technique from car setup. All values must be within tech inspection bounds. Respond with valid JSON only."""
 
 
 _MODEL_HAIKU  = "claude-haiku-4-5-20251001"
@@ -602,6 +623,7 @@ Keep your response under 250 words. Use short paragraphs, no bullet soup. Speak 
     try:
         chunks = _stream_with_retry(
             client, model=model, max_tokens=400,
+            system=COACHING_KNOWLEDGE_BASE,
             messages=[{"role": "user", "content": prompt}],
         )
         for text in chunks:
@@ -645,6 +667,7 @@ def get_ai_recommendations_sync(report: AnalysisReport, car_name: str,
         message = client.messages.create(
             model=_MODEL_SONNET,
             max_tokens=1024,
+            system=COACHING_KNOWLEDGE_BASE,
             messages=[{"role": "user", "content": prompt}]
         )
         return message.content[0].text  # type: ignore[union-attr]
@@ -693,6 +716,7 @@ def get_ai_recommendations_stream(report: AnalysisReport, car_name: str,
 
         chunks = _stream_with_retry(
             client, model=_MODEL_SONNET, max_tokens=1024,
+            system=COACHING_KNOWLEDGE_BASE,
             messages=[{"role": "user", "content": prompt}],
         )
         for text in chunks:
