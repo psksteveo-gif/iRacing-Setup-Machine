@@ -45,7 +45,7 @@ class StintTabMixin:
         ax.bar(x + 0.2, hot, 0.35, label='Actual Hot', color=RED, alpha=0.85)
         ax.set_xticks(x); ax.set_xticklabels(corners, color=DIM)
         ax.set_ylabel("PSI", color=DIM, fontsize=8)
-        ax.legend(fontsize=8, facecolor='#1c1228', edgecolor='#2a1a38', labelcolor=TEXT)
+        ax.legend(fontsize=8, facecolor='#14141A', edgecolor='#1A1A22', labelcolor=TEXT)
         c.fig.tight_layout(pad=0.8); c.draw()
         # Temp progression
         c2 = self._stdc; c2.clear(); ax2 = c2.std_ax("Tire Temp Progression by Lap", xlabel="Lap")
@@ -59,7 +59,7 @@ class StintTabMixin:
             ax2b = ax2.twinx()
             ax2b.plot(range(1, len(r.lap_times) + 1), r.lap_times, '--', color='white', alpha=0.4, lw=1, label='Lap time')
             ax2b.set_ylabel("Lap time (s)", color=DIM, fontsize=8); ax2b.tick_params(colors=DIM)
-        ax2.legend(fontsize=8, facecolor='#1c1228', edgecolor='#2a1a38', labelcolor=TEXT, loc='upper left')
+        ax2.legend(fontsize=8, facecolor='#14141A', edgecolor='#1A1A22', labelcolor=TEXT, loc='upper left')
         c2.fig.tight_layout(pad=0.8); c2.draw()
         # Detail
         for w in self._stdf.winfo_children(): w.destroy()
@@ -105,7 +105,7 @@ class StintTabMixin:
         if r.findings:
             sec_lbl(self._stdf, "📋 Pressure Findings")
             for fn in r.findings:
-                ff = ctk.CTkFrame(self._stdf, fg_color="#1c1228", corner_radius=6); ff.pack(fill='x', pady=2)
+                ff = ctk.CTkFrame(self._stdf, fg_color="#14141A", corner_radius=6); ff.pack(fill='x', pady=2)
                 lbl(ff, f"•  {fn}", 11, color=TEXT, wraplength=820, justify='left', anchor='w').pack(padx=12, pady=6)
         if r.deg_rate > 0:
             sec_lbl(self._stdf, "📉 Degradation")
@@ -144,7 +144,7 @@ class StintTabMixin:
             ax.axvline(pred.grip_cliff_lap, color=RED, ls='--', lw=1.2,
                        alpha=0.7, label=f'Cliff (lap {pred.grip_cliff_lap})')
         ax.set_ylabel("Lap time (s)", color=DIM, fontsize=8)
-        ax.legend(fontsize=7, facecolor='#1c1228', edgecolor='#2a1a38', labelcolor=TEXT, loc='upper left')
+        ax.legend(fontsize=7, facecolor='#14141A', edgecolor='#1A1A22', labelcolor=TEXT, loc='upper left')
         c.fig.tight_layout(pad=0.8); c.draw()
         # Wear stats
         sec_lbl(self._stdf, "🔮 Tire Wear Prediction")
@@ -159,7 +159,7 @@ class StintTabMixin:
         stat_blk(wr, "Model", f"{pred.fit_type} (R²={pred.r_squared:.2f})", DIM)
         if pred.findings:
             for fn in pred.findings:
-                ff = ctk.CTkFrame(self._stdf, fg_color="#1c1228", corner_radius=6); ff.pack(fill='x', pady=2)
+                ff = ctk.CTkFrame(self._stdf, fg_color="#14141A", corner_radius=6); ff.pack(fill='x', pady=2)
                 lbl(ff, f"•  {fn}", 11, color=TEXT, wraplength=820,
                     justify='left', anchor='w').pack(padx=12, pady=6)
 
@@ -221,7 +221,7 @@ class StintTabMixin:
         legend_elements = [Patch(facecolor='grey', hatch=h, label=z, alpha=0.8)
                            for z, h in zip(zone_labels, ['', '///', 'xxx'])]
         ax.legend(handles=legend_elements, fontsize=9,
-                  facecolor='#1c1228', edgecolor='#2a1a38', labelcolor=TEXT)
+                  facecolor='#14141A', edgecolor='#1A1A22', labelcolor=TEXT)
         c.fig.tight_layout(pad=0.8); c.draw()
 
     def _draw_suspension(self):
@@ -268,7 +268,7 @@ class StintTabMixin:
                     ax.plot(range(1, len(vals) + 1), vals, 'o-', color=col,
                             lw=1.5, label=corner, alpha=0.9)
             ax.set_ylabel("mm/s", color=DIM, fontsize=9)
-            ax.legend(fontsize=9, facecolor='#1c1228', edgecolor='#2a1a38', labelcolor=TEXT)
+            ax.legend(fontsize=9, facecolor='#14141A', edgecolor='#1A1A22', labelcolor=TEXT)
             c.fig.tight_layout(pad=0.8); c.draw()
 
         # ── Ride height chart ────────────────────────────────────────────────
@@ -299,7 +299,7 @@ class StintTabMixin:
                     ax2.plot(range(1, len(vals) + 1), vals, 's-', color=col,
                              lw=1.5, label=corner, alpha=0.9)
             ax2.set_ylabel("mm", color=DIM, fontsize=9)
-            ax2.legend(fontsize=9, facecolor='#1c1228', edgecolor='#2a1a38', labelcolor=TEXT)
+            ax2.legend(fontsize=9, facecolor='#14141A', edgecolor='#1A1A22', labelcolor=TEXT)
             c2.fig.tight_layout(pad=0.8); c2.draw()
 
     def _draw_engine_health(self):
@@ -354,9 +354,9 @@ class StintTabMixin:
             if ax2:
                 h2, l2 = ax2.get_legend_handles_labels()
                 ax.legend(h1 + h2, l1 + l2, fontsize=9,
-                          facecolor='#1c1228', edgecolor='#2a1a38', labelcolor=TEXT)
+                          facecolor='#14141A', edgecolor='#1A1A22', labelcolor=TEXT)
             else:
-                ax.legend(fontsize=9, facecolor='#1c1228', edgecolor='#2a1a38', labelcolor=TEXT)
+                ax.legend(fontsize=9, facecolor='#14141A', edgecolor='#1A1A22', labelcolor=TEXT)
         c.fig.tight_layout(pad=0.8); c.draw()
 
     def _draw_stint_comparison(self, parent):
@@ -397,7 +397,7 @@ class StintTabMixin:
             ax.plot(range(1, len(times) + 1), times, 'o-', color=col, lw=1.5,
                     label=f"Stint {si + 1}", alpha=0.85)
         ax.set_ylabel("seconds", color=DIM, fontsize=8)
-        ax.legend(fontsize=8, facecolor='#1c1228', edgecolor='#2a1a38', labelcolor=TEXT)
+        ax.legend(fontsize=8, facecolor='#14141A', edgecolor='#1A1A22', labelcolor=TEXT)
         ch.fig.tight_layout(pad=0.8); ch.draw()
 
     def _u_fuel(self):
@@ -418,7 +418,7 @@ class StintTabMixin:
         self._fuel_laps_var = ctk.StringVar(value="30")
         ctk.CTkEntry(row, textvariable=self._fuel_laps_var, width=70, fg_color=CARD).pack(side='left', padx=8)
         ctk.CTkButton(row, text="Calculate Strategy", height=28, fg_color=ACCENT,
-            hover_color="#a03010", command=self._calc_fuel_strategy).pack(side='left', padx=8)
+            hover_color="#C04A10", command=self._calc_fuel_strategy).pack(side='left', padx=8)
         self._fuel_result = ctk.CTkFrame(pf, fg_color="transparent")
         self._fuel_result.pack(fill='x', padx=12, pady=(0, 8))
 
@@ -470,7 +470,7 @@ class StintTabMixin:
             ax.plot(lps, r.fuel_corrected, 's--', color=GREEN, label='Fuel Corrected', lw=1.5, alpha=0.85)
         ax.axhline(r.actual_best, color=RED, lw=1, ls=':', alpha=0.7, label=f'Best {format_laptime(r.actual_best)}')
         ax.set_ylabel("seconds", color=DIM, fontsize=8)
-        ax.legend(fontsize=8, facecolor='#1c1228', edgecolor='#2a1a38', labelcolor=TEXT)
+        ax.legend(fontsize=8, facecolor='#14141A', edgecolor='#1A1A22', labelcolor=TEXT)
         c.fig.tight_layout(pad=0.8); c.draw()
         for w in self._ltd.winfo_children(): w.destroy()
         sr = ctk.CTkFrame(self._ltd, fg_color=PANEL, corner_radius=8); sr.pack(fill='x', pady=4)
@@ -486,7 +486,7 @@ class StintTabMixin:
         rpt_mask = self.cur_rpt.valid_lap_mask if self.cur_rpt and self.cur_rpt.valid_lap_mask else [True] * len(r.lap_times)
         for i, (raw, fcc) in enumerate(zip(r.lap_times, fc)):
             is_outlier = i < len(rpt_mask) and not rpt_mask[i]
-            bg = "#3a2020" if is_outlier else ("#1c1228" if i % 2 == 0 else PANEL)
+            bg = "#3a2020" if is_outlier else ("#14141A" if i % 2 == 0 else PANEL)
             rw = ctk.CTkFrame(self._ltd, fg_color=bg, corner_radius=4); rw.pack(fill='x', pady=1)
             delta = raw - r.actual_best
             lbl(rw, f"Lap {i + 1}", 11, color=DIM).pack(side='left', padx=12, pady=4)

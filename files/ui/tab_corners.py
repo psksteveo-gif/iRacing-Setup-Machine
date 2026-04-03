@@ -31,7 +31,7 @@ class CornersTabMixin:
         lbl(self._cor_ai_hdr, "🤖  AI Corner-Specific Setup Suggestions", 12, bold=True).pack(side='left', padx=12)
         self._cor_ai_status = lbl(self._cor_ai_hdr, "", 10, color=DIM); self._cor_ai_status.pack(side='right', padx=8)
         self._cor_ai_btn = ctk.CTkButton(self._cor_ai_hdr, text="Get Corner Suggestions", width=180, height=28,
-            fg_color=ACCENT, hover_color="#a03010", command=self._get_corner_ai)
+            fg_color=ACCENT, hover_color="#C04A10", command=self._get_corner_ai)
         self._cor_ai_btn.pack(side='right', padx=8)
         self._cor_ai_text = ctk.CTkTextbox(self._cor_sc, fg_color=PANEL, text_color=TEXT, height=300,
             font=ctk.CTkFont(family="Helvetica", size=14), wrap='word')
@@ -151,12 +151,12 @@ class CornersTabMixin:
         for cd in report.corners:
             is_worst = cd.corner_num - 1 == report.worst_corner
             border_col = RED if is_worst else BLUE
-            cf = ctk.CTkFrame(self._cor_cards, fg_color="#0E0A18",
+            cf = ctk.CTkFrame(self._cor_cards, fg_color="#0F0F13",
                               corner_radius=8, border_width=1, border_color=border_col)
             cf.pack(fill='x', pady=5)
 
             # ── Header ────────────────────────────────────────────────────
-            hdr = ctk.CTkFrame(cf, fg_color="#140E22", corner_radius=0)
+            hdr = ctk.CTkFrame(cf, fg_color="#14141A", corner_radius=0)
             hdr.pack(fill='x', padx=0, pady=0)
             title = cd.corner_name if cd.corner_name else f"Turn {cd.corner_num}"
             badge = f"  WORST  " if is_worst else (f"  +{cd.time_delta:.3f}s  " if cd.time_delta > 0.001 else "  BEST  ")
@@ -218,12 +218,12 @@ class CornersTabMixin:
             cmp_lap = sorted_laps[1] if len(sorted_laps) > 1 else 0
             delta = LapDeltaAnalyzer().analyze(d, best_lap, cmp_lap)
             if delta and len(delta.segments) > 0:
-                dsf = ctk.CTkFrame(self._cor_cards, fg_color="#1c1228", corner_radius=8)
+                dsf = ctk.CTkFrame(self._cor_cards, fg_color="#14141A", corner_radius=8)
                 dsf.pack(fill='x', pady=(8, 4))
                 lbl(dsf, f"📊 Lap Delta — Lap {cmp_lap + 1} vs Best (Lap {best_lap + 1})",
                     12, bold=True, color=BLUE).pack(anchor='w', padx=12, pady=(8, 4))
                 for seg in delta.segments:
-                    sf = ctk.CTkFrame(dsf, fg_color="#100c18", corner_radius=4)
+                    sf = ctk.CTkFrame(dsf, fg_color="#0F0F13", corner_radius=4)
                     sf.pack(fill='x', padx=12, pady=2)
                     lbl(sf, seg['note'], 10, color=TEXT, wraplength=800, justify='left', anchor='w').pack(
                         fill='x', padx=8, pady=4)

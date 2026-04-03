@@ -730,6 +730,48 @@ def get_ai_recommendations_stream(report: AnalysisReport, car_name: str,
                + _rule_based_recommendations(report, car_name, track_name))
 
 
+
+def generate_setup_brief_stream(
+        setup_result,
+        api_key: str,
+        model: str = _MODEL_SONNET,
+):
+    """
+    Stream the driver-facing setup brief for a SetupResult produced by
+    core.setup_generator.generate_setup().
+    """
+    if not hasattr(setup_result, 'tech_pass'):
+        yield 'Invalid setup result.'
+        return
+    if not setup_result.tech_pass:
+        yield ('This setup did not pass tech inspection. Do not write to file.')
+        return
+    if not api_key or not api_key.strip():
+        yield 'Set your Anthropic API key in Settings to generate the driver brief.'
+        return
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key, timeout=60.0)
+    except ImportError:
+        yield 'Install anthropic package.'
+        return
+    prompt = setup_result.driver_brief
+    try:
+        chunks = _stream_with_retry(
+            client, model=model, max_tokens=400,
+            system=(
+                'You are a professional race engineer writing concise, data-backed '
+                'driver briefs. Always reference specific numbers from the data. '
+                'Never use markdown formatting, bullet points, or headers. '
+                'Write in plain prose paragraphs.'
+            ),
+            messages=[{'role': 'user', 'content': prompt}],
+        )
+        for text in chunks:
+            yield text
+    except Exception as e:
+        yield f'Brief generation failed: {e}'
+
 def generate_session_note_stream(
         report,
         car_name: str,

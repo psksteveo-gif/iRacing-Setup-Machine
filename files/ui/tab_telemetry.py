@@ -226,7 +226,7 @@ class TelemetryTabMixin:
 
         self._pad_yaxis(ax, pct=0.10)
         self._draw_corner_markers([ax], d.track_name)
-        ax.legend(loc='upper right', fontsize=8, facecolor='#1c1228', edgecolor='#2a1a38', labelcolor=TEXT)
+        ax.legend(loc='upper right', fontsize=8, facecolor='#14141A', edgecolor='#1A1A22', labelcolor=TEXT)
         c.fig.tight_layout(pad=1.0)
         # Attach interactive cursor + mini inset on the best lap
         if ld is not None and d.lap_times and len(d.lap_boundaries) > 1:
@@ -283,7 +283,7 @@ class TelemetryTabMixin:
                 if brk is not None:
                     ax.plot(x[::step], -brk[s:e][::step], color=col, lw=0.8, alpha=0.5, ls='--')
             ax.set_ylabel("Throttle / −Brake", color=DIM, fontsize=9)
-            ax.legend(fontsize=7, facecolor='#1c1228', edgecolor='#2a1a38', labelcolor=TEXT,
+            ax.legend(fontsize=7, facecolor='#14141A', edgecolor='#1A1A22', labelcolor=TEXT,
                       ncol=min(len(laps), 5), loc='upper right')
             self._draw_corner_markers([ax], d.track_name)
             c.fig.tight_layout(pad=1.0)
@@ -318,7 +318,7 @@ class TelemetryTabMixin:
                 label = f"Lap {li+1}  {format_laptime(d.lap_times[li])}  ({dstr})"
                 ax.plot(x[::step], arr[s:e][::step], color=col, lw=1.3, alpha=0.85, label=label)
             ax.set_ylabel(ylabel, color=DIM, fontsize=9)
-            ax.legend(fontsize=7, facecolor='#1c1228', edgecolor='#2a1a38', labelcolor=TEXT,
+            ax.legend(fontsize=7, facecolor='#14141A', edgecolor='#1A1A22', labelcolor=TEXT,
                       ncol=min(len(laps), 5), loc='upper right')
             self._draw_corner_markers([ax], d.track_name)
             c.fig.tight_layout(pad=1.0)
@@ -346,7 +346,7 @@ class TelemetryTabMixin:
         ax = c.std_ax("Reference Lap Delta (vs Best Lap)", xlabel="Track %")
         ax.set_ylabel("Time Delta (s)", color=DIM, fontsize=9)
         ax.axhline(0, color=GREEN, lw=0.8, alpha=0.6, ls='--')
-        palette = ['#c85a17', '#9d4edd', '#f39c12', '#9b59b6',
+        palette = ['#c85a17', '#4A9EE8', '#f39c12', '#9b59b6',
                    '#e74c3c', '#1abc9c', '#3498db', '#d35400', '#8e44ad']
         analyzer = LapDeltaAnalyzer()
         for idx, li in enumerate(laps):
@@ -360,7 +360,7 @@ class TelemetryTabMixin:
                             where=result.delta_s < 0, alpha=0.15, color=GREEN)
             ax.fill_between(result.dist_pct * 100, result.delta_s, 0,
                             where=result.delta_s > 0, alpha=0.15, color=RED)
-        ax.legend(fontsize=7, facecolor='#1c1228', edgecolor='#2a1a38',
+        ax.legend(fontsize=7, facecolor='#14141A', edgecolor='#1A1A22',
                   labelcolor=TEXT, loc='upper right')
         self._draw_corner_markers([ax], d.track_name)
         c.fig.tight_layout(pad=1.0)
@@ -383,11 +383,11 @@ class TelemetryTabMixin:
         speed = d.get_channel('Speed')
         if lat is None or lon is None: return
         c = self._tc; c.clear()
-        ax = c.fig.add_subplot(111, facecolor='#100c18', aspect='equal')
+        ax = c.fig.add_subplot(111, facecolor='#0F0F13', aspect='equal')
         ax.set_title("G-G Diagram (Friction Circle)", color=TEXT, fontsize=11, pad=6)
         ax.tick_params(colors=DIM, labelsize=8)
-        for sp in ax.spines.values(): sp.set_color('#2a1a38')
-        ax.grid(True, alpha=0.15, color='#3a2850')
+        for sp in ax.spines.values(): sp.set_color('#1A1A22')
+        ax.grid(True, alpha=0.15, color='#1C1C24')
         step = max(1, len(lat) // 4000)
         lx = lat[::step]; ly = lon[::step]
         if speed is not None:
@@ -402,10 +402,10 @@ class TelemetryTabMixin:
         if max_g > 0.1:
             theta = np.linspace(0, 2 * np.pi, 100)
             ax.plot(max_g * np.cos(theta), max_g * np.sin(theta), '--', color=RED, lw=1, alpha=0.6, label=f'Max {max_g:.1f} G')
-            ax.legend(fontsize=8, facecolor='#1c1228', edgecolor='#2a1a38', labelcolor=TEXT)
+            ax.legend(fontsize=8, facecolor='#14141A', edgecolor='#1A1A22', labelcolor=TEXT)
         ax.set_xlabel("Lateral G", color=DIM, fontsize=9)
         ax.set_ylabel("Longitudinal G", color=DIM, fontsize=9)
-        ax.axhline(0, color='#3a2850', lw=0.5); ax.axvline(0, color='#3a2850', lw=0.5)
+        ax.axhline(0, color='#1C1C24', lw=0.5); ax.axvline(0, color='#1C1C24', lw=0.5)
         c.fig.tight_layout(pad=1.0); c.draw()
 
     def _draw_racing_line(self):
@@ -416,10 +416,10 @@ class TelemetryTabMixin:
         line = reconstruct_racing_line(d, lap_idx)
         if line is None: return
         c = self._tc; c.clear()
-        ax = c.fig.add_subplot(111, facecolor='#100c18', aspect='equal')
+        ax = c.fig.add_subplot(111, facecolor='#0F0F13', aspect='equal')
         ax.set_title(f"Racing Line — Lap {lap_idx + 1} (Speed)", color=TEXT, fontsize=11, pad=6)
         ax.tick_params(colors=DIM, labelsize=8)
-        for sp in ax.spines.values(): sp.set_color('#2a1a38')
+        for sp in ax.spines.values(): sp.set_color('#1A1A22')
         colors = speed_colormap(line.speed)
         step = max(1, len(line.x) // 3000)
         sc = ax.scatter(line.x[::step], line.y[::step], c=line.speed[::step] * units.speed_factor(),
@@ -442,10 +442,10 @@ class TelemetryTabMixin:
         rows = (n + cols - 1) // cols
         for i in range(n):
             cg = report.corners[i]
-            ax = c.fig.add_subplot(rows, cols, i + 1, facecolor='#100c18', aspect='equal')
+            ax = c.fig.add_subplot(rows, cols, i + 1, facecolor='#0F0F13', aspect='equal')
             ax.set_title(f"Corner {cg.corner_num}", color=TEXT, fontsize=9, pad=3)
             ax.tick_params(colors=DIM, labelsize=6)
-            for sp in ax.spines.values(): sp.set_color('#2a1a38')
+            for sp in ax.spines.values(): sp.set_color('#1A1A22')
             step = max(1, len(cg.lat_g) // 500)
             ax.scatter(cg.lat_g[::step], cg.long_g[::step], c=cg.speed[::step] * units.speed_factor(),
                        cmap='plasma', s=2, alpha=0.6, rasterized=True)
@@ -453,7 +453,7 @@ class TelemetryTabMixin:
             if max_g > 0.1:
                 theta = np.linspace(0, 2 * np.pi, 60)
                 ax.plot(max_g * np.cos(theta), max_g * np.sin(theta), '--', color=RED, lw=0.8, alpha=0.5)
-            ax.axhline(0, color='#3a2850', lw=0.3); ax.axvline(0, color='#3a2850', lw=0.3)
+            ax.axhline(0, color='#1C1C24', lw=0.3); ax.axvline(0, color='#1C1C24', lw=0.3)
             ax.set_xlabel("Lat G", color=DIM, fontsize=7)
             ax.set_ylabel("Long G", color=DIM, fontsize=7)
         c.fig.tight_layout(pad=0.5); c.draw()
@@ -497,10 +497,10 @@ class TelemetryTabMixin:
                 y = np.sin(pct * 2 * np.pi)
         if x is None or y is None: return
         c = self._tc; c.clear()
-        ax = c.fig.add_subplot(111, facecolor='#100c18', aspect='equal')
+        ax = c.fig.add_subplot(111, facecolor='#0F0F13', aspect='equal')
         ax.set_title(sel, color=TEXT, fontsize=11, pad=6)
         ax.tick_params(colors=DIM, labelsize=7)
-        for sp in ax.spines.values(): sp.set_color('#2a1a38')
+        for sp in ax.spines.values(): sp.set_color('#1A1A22')
         ax.set_xticks([]); ax.set_yticks([])
         if track_estimated:
             ax.text(0.5, 0.02, "\u26a0 Estimated track shape (no GPS data)",
@@ -601,8 +601,8 @@ class TelemetryTabMixin:
             Line2D([0], [0], marker='o', color='w', markerfacecolor='#f39c12',
                    markersize=8, label=f'Coast {coast_pct:.0f}%'),
         ]
-        ax.legend(handles=handles, fontsize=7, facecolor='#1c1228',
-                  edgecolor='#2a1a38', labelcolor=TEXT, loc='upper right')
+        ax.legend(handles=handles, fontsize=7, facecolor='#14141A',
+                  edgecolor='#1A1A22', labelcolor=TEXT, loc='upper right')
         c.fig.tight_layout(pad=0.5); c.draw()
 
     def _toggle_replay(self):
@@ -691,8 +691,8 @@ class TelemetryTabMixin:
                 plotted_labels.add(label)
 
         if legend_handles:
-            ax.legend(handles=legend_handles, fontsize=7, facecolor='#1c1228',
-                      edgecolor='#2a1a38', labelcolor=TEXT, loc='upper right')
+            ax.legend(handles=legend_handles, fontsize=7, facecolor='#14141A',
+                      edgecolor='#1A1A22', labelcolor=TEXT, loc='upper right')
 
         total = sum(len(v) for v in groups.values())
         ax.set_title(f"Track Map — Events Heatmap  ({total} events)", color=TEXT, fontsize=11, pad=6)
@@ -735,7 +735,7 @@ class TelemetryTabMixin:
                         label='Faster than ref')
         ax.fill_between(dist_pct, delta, 0, where=delta > 0, alpha=0.18, color=RED,
                         label='Slower than ref')
-        ax.legend(fontsize=7, facecolor='#1c1228', edgecolor='#2a1a38',
+        ax.legend(fontsize=7, facecolor='#14141A', edgecolor='#1A1A22',
                   labelcolor=TEXT, loc='upper right')
         self._draw_corner_markers([ax], d.track_name)
         c.fig.tight_layout(pad=1.0)
@@ -788,13 +788,13 @@ class TelemetryTabMixin:
         axes = []
         for pi, (ch_name, arr, ylabel) in enumerate(channels):
             share = axes[0] if pi > 0 else None
-            kwargs = dict(facecolor='#100c18', sharex=share) if share else dict(facecolor='#100c18')
+            kwargs = dict(facecolor='#0F0F13', sharex=share) if share else dict(facecolor='#0F0F13')
             ax = c.fig.add_subplot(n, 1, pi + 1, **kwargs)
             axes.append(ax)
             ax.set_ylabel(ylabel, color=DIM, fontsize=8)
             ax.tick_params(colors=DIM, labelsize=7)
-            for sp in ax.spines.values(): sp.set_color('#2a1a38')
-            ax.grid(True, alpha=0.08, color='#3a2850')
+            for sp in ax.spines.values(): sp.set_color('#1A1A22')
+            ax.grid(True, alpha=0.08, color='#1C1C24')
             if pi < n - 1:
                 import matplotlib.pyplot as _plt
                 _plt.setp(ax.get_xticklabels(), visible=False)
@@ -813,7 +813,7 @@ class TelemetryTabMixin:
             if pi == 0:
                 ax.set_title("Multi-Lap Overlay — Speed + Throttle + Brake  "
                              "(green = fast, red = slow)", color=TEXT, fontsize=10, pad=4)
-                ax.legend(fontsize=6, facecolor='#1c1228', edgecolor='#2a1a38',
+                ax.legend(fontsize=6, facecolor='#14141A', edgecolor='#1A1A22',
                           labelcolor=TEXT, ncol=min(len(valid_laps), 8), loc='upper right')
 
         axes[-1].set_xlabel("Track %", color=DIM, fontsize=8)
@@ -898,7 +898,7 @@ class TelemetryTabMixin:
         iax.tick_params(left=False, bottom=False,
                         labelleft=False, labelbottom=False)
         for sp in iax.spines.values():
-            sp.set_color('#2a1a38')
+            sp.set_color('#1A1A22')
         cols = speed_colormap(rl.speed)
         for j in range(len(rl.x) - 1):
             iax.plot(rl.x[j:j+2], rl.y[j:j+2],
@@ -951,7 +951,7 @@ class TelemetryTabMixin:
         axes = []
         for i, (ch, col, ylabel, scale) in enumerate(panels):
             share = axes[0] if i > 0 else None
-            kw = dict(facecolor='#100c18', sharex=share) if share else dict(facecolor='#100c18')
+            kw = dict(facecolor='#0F0F13', sharex=share) if share else dict(facecolor='#0F0F13')
             ax = c.fig.add_subplot(n_rows, 1, i + 1, **kw)
             axes.append(ax)
 
@@ -974,13 +974,13 @@ class TelemetryTabMixin:
             ax.set_ylabel(ylabel, color=DIM, fontsize=8)
             ax.tick_params(colors=DIM, labelsize=7)
             for sp in ax.spines.values():
-                sp.set_color('#2a1a38')
-            ax.grid(True, alpha=0.08, color='#3a2850')
+                sp.set_color('#1A1A22')
+            ax.grid(True, alpha=0.08, color='#1C1C24')
             # only show x ticks on the last row (delta panel or brake panel)
             if i < n_rows - 1:
                 _plt.setp(ax.get_xticklabels(), visible=False)
             if multi and i == 0:
-                ax.legend(fontsize=6, facecolor='#1c1228', edgecolor='#2a1a38',
+                ax.legend(fontsize=6, facecolor='#14141A', edgecolor='#1A1A22',
                           labelcolor=TEXT, ncol=min(len(laps), 6), loc='upper right')
             # y-axis padding (#8)
             _min_span = (20.0 * units.speed_factor()) if ch == 'Speed' else 0.5
@@ -1011,7 +1011,7 @@ class TelemetryTabMixin:
         delta_ax = None
         if show_delta:
             delta_ax = c.fig.add_subplot(n_rows, 1, n_rows, sharex=axes[0],
-                                         facecolor='#100c18')
+                                         facecolor='#0F0F13')
             axes.append(delta_ax)
             _la = LapDeltaAnalyzer()
             non_best = [li for li in laps if li != best_li]
@@ -1034,10 +1034,10 @@ class TelemetryTabMixin:
             delta_ax.set_ylabel('Δ (s)', color=DIM, fontsize=8)
             delta_ax.tick_params(colors=DIM, labelsize=7)
             for sp in delta_ax.spines.values():
-                sp.set_color('#2a1a38')
-            delta_ax.grid(True, alpha=0.08, color='#3a2850')
+                sp.set_color('#1A1A22')
+            delta_ax.grid(True, alpha=0.08, color='#1C1C24')
             if non_best:
-                delta_ax.legend(fontsize=6, facecolor='#1c1228', edgecolor='#2a1a38',
+                delta_ax.legend(fontsize=6, facecolor='#14141A', edgecolor='#1A1A22',
                                 labelcolor=TEXT, loc='upper right',
                                 ncol=min(len(non_best), 4))
             self._pad_yaxis(delta_ax, pct=0.15, min_span=0.1)

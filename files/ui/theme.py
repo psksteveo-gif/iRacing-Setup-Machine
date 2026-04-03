@@ -10,18 +10,18 @@ import matplotlib.pyplot as plt
 from core.analysis_engine import Severity
 
 # ── Theme Constants ───────────────────────────────────────────────────────────
-DARK   = "#0A0A0A"   # deep black background
-PANEL  = "#0E0A18"   # very dark purple-black panels
-CARD   = "#140E22"   # dark purple-black cards
-ACCENT = "#C85A17"   # burnt orange — primary buttons, key numbers, alerts
-BLUE   = "#9D4EDD"   # vibrant medium purple — headers, borders, icons
-TEXT   = "#EDE8FF"   # pale lavender off-white — main readable text
-DIM    = "#6B5C80"   # muted purple — secondary / hint text
-GREEN  = "#2ecc71"
-YELLOW = "#f39c12"
-RED    = "#e74c3c"
-PURPLE = "#9D4EDD"
-CARD_BORDER = "#5B2D8E"   # vibrant purple for card borders / drop-shadow effect
+DARK   = "#08080A"   # deep black background
+PANEL  = "#0F0F13"   # very dark purple-black panels
+CARD   = "#14141A"   # dark purple-black cards
+ACCENT = "#E8611A"   # burnt orange — primary buttons, key numbers, alerts
+BLUE   = "#4A9EE8"   # vibrant medium purple — headers, borders, icons
+TEXT   = "#F0EEE8"   # pale lavender off-white — main readable text
+DIM    = "#8A8890"   # muted purple — secondary / hint text
+GREEN  = "#2ECC8E"
+YELLOW = "#F0A830"
+RED    = "#E84040"
+PURPLE = "#9B6EE8"
+CARD_BORDER = "#252530"   # vibrant purple for card borders / drop-shadow effect
 SEV_COLOR = {Severity.CRITICAL: RED, Severity.WARNING: YELLOW, Severity.INFO: BLUE}
 
 # ── Helper Functions ──────────────────────────────────────────────────────────
@@ -82,9 +82,9 @@ class _Tooltip:
         tw = _tk.Toplevel(self.widget)
         tw.wm_overrideredirect(True)
         tw.wm_attributes("-topmost", True)
-        tw.configure(bg="#2a1a38")
+        tw.configure(bg="#14141A")
         _tk.Label(tw, text=self.text, font=("Segoe UI", 9),
-                  fg=TEXT, bg="#2a1a38", padx=8, pady=5,
+                  fg=TEXT, bg="#14141A", padx=8, pady=5,
                   wraplength=320, justify="left").pack()
         tw.update_idletasks()
         tw_w = tw.winfo_reqwidth()
@@ -112,7 +112,7 @@ class _Tooltip:
 class EmbedChart(ctk.CTkFrame):
     def __init__(self, parent, figsize=(9, 3), **kw):
         super().__init__(parent, fg_color=PANEL, **kw)
-        self.fig = Figure(figsize=figsize, facecolor=PANEL)
+        self.fig = Figure(figsize=figsize, facecolor='#0F0F13')
         self.canvas = FigureCanvasTkAgg(self.fig, master=self)
         self.canvas.get_tk_widget().pack(fill='both', expand=True)
     def clear(self): self.fig.clear()
@@ -121,16 +121,16 @@ class EmbedChart(ctk.CTkFrame):
         plt.close(self.fig)
         super().destroy()
     def std_ax(self, title="", xlabel="Track %"):
-        ax = self.fig.add_subplot(111, facecolor='#100c18')
+        ax = self.fig.add_subplot(111, facecolor='#0F0F13')
         ax.set_title(title, color=TEXT, fontsize=13, pad=6)
         ax.tick_params(colors=DIM, labelsize=10, which='both')
         for sp in ax.spines.values():
-            sp.set_color('#3a2850')
+            sp.set_color('#1C1C24')
             sp.set_alpha(0.4)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         ax.set_xlabel(xlabel, color=DIM, fontsize=10)
-        ax.yaxis.grid(True, alpha=0.15, color='#3a2850', linewidth=0.8)
+        ax.yaxis.grid(True, alpha=0.15, color='#1C1C24', linewidth=0.8)
         ax.xaxis.grid(False)
         ax.set_axisbelow(True)
         return ax
@@ -138,13 +138,13 @@ class EmbedChart(ctk.CTkFrame):
 
 class IssueCard(ctk.CTkFrame):
     def __init__(self, parent, issue, **kw):
-        super().__init__(parent, fg_color="#1c1228", corner_radius=6, **kw)
+        super().__init__(parent, fg_color="#14141A", corner_radius=6, **kw)
         c = SEV_COLOR[issue.severity]
         icon = {"critical": "🔴", "warning": "🟡", "info": "🔵"}[issue.severity.value]
         hdr = ctk.CTkFrame(self, fg_color="transparent", cursor="hand2"); hdr.pack(fill='x', padx=8, pady=5)
         lbl(hdr, f"{icon}  {issue.title}", 13, bold=True, color=c, anchor='w').pack(side='left', fill='x', expand=True)
         ctk.CTkLabel(hdr, text=issue.category.value, font=ctk.CTkFont(size=11),
-            text_color=DIM, fg_color="#2a1a38", corner_radius=4).pack(side='right', padx=4)
+            text_color=DIM, fg_color="#14141A", corner_radius=4).pack(side='right', padx=4)
         self._d = ctk.CTkFrame(self, fg_color="transparent")
         lbl(self._d, issue.description, 12, color=DIM, wraplength=520, justify='left', anchor='w').pack(fill='x', padx=8, pady=(0, 3))
         lbl(self._d, f"💡 {issue.recommendation}", 12, color=BLUE, wraplength=520, justify='left', anchor='w').pack(fill='x', padx=8, pady=(0, 6))
