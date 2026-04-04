@@ -520,6 +520,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self.cur_eng_report = []
         self.cur_setup:ParsedSetup|None=None
         self.cmp_setup_b:ParsedSetup|None=None
+        self.cur_enrichments = None   # SessionEnrichments from session_enrichments
+        self.cur_setup_result = None  # SetupResult from setup_generator
         self.engine=AnalysisEngine()
         self.history=HistoryTracker()
         self._ai_last_text = ""
@@ -3279,6 +3281,39 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 return
             setup_flat = self.cur_setup.flat if self.cur_setup else None
             _ai_car_class = (self.cur_rpt.car_class if self.cur_rpt else '') or ''
+
+            # Build enrichment context for AI prompt
+            _enrichment_notes = []
+            _enrichments = getattr(self, 'cur_enrichments', None)
+            if _enrichments:
+                if _enrichments.confidence:
+                    _enrichment_notes.append(_enrichments.confidence.brief_note)
+                if _enrichments.ambient_temp_f is not None:
+                    _corr = list(_enrichments.cold_pressure_corrections.values())
+                    _corr_val = _corr[0] if _corr else 0
+                    _enrichment_notes.append(
+                        f'Ambient temp: {_enrichments.ambient_temp_f:.1f}°F — '
+                        f'cold pressure correction: {_corr_val:+.2f} psi per corner.')
+                if _enrichments.brake and _enrichments.brake.recommendation:
+                    _enrichment_notes.append(_enrichments.brake.recommendation)
+                if _enrichments.downforce:
+                    _enrichment_notes.append(
+                        f'Downforce recommendation: {_enrichments.downforce.note}')
+            # Append setup generator results if available
+            _setup_result = getattr(self, 'cur_setup_result', None)
+            _setup_brief_prompt = None
+            if _setup_result and _setup_result.tech_pass and _setup_result.deltas:
+                _setup_brief_prompt = _setup_result.driver_brief
+                _changes_summary = []
+                for _d in _setup_result.deltas[:5]:
+                    _sign = '+' if _d.delta > 0 else ''
+                    _changes_summary.append(
+                        f'{_d.display_name}: {_d.current_value:.3g}→{_d.recommended_value:.3g} '
+                        f'({_sign}{_d.delta:.3g} {_d.unit})')
+                _enrichment_notes.append(
+                    'Setup generator results (all tech-legal): ' +
+                    '; '.join(_changes_summary))
+
             try:
                 stream_fn = (
                     self._race_engineer.get_recommendations_stream
@@ -3294,7 +3329,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                         session_info=self.cur_data.session_info,
                         best_report=self.cur_best,
                         corner_report=getattr(self, 'cur_corner_report', None),
-                        car_class_str=_ai_car_class):
+                        car_class_str=_ai_car_class,
+                        enrichment_notes=_enrichment_notes):
                     if cancel.is_set():
                         return
                     self.after(0, lambda c=chunk: self._on_ai_chunk(c))
@@ -8007,6 +8043,74 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self.cur_corner_report = corner_rpt
         self.cur_eng_report  = eng_rpt or []
         self._last_opt_result = None        # invalidate optimizer result for new session
+
+        # ── Session enrichments (ambient temp, brake split, confidence) ──
+        try:
+            from core.session_enrichments import enrich_session
+            import numpy as np
+            _channels = getattr(data, 'channels', {}) or {}
+            _session_yaml = ''
+            if hasattr(data, 'session_info'):
+                _si = data.session_info
+                _session_yaml = _si.get('raw_yaml', '') or _si.get('session_yaml', '') or ''
+                if not _session_yaml:
+                    # Reconstruct minimal YAML from parsed fields
+                    _at = _si.get('air_temp_c') or _si.get('AirTemp')
+                    _tt = _si.get('track_temp_c') or _si.get('TrackTemp')
+                    if _at: _session_yaml += f'AirTemp: {_at} C\n'
+                    if _tt: _session_yaml += f'TrackTemp: {_tt} C\n'
+            _laps = rpt.lap_count if rpt else 0
+            # Build flying lap mask for enrichments
+            _lap_ch = _channels.get('Lap')
+            if _lap_ch is not None and len(_lap_ch) > 0:
+                _n = len(_lap_ch)
+                _lap_i = _lap_ch.astype(np.int32)
+                _changes = np.where(np.diff(_lap_i) > 0)[0] + 1
+                _starts = np.concatenate([[0], _changes])
+                _ends = np.concatenate([_changes, [_n]])
+                _durs = _ends - _starts
+                _inner = _durs[1:-1] if len(_durs) > 2 else _durs
+                _med = float(np.median(_inner)) if len(_inner) else 1
+                _mask = np.zeros(_n, dtype=bool)
+                for _i, (_s, _e) in enumerate(zip(_starts, _ends)):
+                    if _i == 0 or _i == len(_starts) - 1: continue
+                    if _med * 0.85 <= (_e - _s) <= _med * 1.15:
+                        _mask[_s:_e] = True
+            else:
+                _mask = None
+            self.cur_enrichments = enrich_session(
+                session_info_str=_session_yaml,
+                channels=_channels,
+                car_name=data.car_name or '',
+                flying_laps=_laps,
+                mask=_mask,
+            )
+        except Exception as _enrich_ex:
+            logger.warning('session_enrichments failed: %s', _enrich_ex)
+            self.cur_enrichments = None
+
+        # ── Setup generator — IBT-to-setup with tech inspection guarantee ──
+        try:
+            from core.setup_generator import generate_setup
+            from core.car_classifier import CarClass
+            _baseline_flat = self.cur_setup.flat if self.cur_setup else {}
+            _car_class_str = rpt.car_class if rpt else 'default'
+            self.cur_setup_result = generate_setup(
+                analysis=rpt,
+                corner_report=corner_rpt,
+                style_report=style,
+                consistency=None,
+                baseline_setup=_baseline_flat,
+                car_class=_car_class_str,
+                car_name=data.car_name or '',
+                track_name=data.track_name or '',
+            )
+            logger.info('setup_generator: %d deltas, tech_pass=%s',
+                        len(self.cur_setup_result.deltas),
+                        self.cur_setup_result.tech_pass)
+        except Exception as _gen_ex:
+            logger.warning('setup_generator failed: %s', _gen_ex)
+            self.cur_setup_result = None
         self._last_opt_result_fixed = None
         self._update_title(data)
 

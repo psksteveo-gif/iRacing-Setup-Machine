@@ -199,7 +199,8 @@ def _build_prompt(report, car_name, track_name, setup_data, sector_report,
                   style_report, stint_report, best_report,
                   session_info=None, corner_report=None,
                   incident_report=None, evolution_report=None,
-                  car_class_str: str = "") -> str:
+                  car_class_str: str = "",
+                  enrichment_notes: list = None) -> str:
     """Build the full prompt string shared by sync and stream paths."""
     car_name = _sanitize(car_name, 120)
     track_name = _sanitize(track_name, 120)
@@ -479,6 +480,13 @@ Any recommendation that violates these bounds will cause the driver to FAIL tech
     except Exception:
         pass
 
+        # ── Enrichment notes (ambient temp, brake split, confidence, setup gen) ──
+    enrichment_text = ""
+    if enrichment_notes:
+        enrichment_text = "\nSession Enrichments:\n"
+        for _note in enrichment_notes:
+            enrichment_text += f"  - {_sanitize(str(_note), 300)}\n"
+
     return f"""Analyze this iRacing telemetry session and return JSON recommendations.
 
 Car: {car_name}
@@ -486,7 +494,7 @@ Track: {track_name}
 Best Lap: {format_laptime(report.best_lap)}
 Average Lap: {format_laptime(report.avg_lap)}
 Balance Score: {report.balance_score:.2f} (-1=understeer, +1=oversteer)
-{conditions_text}{quality_text}
+{conditions_text}{quality_text}{enrichment_text}
 Issues Found:
 {issues_text if issues_text else "No major issues detected."}
 
@@ -662,7 +670,8 @@ def get_ai_recommendations_sync(report: AnalysisReport, car_name: str,
                                sector_report, style_report, stint_report, best_report,
                                session_info=session_info, corner_report=corner_report,
                                incident_report=incident_report, evolution_report=evolution_report,
-                               car_class_str=car_class_str)
+                               car_class_str=car_class_str,
+                               enrichment_notes=enrichment_notes)
 
         message = client.messages.create(
             model=_MODEL_SONNET,
@@ -691,7 +700,8 @@ def get_ai_recommendations_stream(report: AnalysisReport, car_name: str,
                                    corner_report=None,
                                    incident_report=None,
                                    evolution_report=None,
-                                   car_class_str: str = "") -> Generator[str, None, None]:
+                                   car_class_str: str = "",
+                                   enrichment_notes: list = None) -> Generator[str, None, None]:
     """
     Streaming variant — yields text chunks as they arrive from Claude.
     Falls back to a single-yield rule-based response on error.
