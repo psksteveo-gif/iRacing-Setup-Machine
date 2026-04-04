@@ -359,6 +359,7 @@ def get_bounds(car_class) -> Dict[str, ParamBounds]:
 def validate_setup(
     setup_values: Dict[str, float],
     car_class,
+    car_name: str = "",
 ) -> List[TechIssue]:
     """
     Check every key in *setup_values* against the legal range for *car_class*.
@@ -391,6 +392,38 @@ def validate_setup(
                 unit=b.unit,
                 clamped_value=b.clamp(value),
             ))
+
+    # ── Per-car ride height minimums (from car_profiles) ─────────────────────
+    # These are stricter than the class-level bounds for specific cars
+    if car_name:
+        try:
+            from core.car_profiles import get_min_ride_heights
+            rh_mins = get_min_ride_heights(car_name)
+            rh_map = {
+                'rh_lf': ('LF', 'LF Ride Height'),
+                'rh_rf': ('RF', 'RF Ride Height'),
+                'rh_lr': ('LR', 'LR Ride Height'),
+                'rh_rr': ('RR', 'RR Ride Height'),
+            }
+            for param, (corner, display) in rh_map.items():
+                min_mm = rh_mins.get(corner)
+                if min_mm is None:
+                    continue
+                val = setup_values.get(param)
+                if val is None:
+                    continue
+                if val < min_mm - 1e-6:
+                    issues.append(TechIssue(
+                        param=param,
+                        display_name=display,
+                        value=val,
+                        min_val=min_mm,
+                        max_val=bounds[param].max_val if param in bounds else 999,
+                        unit='mm',
+                        clamped_value=min_mm,
+                    ))
+        except Exception:
+            pass
 
     return issues
 

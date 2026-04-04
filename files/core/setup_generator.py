@@ -298,6 +298,13 @@ class IBTSignalExtractor:
         if tire_summary:
             bundle.tire_temps = tire_summary
             bundle.tire_confidence = min(1.0, bundle.laps_analyzed / 5.0)
+            # Store per-car temp window for downstream use
+            if bundle.car_name:
+                try:
+                    from core.car_profiles import get_tire_temp_range
+                    bundle._temp_min_c, bundle._temp_max_c = get_tire_temp_range(bundle.car_name)
+                except Exception:
+                    pass
 
         # Hot tire pressures
         tire_pressure = getattr(analysis, 'tire_pressure_hot', None)
@@ -749,18 +756,19 @@ class SetupDeltaEngine:
 
         bounds = get_bounds(car_class)
 
-        # Target hot pressure range (psi) — varies by car class
-        target_ranges = {
-            CarClass.GT3:         (30.0, 34.0),
-            CarClass.GT4:         (29.0, 33.0),
-            CarClass.PORSCHE_CUP: (30.0, 34.0),
-            CarClass.GTP:         (26.0, 30.0),
-            CarClass.FORMULA:     (22.0, 26.0),
-            CarClass.TCR:         (31.0, 35.0),
+        # Target hot pressure — use per-car profile if available,
+        # fall back to class-level defaults
+        from core.car_profiles import get_target_hot_psi, get_car_profile
+        _car_psi = get_target_hot_psi(bundle.car_name) if bundle.car_name else {}
+        _class_defaults = {
+            CarClass.GT3:         (28.0, 31.0),
+            CarClass.GT4:         (28.5, 31.5),
+            CarClass.PORSCHE_CUP: (29.5, 32.0),
+            CarClass.GTP:         (22.0, 25.0),
+            CarClass.FORMULA:     (20.0, 23.0),
+            CarClass.TCR:         (32.0, 35.0),
         }
-        target_low, target_high = target_ranges.get(
-            car_class, (29.0, 34.0)
-        )
+        _default_low, _default_high = _class_defaults.get(car_class, (28.0, 32.0))
 
         corner_map = {
             'LF': 'pressure_lf',
@@ -779,6 +787,14 @@ class SetupDeltaEngine:
                 continue
             current_cold = self._current(bundle, param,
                                           (b.min_val + b.max_val) / 2)
+
+            # Use per-corner car profile target if available
+            _corner_target = _car_psi.get(corner)
+            if _corner_target is not None:
+                target_low  = max(_default_low,  _corner_target - 1.5)
+                target_high = min(_default_high, _corner_target + 1.5)
+            else:
+                target_low, target_high = _default_low, _default_high
 
             if hot_psi < target_low:
                 # Under-inflated hot — raise cold pressure
@@ -1184,14 +1200,14 @@ class SetupAssembler:
             ))
 
         # ── TECH INSPECTION ──────────────────────────────────────────────────
-        issues = validate_setup(working, car_class)
+        issues = validate_setup(working, car_class, car_name=car_name)
         tech_pass = len(issues) == 0
 
         if not tech_pass:
             # Force-clamp any remaining violations — should never happen
             # but this is the absolute safety net
             working = clamp_to_legal(working, car_class)
-            issues = validate_setup(working, car_class)
+            issues = validate_setup(working, car_class, car_name=car_name)
             tech_pass = len(issues) == 0
             logger.warning(
                 "setup_generator: had to force-clamp %d issue(s). "
