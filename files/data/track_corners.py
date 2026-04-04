@@ -713,6 +713,146 @@ TRACK_MAPS: Dict[str, TrackMap] = {
             {"name": "Turn 4",              "start_pct": 0.63,  "apex_pct": 0.69,  "end_pct": 0.75,  "type": "medium",   "priority": 1},
         ],
     },
+
+    # ── Barber Motorsports Park ───────────────────────────────────────────
+    "Barber Motorsports Park": {
+        "sectors": [0.32, 0.65],
+        "iracing_names": ["barber motorsports park"],
+        "corners": [
+            {"name": "Turn 1",          "start_pct": 0.02, "apex_pct": 0.04, "end_pct": 0.06, "type": "medium",  "priority": 2},
+            {"name": "Turn 5 Hairpin",  "start_pct": 0.26, "apex_pct": 0.29, "end_pct": 0.32, "type": "hairpin", "priority": 1},
+            {"name": "Turn 8",          "start_pct": 0.42, "apex_pct": 0.44, "end_pct": 0.46, "type": "medium",  "priority": 2},
+            {"name": "Turn 13",         "start_pct": 0.68, "apex_pct": 0.70, "end_pct": 0.72, "type": "medium",  "priority": 2},
+            {"name": "Turn 15 Hairpin", "start_pct": 0.82, "apex_pct": 0.84, "end_pct": 0.87, "type": "hairpin", "priority": 1},
+        ],
+    },
+    "Charlotte Roval": {
+        "sectors": [0.33, 0.67],
+        "iracing_names": ["charlotte motor speedway roval", "charlotte roval"],
+        "corners": [],
+    },
+    "Daytona Road Course": {
+        "sectors": [0.30, 0.65],
+        "iracing_names": ["daytona international speedway road course", "daytona road course"],
+        "corners": [],
+    },
+    "Fuji Speedway": {
+        "sectors": [0.30, 0.65],
+        "iracing_names": ["fuji international speedway", "fuji speedway"],
+        "corners": [
+            {"name": "Turn 1",      "start_pct": 0.02, "apex_pct": 0.04, "end_pct": 0.07, "type": "medium",  "priority": 1},
+            {"name": "100R",        "start_pct": 0.20, "apex_pct": 0.25, "end_pct": 0.30, "type": "fast",    "priority": 1},
+            {"name": "Last Corner", "start_pct": 0.88, "apex_pct": 0.91, "end_pct": 0.94, "type": "hairpin", "priority": 1},
+        ],
+    },
+    "Hockenheimring": {
+        "sectors": [0.33, 0.67],
+        "iracing_names": ["hockenheimring", "hockenheimring baden-württemberg"],
+        "corners": [
+            {"name": "Einfahrt Motodrom", "start_pct": 0.30, "apex_pct": 0.33, "end_pct": 0.36, "type": "hairpin", "priority": 1},
+            {"name": "Mercedes Arena",   "start_pct": 0.58, "apex_pct": 0.62, "end_pct": 0.66, "type": "medium",  "priority": 2},
+            {"name": "Spitzkehre",       "start_pct": 0.72, "apex_pct": 0.75, "end_pct": 0.78, "type": "hairpin", "priority": 1},
+        ],
+    },
+    "Homestead Road Course": {
+        "sectors": [0.38, 0.70],
+        "iracing_names": ["homestead-miami speedway road course", "homestead road course"],
+        "corners": [],
+    },
+    "Indianapolis Road Course": {
+        "sectors": [0.33, 0.67],
+        "iracing_names": ["indianapolis motor speedway road course", "ims road course", "indianapolis road course"],
+        "corners": [
+            {"name": "Hairpin",   "start_pct": 0.42, "apex_pct": 0.45, "end_pct": 0.48, "type": "hairpin", "priority": 1},
+            {"name": "Turn 16",   "start_pct": 0.88, "apex_pct": 0.91, "end_pct": 0.94, "type": "medium",  "priority": 2},
+        ],
+    },
+    "Jerez": {
+        "sectors": [0.35, 0.65],
+        "iracing_names": ["circuito de jerez", "jerez", "circuito de jerez angel nieto"],
+        "corners": [
+            {"name": "Dry Sack",    "start_pct": 0.05, "apex_pct": 0.07, "end_pct": 0.10, "type": "medium",  "priority": 2},
+            {"name": "Peluqui",     "start_pct": 0.30, "apex_pct": 0.33, "end_pct": 0.36, "type": "hairpin", "priority": 1},
+            {"name": "Expo Corner", "start_pct": 0.78, "apex_pct": 0.81, "end_pct": 0.84, "type": "medium",  "priority": 2},
+        ],
+    },
+    "Long Beach": {
+        "sectors": [0.33, 0.67],
+        "iracing_names": ["streets of long beach", "long beach"],
+        "corners": [
+            {"name": "Turn 1",         "start_pct": 0.03, "apex_pct": 0.05, "end_pct": 0.08, "type": "medium",  "priority": 2},
+            {"name": "Turn 4 Hairpin", "start_pct": 0.28, "apex_pct": 0.31, "end_pct": 0.34, "type": "hairpin", "priority": 1},
+            {"name": "Turn 9 Chicane", "start_pct": 0.70, "apex_pct": 0.73, "end_pct": 0.76, "type": "chicane", "priority": 1},
+        ],
+    },
+    "Mount Panorama": {
+        "sectors": [0.35, 0.68],
+        "iracing_names": ["mount panorama motor racing circuit", "bathurst", "mount panorama"],
+        "corners": [
+            {"name": "Hell Corner",  "start_pct": 0.02, "apex_pct": 0.04, "end_pct": 0.07, "type": "hairpin", "priority": 1},
+            {"name": "Skyline",      "start_pct": 0.20, "apex_pct": 0.22, "end_pct": 0.25, "type": "fast",    "priority": 2},
+            {"name": "The Dipper",   "start_pct": 0.30, "apex_pct": 0.32, "end_pct": 0.35, "type": "fast",    "priority": 1},
+            {"name": "Forrest Elbow","start_pct": 0.45, "apex_pct": 0.47, "end_pct": 0.50, "type": "medium",  "priority": 2},
+            {"name": "The Chase",    "start_pct": 0.72, "apex_pct": 0.75, "end_pct": 0.78, "type": "medium",  "priority": 2},
+        ],
+    },
+    "Okayama": {
+        "sectors": [0.35, 0.68],
+        "iracing_names": ["okayama international circuit", "okayama"],
+        "corners": [
+            {"name": "Hairpin",       "start_pct": 0.40, "apex_pct": 0.43, "end_pct": 0.46, "type": "hairpin", "priority": 1},
+            {"name": "Final Chicane", "start_pct": 0.88, "apex_pct": 0.91, "end_pct": 0.94, "type": "chicane", "priority": 1},
+        ],
+    },
+    "Oulton Park": {
+        "sectors": [0.33, 0.65],
+        "iracing_names": ["oulton park"],
+        "corners": [
+            {"name": "Old Hall",       "start_pct": 0.03, "apex_pct": 0.05, "end_pct": 0.08, "type": "medium",  "priority": 1},
+            {"name": "Cascades",       "start_pct": 0.15, "apex_pct": 0.17, "end_pct": 0.20, "type": "fast",    "priority": 2},
+            {"name": "Island Hairpin", "start_pct": 0.42, "apex_pct": 0.45, "end_pct": 0.48, "type": "hairpin", "priority": 1},
+            {"name": "Shell Oils",     "start_pct": 0.78, "apex_pct": 0.81, "end_pct": 0.84, "type": "medium",  "priority": 2},
+        ],
+    },
+    "Pocono Road Course": {
+        "sectors": [0.35, 0.70],
+        "iracing_names": ["pocono raceway", "pocono road course"],
+        "corners": [],
+    },
+    "Snetterton": {
+        "sectors": [0.35, 0.68],
+        "iracing_names": ["snetterton circuit", "snetterton"],
+        "corners": [
+            {"name": "Riches",   "start_pct": 0.04, "apex_pct": 0.06, "end_pct": 0.09, "type": "medium", "priority": 2},
+            {"name": "Bomb Hole","start_pct": 0.28, "apex_pct": 0.30, "end_pct": 0.33, "type": "medium", "priority": 2},
+            {"name": "Coram",    "start_pct": 0.48, "apex_pct": 0.51, "end_pct": 0.54, "type": "fast",   "priority": 1},
+            {"name": "Hamilton", "start_pct": 0.82, "apex_pct": 0.85, "end_pct": 0.88, "type": "medium", "priority": 2},
+        ],
+    },
+    "Twin Ring Motegi": {
+        "sectors": [0.33, 0.67],
+        "iracing_names": ["twin ring motegi", "motegi"],
+        "corners": [
+            {"name": "Turn 1",       "start_pct": 0.02, "apex_pct": 0.04, "end_pct": 0.07, "type": "medium", "priority": 2},
+            {"name": "V Corner",     "start_pct": 0.35, "apex_pct": 0.38, "end_pct": 0.41, "type": "medium", "priority": 1},
+            {"name": "Final Corner", "start_pct": 0.88, "apex_pct": 0.91, "end_pct": 0.94, "type": "medium", "priority": 1},
+        ],
+    },
+    "Vallelunga": {
+        "sectors": [0.35, 0.70],
+        "iracing_names": ["autodromo vallelunga", "vallelunga"],
+        "corners": [
+            {"name": "Prima Variante","start_pct": 0.04, "apex_pct": 0.06, "end_pct": 0.09, "type": "chicane", "priority": 2},
+            {"name": "Tornantino",    "start_pct": 0.32, "apex_pct": 0.35, "end_pct": 0.38, "type": "hairpin", "priority": 1},
+            {"name": "Campagnano",    "start_pct": 0.82, "apex_pct": 0.85, "end_pct": 0.88, "type": "medium",  "priority": 2},
+        ],
+    },
+    "Watkins Glen Cup": {
+        "sectors": [0.40],
+        "iracing_names": ["watkins glen international cup", "watkins glen cup"],
+        "corners": [],
+    },
+
 }
 
 # ---------------------------------------------------------------------------
