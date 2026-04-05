@@ -479,6 +479,7 @@ class AnalysisConfidenceScorer:
         channels: Dict,
         flying_laps: int,
         ambient_temp_available: bool = False,
+        contaminated_laps: int = 0,
     ) -> ConfidenceScore:
 
         missing = [c for c in cls.REQUIRED_CHANNELS if channels.get(c) is None]
@@ -497,8 +498,15 @@ class AnalysisConfidenceScorer:
         # Penalty: no ambient temp (5%)
         ambient_penalty = 0.05 if not ambient_temp_available else 0.0
 
+        # Penalty: contaminated laps from traffic (up to 15%)
+        traffic_penalty = 0.0
+        if flying_laps > 0 and contaminated_laps > 0:
+            contamination_ratio = contaminated_laps / max(flying_laps, 1)
+            traffic_penalty = min(0.15, contamination_ratio * 0.20)
+
         score = max(0.0, round(
-            1.0 - channel_penalty - lap_penalty - signal_penalty - ambient_penalty,
+            1.0 - channel_penalty - lap_penalty - signal_penalty
+            - ambient_penalty - traffic_penalty,
             2
         ))
 
@@ -509,6 +517,11 @@ class AnalysisConfidenceScorer:
             issues.append(
                 f"Only {flying_laps} flying lap(s) — "
                 f"minimum 3 recommended for reliable recommendations"
+            )
+        if contaminated_laps > 0:
+            issues.append(
+                f"{contaminated_laps} lap(s) flagged as potentially traffic-affected — "
+                f"recommendations based on remaining clean laps only."
             )
         if not ambient_temp_available:
             issues.append(

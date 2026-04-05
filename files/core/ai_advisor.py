@@ -18,12 +18,17 @@ def parse_ai_response(text: str) -> dict | None:
     """
     Extract and parse the JSON object from a Claude response.
     Returns the parsed dict on success, None if parsing fails.
-    Handles markdown code fences and leading/trailing prose.
+    Handles markdown code fences, leading prose, and partial responses.
     """
     if not text:
         return None
-    # Strip markdown code fences if present
+    # Strip markdown code fences
     cleaned = re.sub(r'```(?:json)?\s*', '', text).strip()
+    cleaned = re.sub(r'```\s*$', '', cleaned).strip()
+    # Strip any prose before the first {
+    start = cleaned.find('{')
+    if start > 0:
+        cleaned = cleaned[start:]
     # Find the outermost { ... } block
     start = cleaned.find('{')
     end   = cleaned.rfind('}')
@@ -487,7 +492,10 @@ Any recommendation that violates these bounds will cause the driver to FAIL tech
         for _note in enrichment_notes:
             enrichment_text += f"  - {_sanitize(str(_note), 300)}\n"
 
-    return f"""Analyze this iRacing telemetry session and return JSON recommendations.
+    return f"""YOU MUST RESPOND WITH VALID JSON ONLY. NO MARKDOWN. NO PROSE. NO EXPLANATIONS OUTSIDE THE JSON.
+Start your response with {{ and end with }}. Nothing before {{. Nothing after }}.
+
+Analyze this iRacing telemetry session.
 
 Car: {car_name}
 Track: {track_name}
@@ -502,7 +510,10 @@ Tire Temperatures:
 {tire_text if tire_text else "No tire data available."}
 {setup_text}{sector_text}{style_text}{stint_text}{fuel_text}{fuel_sector_text}{grip_text}{phase_text}{susp_text}{engine_text}{vert_text}{grip_text_extra}{slip_text}{abs_text}{ride_h_text}{damper_text}{body_text}{brake_press_text}
 {corner_text}{historical_section}{tech_section}
-Return 3–5 prioritised recommendations. Use from_value/to_value for concrete setup changes. Distinguish driver technique from car setup. All values must be within tech inspection bounds. Respond with valid JSON only."""
+Return 3–5 prioritised recommendations. Use from_value/to_value for concrete setup changes.
+Distinguish driver technique from car setup. All values must be within tech inspection bounds.
+
+RESPOND WITH VALID JSON ONLY. First character must be {{. Last character must be }}."""
 
 
 _MODEL_HAIKU  = "claude-haiku-4-5-20251001"

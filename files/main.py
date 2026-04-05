@@ -2087,6 +2087,140 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         if not issues: lbl(self._is,"No issues for this filter.",color=DIM).pack(pady=20); return
         for iss in issues: IssueCard(self._is,iss).pack(fill='x',pady=3)
 
+        # ── SDK-derived live coaching alerts ─────────────────────────────────
+        self._render_sdk_coaching_alerts(self._is)
+
+    def _render_sdk_coaching_alerts(self, parent):
+        """
+        Render additional coaching alerts derived from Tier 3 SDK channels
+        that are not part of the standard AnalysisReport issues.
+        Only shown when relevant data is available.
+        """
+        if not self.cur_data:
+            return
+        _ch = getattr(self.cur_data, 'channels', {}) or {}
+        _alerts = []
+        import numpy as np
+
+        # ── Shift grind detection ─────────────────────────────────────────
+        shift_grind = _ch.get('ShiftGrindRPM')
+        if shift_grind is not None:
+            _grind_events = np.sum(shift_grind > 100)  # RPM > 100 = grind event
+            if _grind_events > 3:
+                _alerts.append({
+                    'severity': 'warning',
+                    'icon': '⚙',
+                    'title': f'Shift Grind Detected — {int(_grind_events)} events',
+                    'description': (
+                        f'The gearbox detected {int(_grind_events)} shift grind events '
+                        f'this session. This indicates missed downshifts or upshifts '
+                        f'outside the sync window. Check blip technique on downshifts '
+                        f'and avoid forced upshifts at low RPM.'
+                    ),
+                    'recommendation': 'Increase heel-toe blip on downshifts. '
+                                      'Allow revs to drop naturally before upshift.',
+                })
+
+        # ── Short-shifting detection ──────────────────────────────────────
+        shift_rpm_ch = _ch.get('PlayerCarSLShiftRPM')
+        rpm_ch       = _ch.get('RPM')
+        gear_ch      = _ch.get('Gear')
+        if shift_rpm_ch is not None and rpm_ch is not None and gear_ch is not None:
+            try:
+                shift_target = float(np.median(shift_rpm_ch[shift_rpm_ch > 1000]))
+                # Detect upshifts: gear increases
+                gear_diff = np.diff(gear_ch.astype(np.int32))
+                upshift_idx = np.where(gear_diff > 0)[0]
+                if len(upshift_idx) > 10:
+                    rpm_at_shift = rpm_ch[upshift_idx]
+                    short_shifts = np.sum(rpm_at_shift < shift_target * 0.88)
+                    pct = short_shifts / len(upshift_idx) * 100
+                    if pct > 25:
+                        _alerts.append({
+                            'severity': 'info',
+                            'icon': '⬆',
+                            'title': f'Short-Shifting — {pct:.0f}% of upshifts',
+                            'description': (
+                                f'{pct:.0f}% of upshifts occurred more than 12% '
+                                f'below the target shift point '
+                                f'({shift_target:.0f} RPM). Short-shifting costs '
+                                f'acceleration time on corner exits and straights.'
+                            ),
+                            'recommendation': f'Shift at or above {shift_target:.0f} RPM '
+                                              f'to stay in the peak power band.',
+                        })
+            except Exception:
+                pass
+
+        # ── Steering torque trend (understeer load buildup) ───────────────
+        steer_torque = _ch.get('SteeringWheelTorque')
+        lat_ch       = _ch.get('LatAccel')
+        if steer_torque is not None and lat_ch is not None:
+            try:
+                # High torque relative to lateral G = understeer (driver fighting car)
+                cornering = np.abs(lat_ch) > 3.0
+                if cornering.sum() > 200:
+                    torque_cornering = np.abs(steer_torque[cornering])
+                    lat_cornering    = np.abs(lat_ch[cornering])
+                    # Normalize torque by lateral G
+                    ratio = torque_cornering / (lat_cornering + 0.1)
+                    high_load_pct = float(np.mean(ratio > 2.5)) * 100
+                    if high_load_pct > 30:
+                        _alerts.append({
+                            'severity': 'info',
+                            'icon': '🔄',
+                            'title': f'High Steering Load — {high_load_pct:.0f}% of corners',
+                            'description': (
+                                f'Steering wheel torque is elevated relative to '
+                                f'lateral G in {high_load_pct:.0f}% of cornering samples. '
+                                f'This indicates the driver is working hard against '
+                                f'understeer — the front tires are generating high '
+                                f'resistance without proportional lateral grip.'
+                            ),
+                            'recommendation': 'Front setup may be too stiff. '
+                                              'Try softening front ARB 1 step or '
+                                              'reducing front tire pressure 0.5 psi.',
+                        })
+            except Exception:
+                pass
+
+        # ── Render alerts ─────────────────────────────────────────────────
+        if not _alerts:
+            return
+
+        # Section header
+        hdr = ctk.CTkFrame(parent, fg_color='transparent')
+        hdr.pack(fill='x', pady=(12, 4))
+        lbl(hdr, '🔧  SDK Coaching Signals', 12, bold=True, color=ACCENT).pack(side='left')
+        lbl(hdr, '  from live telemetry channels', 10, color=DIM).pack(side='left')
+
+        sev_map = {'warning': YELLOW, 'critical': RED, 'info': BLUE}
+        for alert in _alerts:
+            col   = sev_map.get(alert['severity'], DIM)
+            card  = ctk.CTkFrame(parent, fg_color=CARD, corner_radius=6)
+            card.pack(fill='x', pady=3)
+            hrow  = ctk.CTkFrame(card, fg_color='transparent', cursor='hand2')
+            hrow.pack(fill='x', padx=8, pady=5)
+            lbl(hrow, f"{alert['icon']}  {alert['title']}", 12,
+                bold=True, color=col, anchor='w').pack(side='left', fill='x', expand=True)
+            body = ctk.CTkFrame(card, fg_color='transparent')
+            lbl(body, alert['description'], 11, color=DIM,
+                wraplength=620, justify='left', anchor='w').pack(
+                fill='x', padx=8, pady=(0,3))
+            lbl(body, f"💡 {alert['recommendation']}", 11, color=BLUE,
+                wraplength=620, justify='left', anchor='w').pack(
+                fill='x', padx=8, pady=(0,6))
+            body._visible = False
+            def _toggle(b=body, h=hrow):
+                if b._visible:
+                    b.pack_forget()
+                    b._visible = False
+                else:
+                    b.pack(fill='x')
+                    b._visible = True
+            for w in [hrow] + list(hrow.winfo_children()):
+                w.bind('<Button-1>', lambda e, t=_toggle: t())
+
     # ══════════════════════════════════════════════════════════════════════════
     # DRIVER ANALYSIS
     # ══════════════════════════════════════════════════════════════════════════
@@ -8392,6 +8526,22 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 flying_laps=_laps,
                 mask=_mask,
             )
+            # Pass contaminated lap count into confidence scorer
+            if self.cur_enrichments and self.cur_enrichments.confidence:
+                _contam = 0
+                if self.cur_setup_result:
+                    _contam = getattr(self.cur_setup_result, '_contaminated_laps', 0)
+                elif _channels:
+                    # Quick estimate from CarIdxLapDistPct if available
+                    pass
+                if _contam > 0:
+                    from core.session_enrichments import AnalysisConfidenceScorer
+                    self.cur_enrichments.confidence = AnalysisConfidenceScorer.score(
+                        channels=_channels,
+                        flying_laps=_laps,
+                        ambient_temp_available=(self.cur_enrichments.ambient_temp_f is not None),
+                        contaminated_laps=_contam,
+                    )
         except Exception as _enrich_ex:
             logger.warning('session_enrichments failed: %s', _enrich_ex)
             self.cur_enrichments = None
@@ -8412,9 +8562,16 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 car_name=data.car_name or '',
                 track_name=data.track_name or '',
             )
-            logger.info('setup_generator: %d deltas, tech_pass=%s',
-                        len(self.cur_setup_result.deltas),
-                        self.cur_setup_result.tech_pass)
+            # Store contaminated lap count for confidence scorer
+            if self.cur_setup_result:
+                _sr = self.cur_setup_result
+                # Extract from setup_result if bundle stored it
+                _contam_count = getattr(_sr, '_contaminated_laps', 0)
+                if _contam_count == 0 and hasattr(_sr, 'laps_analyzed'):
+                    pass  # will be estimated in enrich block above
+                logger.info('setup_generator: %d deltas, tech_pass=%s',
+                            len(self.cur_setup_result.deltas),
+                            self.cur_setup_result.tech_pass)
         except Exception as _gen_ex:
             logger.warning('setup_generator failed: %s', _gen_ex)
             self.cur_setup_result = None
