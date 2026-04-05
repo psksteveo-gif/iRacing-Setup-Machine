@@ -546,6 +546,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self._batch_queue: list[str] = []
         self._batch_total = 0
         self._file_watcher: FileWatcher | None = None
+        self._ibt_toast = None   # active toast widget reference
         # Race engineer (Steven persona) — unlocks after MIN_SESSIONS_FOR_PERSONA sessions
         self._profile_mgr = DriverProfileManager()
         self._driver_profile = self._profile_mgr.load()
@@ -737,6 +738,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self.bind_all('<F5>', lambda e: self._refresh())
         # Ctrl+W = toggle file watcher
         self.bind_all('<Control-w>', lambda e: self._toggle_file_watcher())
+        # Auto-start file watcher so new sessions are detected immediately
+        self.after(2000, self._autostart_file_watcher)
         self.bind_all('<Control-k>', lambda e: self._open_command_palette())
         self.bind_all('<Control-m>', lambda e: self._export_motec())
         self.bind_all('<Control-slash>', lambda e: self._show_shortcuts())
@@ -7269,6 +7272,20 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
     # ══════════════════════════════════════════════════════════════════════════
     # FILE WATCHER
     # ══════════════════════════════════════════════════════════════════════════
+    def _autostart_file_watcher(self):
+        """Start file watcher automatically on launch if not already running."""
+        if self._file_watcher and self._file_watcher.is_running:
+            return
+        try:
+            self._file_watcher = FileWatcher(
+                on_new_telemetry=lambda p: self.after(0, lambda: self._on_new_ibt_detected(p)),
+                on_new_setup=lambda p: self.after(0, lambda: self._auto_load_setup(p)),
+            )
+            self._file_watcher.start()
+            logger.info("File watcher auto-started")
+        except Exception as e:
+            logger.warning("File watcher auto-start failed: %s", e)
+
     def _toggle_file_watcher(self):
         """Toggle auto-detect file watcher on/off."""
         if self._file_watcher and self._file_watcher.is_running:
@@ -7278,7 +7295,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             self.after(3000, lambda: self._status_lbl.configure(text=""))
         else:
             self._file_watcher = FileWatcher(
-                on_new_telemetry=lambda p: self.after(0, lambda: self._process(p)),
+                on_new_telemetry=lambda p: self.after(0, lambda: self._on_new_ibt_detected(p)),
                 on_new_setup=lambda p: self.after(0, lambda: self._auto_load_setup(p)),
             )
             self._file_watcher.start()
@@ -7292,6 +7309,62 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             self.tv.set("Setup")
         except Exception as ex:
             logger.warning("Auto-load setup failed: %s", ex)
+
+    def _on_new_ibt_detected(self, path: str):
+        """
+        Called by FileWatcher when a new .ibt file appears in the telemetry folder.
+        Shows a non-blocking toast notification instead of silently loading,
+        giving the driver control over when analysis runs.
+        """
+        import os
+        fname = os.path.basename(path)
+        # Show a banner with Load / Dismiss options
+        self._show_ibt_toast(path, fname)
+
+    def _show_ibt_toast(self, path: str, fname: str):
+        """Show a dismissible toast banner offering to load a new IBT file."""
+        # Remove any existing toast first
+        if hasattr(self, '_ibt_toast') and self._ibt_toast:
+            try:
+                self._ibt_toast.destroy()
+            except Exception:
+                pass
+            self._ibt_toast = None
+
+        toast = ctk.CTkFrame(self, fg_color="#0A1A10",
+                              border_color="#2ECC8E", border_width=1,
+                              corner_radius=6)
+        toast.place(relx=0.5, rely=0.96, anchor='s')
+        self._ibt_toast = toast
+
+        inner = ctk.CTkFrame(toast, fg_color="transparent")
+        inner.pack(padx=12, pady=8, fill='x')
+
+        lbl(inner, f"📂  New session recorded: {fname}", 12,
+            color="#2ECC8E").pack(side='left', padx=(0, 12))
+
+        def load_it():
+            toast.destroy()
+            self._ibt_toast = None
+            self._process(path)
+
+        def dismiss():
+            toast.destroy()
+            self._ibt_toast = None
+
+        ctk.CTkButton(inner, text="Load & Analyze", width=120, height=28,
+                       fg_color="#2ECC8E", hover_color="#1a8a50",
+                       text_color="#08080A",
+                       font=ctk.CTkFont(size=12, weight="bold"),
+                       command=load_it).pack(side='left', padx=(0, 6))
+        ctk.CTkButton(inner, text="Dismiss", width=80, height=28,
+                       fg_color="transparent", hover_color="#1A1A22",
+                       text_color="#8A8890",
+                       font=ctk.CTkFont(size=11),
+                       command=dismiss).pack(side='left')
+
+        # Auto-dismiss after 30 seconds
+        self.after(30_000, lambda: dismiss() if self._ibt_toast else None)
 
     # ══════════════════════════════════════════════════════════════════════════
     # LIVE TELEMETRY
@@ -8203,16 +8276,9 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             from core.session_enrichments import enrich_session
             import numpy as np
             _channels = getattr(data, 'channels', {}) or {}
-            _session_yaml = ''
-            if hasattr(data, 'session_info'):
-                _si = data.session_info
-                _session_yaml = _si.get('raw_yaml', '') or _si.get('session_yaml', '') or ''
-                if not _session_yaml:
-                    # Reconstruct minimal YAML from parsed fields
-                    _at = _si.get('air_temp_c') or _si.get('AirTemp')
-                    _tt = _si.get('track_temp_c') or _si.get('TrackTemp')
-                    if _at: _session_yaml += f'AirTemp: {_at} C\n'
-                    if _tt: _session_yaml += f'TrackTemp: {_tt} C\n'
+            # Pass session_info dict directly — enrich_session handles both
+            # dict and YAML string formats, dict is faster and more reliable
+            _si = data.session_info if hasattr(data, 'session_info') else {}
             _laps = rpt.lap_count if rpt else 0
             # Build flying lap mask for enrichments
             _lap_ch = _channels.get('Lap')
@@ -8233,7 +8299,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             else:
                 _mask = None
             self.cur_enrichments = enrich_session(
-                session_info_str=_session_yaml,
+                session_info_str=_si,
                 channels=_channels,
                 car_name=data.car_name or '',
                 flying_laps=_laps,

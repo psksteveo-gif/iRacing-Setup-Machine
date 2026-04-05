@@ -36,6 +36,17 @@ class LiveSample:
     long_accel: float = 0.0
     tire_temps: Dict[str, Dict[str, float]] = field(default_factory=dict)
     tire_pressures: Dict[str, float] = field(default_factory=dict)
+    tire_wear: Dict[str, float] = field(default_factory=dict)
+    # Track conditions
+    track_temp_c: float = 0.0        # TrackTempCrew — live track surface temp
+    air_temp_c: float = 0.0          # AirTemp
+    # Live sector deltas
+    lap_delta_to_best: float = 0.0   # LapDeltaToBestLap — +slow, -fast vs best
+    lap_delta_to_optimal: float = 0.0  # LapDeltaToOptimalLap
+    lap_delta_valid: bool = False
+    # Driver inputs quality
+    brake_abs_active: bool = False
+    tc_active: bool = False
     is_connected: bool = False
     car_name: str = ""
     track_name: str = ""
@@ -186,6 +197,25 @@ class LiveTelemetryMonitor:
                 'outer': float(g(f'{corner}tempCR')),
             }
             sample.tire_pressures[corner] = float(g(f'{corner}press'))
+            # Tire wear (0.0 = new, 1.0 = fully worn)
+            sample.tire_wear[corner] = float(g(f'{corner}wearL', 0.0))
+
+        # Track conditions
+        sample.track_temp_c = float(g('TrackTempCrew', 0.0))
+        sample.air_temp_c   = float(g('AirTemp', 0.0))
+
+        # Live sector delta channels
+        _delta_best = g('LapDeltaToBestLap', 0.0)
+        _delta_opt  = g('LapDeltaToOptimalLap', 0.0)
+        _delta_ok   = g('LapDeltaToBestLapOK', 0.0)
+        sample.lap_delta_to_best    = float(_delta_best)
+        sample.lap_delta_to_optimal = float(_delta_opt)
+        sample.lap_delta_valid      = bool(_delta_ok)
+
+        # Driver aid activity
+        sample.brake_abs_active = bool(g('BrakeABSactive', 0))
+        sample.tc_active        = bool(g('dcTractionControl', 0) > 0 and
+                                       g('ThrottleRaw', g('Throttle')) > g('Throttle') + 0.02)
 
         try:
             si = ir.session_info

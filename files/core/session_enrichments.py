@@ -208,6 +208,30 @@ class AmbientTempCorrector:
         return ambient_f, track_f
 
     @classmethod
+    def from_session_info_dict(cls, session_info: dict) -> tuple:
+        """
+        Extract ambient and track temp directly from a parsed session_info dict
+        (as produced by IBTParser._parse_session_yaml).
+        Returns (ambient_f, track_f) — either may be None.
+        Faster and more reliable than YAML string parsing.
+        """
+        ambient_f = None
+        track_f = None
+        at_c = session_info.get('air_temp_c')
+        tt_c = session_info.get('track_temp_c')
+        if at_c is not None:
+            try:
+                ambient_f = round(float(at_c) * 9.0 / 5.0 + 32.0, 1)
+            except (TypeError, ValueError):
+                pass
+        if tt_c is not None:
+            try:
+                track_f = round(float(tt_c) * 9.0 / 5.0 + 32.0, 1)
+            except (TypeError, ValueError):
+                pass
+        return ambient_f, track_f
+
+    @classmethod
     def compute_correction(cls, ambient_f: float) -> float:
         """
         Return the cold pressure correction delta (psi) for a given
@@ -528,7 +552,7 @@ class AnalysisConfidenceScorer:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def enrich_session(
-    session_info_str: str = "",
+    session_info_str = "",   # str (YAML) or dict (parsed session_info)
     channels: Dict = None,
     car_name: str = "",
     flying_laps: int = 0,
@@ -553,9 +577,15 @@ def enrich_session(
     enrichments = SessionEnrichments()
 
     # ── 1. Ambient temperature ────────────────────────────────────────────
-    ambient_f, track_f = AmbientTempCorrector.extract_ambient_from_session(
-        session_info_str
-    )
+    # Accept session_info as dict (from IBTParser) or YAML string (legacy)
+    ambient_f, track_f = None, None
+    if isinstance(session_info_str, dict):
+        ambient_f, track_f = AmbientTempCorrector.from_session_info_dict(
+            session_info_str)
+    else:
+        ambient_f, track_f = AmbientTempCorrector.extract_ambient_from_session(
+            session_info_str
+        )
     enrichments.ambient_temp_f = ambient_f
     enrichments.track_temp_f = track_f
 
