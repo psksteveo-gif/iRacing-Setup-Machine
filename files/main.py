@@ -2916,13 +2916,145 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
 
         chk_vars = []  # kept for compat with downstream code that may reference it
 
+        # ── Setup Generator Results Panel ─────────────────────────────────────
+        _gen_result = getattr(self, 'cur_setup_result', None)
+        if _gen_result and _gen_result.tech_pass and _gen_result.deltas:
+            gen_frame = ctk.CTkFrame(win, fg_color=PANEL, corner_radius=8)
+            gen_frame.pack(fill='x', padx=12, pady=(0, 4))
+
+            gen_hdr = ctk.CTkFrame(gen_frame, fg_color='transparent')
+            gen_hdr.pack(fill='x', padx=12, pady=(8, 2))
+            lbl(gen_hdr, "⚙  IBT-Derived Setup Changes", 12, bold=True,
+                color=GREEN).pack(side='left')
+            _tech_badge = lbl(gen_hdr, "  ✅ TECH LEGAL  ", 10,
+                              bold=True, color=GREEN)
+            _tech_badge.configure(fg_color="#0A1A0A", corner_radius=3)
+            _tech_badge.pack(side='left', padx=6)
+            lbl(gen_hdr,
+                f"{len(_gen_result.deltas)} change(s) · "
+                f"confidence {_gen_result.confidence_overall:.0%} · "
+                f"{_gen_result.laps_analyzed} laps",
+                10, color=DIM).pack(side='right')
+
+            # Changes table grouped by garage tab
+            gen_scroll = ctk.CTkScrollableFrame(gen_frame, fg_color='transparent',
+                                                 height=140)
+            gen_scroll.pack(fill='x', padx=8, pady=(0, 4))
+
+            _current_tab = None
+            for row_data in _gen_result.changes_table:
+                if row_data['tab'] != _current_tab:
+                    _current_tab = row_data['tab']
+                    tab_bar = ctk.CTkFrame(gen_scroll, fg_color='#0d1b2a',
+                                           corner_radius=4)
+                    tab_bar.pack(fill='x', pady=(6, 2))
+                    lbl(tab_bar, f"  {_current_tab}  TAB", 10, bold=True,
+                        color='#5b9bd5').pack(side='left', padx=10, pady=4)
+
+                r = ctk.CTkFrame(gen_scroll, fg_color='#14141A', corner_radius=5)
+                r.pack(fill='x', pady=2)
+                top = ctk.CTkFrame(r, fg_color='transparent')
+                top.pack(fill='x', padx=10, pady=(5, 1))
+                # Parameter name + location
+                lbl(top, row_data['param'], 11, bold=True).pack(side='left')
+                lbl(top, f"  {row_data['location'].split('→')[-1].strip()}",
+                    10, color=DIM).pack(side='left')
+                # Delta badge
+                _dcol = GREEN if row_data['delta'].startswith('+') else RED
+                lbl(top, row_data['delta'], 11, bold=True,
+                    color=_dcol).pack(side='right', padx=6)
+                # Current → recommended
+                ar = ctk.CTkFrame(r, fg_color='transparent')
+                ar.pack(fill='x', padx=10, pady=(0, 2))
+                lbl(ar, row_data['current'], 10, color=DIM).pack(side='left')
+                lbl(ar, '  →  ', 10, color=DIM).pack(side='left')
+                lbl(ar, row_data['recommended'], 10, bold=True,
+                    color=_dcol).pack(side='left')
+                if row_data.get('clamped'):
+                    lbl(ar, '  ⚠ adjusted to legal limit', 9,
+                        color=YELLOW).pack(side='left')
+                # Reasoning
+                lbl(r, row_data['reasoning'], 10, color=DIM,
+                    wraplength=680, justify='left').pack(
+                    anchor='w', padx=10, pady=(0, 5))
+
+            # Write-to-iRacing button for generator result
+            gen_btn_row = ctk.CTkFrame(gen_frame, fg_color='transparent')
+            gen_btn_row.pack(fill='x', padx=12, pady=(0, 8))
+
+            _gen_status = lbl(gen_btn_row, "", 10, color=DIM)
+            _gen_status.pack(side='left', padx=(0, 10))
+
+            def _write_gen_setup():
+                """Write the setup generator's validated final_setup to iRacing."""
+                _gr = getattr(self, 'cur_setup_result', None)
+                if not _gr or not _gr.tech_pass:
+                    messagebox.showerror("Setup Not Ready",
+                        "No valid setup result available.", parent=win)
+                    return
+                if not self.cur_setup:
+                    messagebox.showwarning("No Base Setup",
+                        "Load a base setup (.htm) in the Setup tab first.\n\n"
+                        "The generator applies changes on top of a baseline.",
+                        parent=win)
+                    return
+
+                timestamp_w = datetime.now().strftime('%Y%m%d_%H%M')
+                default_name = f"OS_Generated_{timestamp_w}.sto"
+                _ibt_car = (self.cur_data.car_name or '') if self.cur_data else ''
+                _setups_d = self._find_iracing_setups_dir()
+                if not _setups_d:
+                    messagebox.showerror("iRacing Not Found",
+                        "Could not locate iRacing setups folder.", parent=win)
+                    return
+                dest_dir = find_car_folder(_setups_d, _ibt_car) if _ibt_car else _setups_d
+                dest_path = os.path.join(dest_dir, default_name)
+
+                try:
+                    # Apply generator deltas as changes dict on top of cur_setup
+                    _changes_dict = {}
+                    for _delta in _gr.deltas:
+                        # Map internal param key to setup flat key via normalize_param_key
+                        from core.tech_inspector import normalize_param_key
+                        _flat_key = normalize_param_key(_delta.display_name)
+                        if _flat_key is None:
+                            # Try direct display name
+                            _flat_key = _delta.display_name
+                        _changes_dict[_delta.display_name] = str(_delta.recommended_value)
+
+                    writer = StoWriter()
+                    writer.write(self.cur_setup, dest_path,
+                                 setup_name=f"OS_Generated_{timestamp_w}",
+                                 changes=_changes_dict)
+                    _gen_status.configure(
+                        text=f"✅ Written to {os.path.basename(dest_path)}",
+                        text_color=GREEN)
+                    messagebox.showinfo(
+                        "Setup Written!",
+                        f"Setup saved to:\n{dest_path}\n\n"
+                        f"Load '{default_name}' in iRacing garage.\n"
+                        f"All {len(_gr.deltas)} changes have been applied.\n"
+                        f"Tech inspection: PASS ✓",
+                        parent=win)
+                except Exception as _we:
+                    logger.exception("Failed to write generator setup")
+                    messagebox.showerror("Write Failed", str(_we), parent=win)
+
+            ctk.CTkButton(gen_btn_row,
+                          text="💾  Write to iRacing Now",
+                          width=180, height=30,
+                          fg_color=GREEN, hover_color='#1a8a50',
+                          font=ctk.CTkFont(size=12, weight='bold'),
+                          text_color=DARK,
+                          command=_write_gen_setup).pack(side='right')
+
         # ── Claude Analysis Panel ─────────────────────────────────────────────
         ai_frame = ctk.CTkFrame(win, fg_color=PANEL, corner_radius=8)
         ai_frame.pack(fill='x', padx=12, pady=(0, 6))
 
         ai_hdr = ctk.CTkFrame(ai_frame, fg_color='transparent')
         ai_hdr.pack(fill='x', padx=12, pady=(8, 4))
-        lbl(ai_hdr, "🤖  Claude's Analysis", 12, bold=True, color=ACCENT).pack(side='left')
+        lbl(ai_hdr, "🤖  Driver Brief", 12, bold=True, color=ACCENT).pack(side='left')
 
         ai_model = self.cfg.get('ai_model', 'haiku')
         model_id = _MODEL_SONNET if ai_model == 'sonnet' else _MODEL_HAIKU
@@ -2930,23 +3062,31 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         lbl(ai_hdr, f"Model: {model_label}  •  Change in Settings (⚙)",
             10, color=DIM).pack(side='right')
 
-        ai_text = ctk.CTkTextbox(ai_frame, height=120, fg_color='#111827',
-                                  font=ctk.CTkFont(size=11), wrap='word',
+        ai_text = ctk.CTkTextbox(ai_frame, height=130, fg_color='#111827',
+                                  font=ctk.CTkFont(size=12), wrap='word',
                                   state='normal')
         ai_text.pack(fill='x', padx=12, pady=(0, 4))
         _key = _get_api_key().strip()
-        _placeholder = ("Click 'Ask Claude' to get an AI analysis of these recommendations.\n"
-                        "Requires API key in Settings (⚙)." if not _key
-                        else "Click 'Ask Claude' to get an AI analysis of these recommendations.")
+        _has_gen = bool(getattr(self, 'cur_setup_result', None) and
+                        getattr(self.cur_setup_result, 'tech_pass', False) and
+                        getattr(self.cur_setup_result, 'deltas', []))
+        _placeholder = (
+            "Click 'Get Driver Brief' to generate a data-backed setup explanation.\n"
+            "Requires API key in Settings (⚙)." if not _key else
+            "Click 'Get Driver Brief' for a plain-language explanation of these setup changes."
+            if _has_gen else
+            "Click 'Get Analysis' for Claude's evaluation of the optimizer recommendations."
+        )
         ai_text.insert('1.0', _placeholder)
         ai_text.configure(state='disabled')
 
         ai_btn_row = ctk.CTkFrame(ai_frame, fg_color='transparent')
         ai_btn_row.pack(fill='x', padx=12, pady=(0, 8))
-        ai_ask_btn = ctk.CTkButton(ai_btn_row, text="✨ Ask Claude", width=140, height=30,
-                                    fg_color=BLUE, hover_color='#1a5a8a')
+        _brief_label = ("✨ Get Driver Brief" if _has_gen else "✨ Ask Claude")
+        ai_ask_btn = ctk.CTkButton(ai_btn_row, text=_brief_label,
+                                    width=160, height=30,
+                                    fg_color=ACCENT, hover_color='#C04A10')
         ai_ask_btn.pack(side='left')
-        _Tooltip(ai_ask_btn, "Send your telemetry data to the AI for setup and driving recommendations.")
         ai_status = lbl(ai_btn_row, "", 10, color=DIM)
         ai_status.pack(side='left', padx=10)
 
@@ -2956,22 +3096,35 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 messagebox.showwarning("API Key Needed",
                     "Set your Anthropic API key in Settings (⚙) first.", parent=win)
                 return
-            ai_ask_btn.configure(state='disabled', text="Analyzing…")
-            ai_status.configure(text="⏳ Streaming from Claude…")
+            ai_ask_btn.configure(state='disabled', text="Generating…")
+            ai_status.configure(text="⏳ Streaming…")
             ai_text.configure(state='normal')
             ai_text.delete('1.0', 'end')
             ai_text.configure(state='disabled')
 
+            _sr = getattr(self, 'cur_setup_result', None)
+
             def stream_worker():
-                gen = get_setup_recommendation_stream(
-                    report=self.cur_rpt,
-                    car_name=car_name,
-                    track_name=track_name,
-                    api_key=key,
-                    setup=self.cur_setup,
-                    opt_result=opt_result,
-                    model=model_id,
-                )
+                # Use generate_setup_brief_stream if we have a generator result
+                if (_sr and getattr(_sr, 'tech_pass', False)
+                        and getattr(_sr, 'deltas', [])):
+                    from core.ai_advisor import generate_setup_brief_stream
+                    gen = generate_setup_brief_stream(
+                        setup_result=_sr,
+                        api_key=key,
+                        model=model_id,
+                    )
+                else:
+                    # Fall back to existing optimizer analysis
+                    gen = get_setup_recommendation_stream(
+                        report=self.cur_rpt,
+                        car_name=car_name,
+                        track_name=track_name,
+                        api_key=key,
+                        setup=self.cur_setup,
+                        opt_result=opt_result,
+                        model=model_id,
+                    )
                 for chunk in gen:
                     def append(c=chunk):
                         ai_text.configure(state='normal')
@@ -2980,7 +3133,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                         ai_text.see('end')
                     win.after(0, append)
                 def done():
-                    ai_ask_btn.configure(state='normal', text="✨ Ask Claude")
+                    ai_ask_btn.configure(state='normal',
+                                         text=_brief_label)
                     ai_status.configure(text="✅ Done")
                 win.after(0, done)
 
