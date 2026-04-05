@@ -1,61 +1,172 @@
-# Changelog
+# Optimal Sector — Changelog
 
-All notable changes to iRacing Setup Advisor will be documented in this file.
+All notable changes documented here. Format: `[version] - date | what changed | why | files affected`.
 
-## [2.1.0] - 2026-03-12
+---
+
+## [3.6.0] - 2026-04-06 | SDK Tiers 1-3 + Coaching Alerts + JSON Fix
+
+### Added — iRacing SDK Tier 1 (Setup Accuracy)
+- `core/live_telemetry.py` — `LiveSample` expanded with:
+  - `shock_defl[LF/RF/LR/RR]` — suspension travel in mm (LFshockDefl etc)
+  - `shock_vel[LF/RF/LR/RR]` — damper velocity m/s (LFshockVel etc)
+  - `slip_angle[LF/RF/LR/RR]` — wheel slip angle radians (WheelSlipAngle_LF etc)
+  - `brake_line_press[LF/RF/LR/RR]` — actual hydraulic brake pressure Pa
+  - `tire_wear_detail[corner][L/M/R]` — per-zone tire wear 0=new 1=worn
+- `core/setup_generator.py` — `SignalBundle` expanded with suspension/slip fields
+  - `IBTSignalExtractor._extract_suspension()` — shock travel + damper velocity histogram
+  - `IBTSignalExtractor._extract_slip_angles()` — cornering slip angle averages
+  - `IBTSignalExtractor._extract_traffic()` — CarIdxLapDistPct proximity detection
+  - `SetupDeltaEngine._suspension_rules()` — bottoming detection + spring rate from HS/LS damper ratio
+  - `SetupDeltaEngine._slip_angle_rules()` — direct OS/US from front/rear slip ratio
+
+### Added — iRacing SDK Tier 2 (Race Strategy)
+- `core/live_telemetry.py` — `LiveSample` race fields:
+  - `car_position`, `car_class_position` — live race/class position
+  - `session_laps_remain` — laps remaining in session
+  - `car_idx_lap_dist`, `car_idx_lap` — all competitors' positions (traffic detection)
+- `main.py` — live dashboard shows `P{n}` position label, P1 highlighted in accent
+- `main.py` — status bar includes position in real-time
+
+### Added — iRacing SDK Tier 3 (Driver Coaching)
+- `core/live_telemetry.py` — `LiveSample` coaching fields:
+  - `brake_bias_pct` — dcBrakeBias × 100
+  - `tc_level`, `abs_level` — driver aid levels
+  - `shift_rpm`, `blink_rpm` — PlayerCarSLShiftRPM / PlayerCarSLBlinkRPM
+  - `shift_grind_rpm` — ShiftGrindRPM (mis-shift detection)
+  - `steering_torque` — SteeringWheelTorque (understeer load)
+  - `clutch_pct` — ClutchPct
+  - `is_on_track`, `is_in_garage` — session state flags
+- `main.py` — `_render_sdk_coaching_alerts()` — collapsible coaching cards in Issues tab:
+  - **Shift grind alert** — detects ShiftGrindRPM > 100 events, flags mis-shifts
+  - **Short-shifting alert** — compares shift RPM vs PlayerCarSLShiftRPM target
+  - **Steering torque alert** — high torque/lateral-G ratio = understeer load signal
+
+### Fixed
+- `core/ai_advisor.py` — JSON enforcement now leads the prompt with explicit
+  "YOU MUST RESPOND WITH VALID JSON ONLY. First char {. Last char }."
+  **Root cause:** Model occasionally prefaced JSON with prose, breaking card renderer
+  **Fix:** Hard constraint at top of user message + improved `parse_ai_response()` to strip prose before `{`
+- `core/session_enrichments.py` — `AnalysisConfidenceScorer.score()` now accepts
+  `contaminated_laps` param — applies up to 15% penalty for traffic-polluted sessions
+
+### Changed
+- `ui/obs_overlay.py` — OBS HUD now prefers `LapDeltaToBestLap` (SDK) over interpolated reference lap delta. Shows `SDK Δ` vs `Ref Δ` source indicator. Added track temp, ABS (yellow when active), TC (green when active) to conditions row.
+- `main.py` — live dashboard conditions row added: Δ label, track temp, ABS, TC, position
+
+---
+
+## [3.5.0] - 2026-04-06 | Auto IBT Detection + Session Pipeline Wiring
 
 ### Added
-- **Track Map Visualization** — 2D track map colored by speed or braking zones (uses GPS or reconstructed path)
-- **Multi-Stint Comparison** — Auto-detects pit stops and compares performance across stints
-- **AI Recommendation Caching** — Cached results load instantly on revisit
-- **Session Comparison Export** — Export full comparison CSV with lap deltas, issues, and metrics
-- **Lap Replay Animation** — Scrub through telemetry with live speed/throttle/brake readouts
-- **History Rotation** — Automatic pruning keeps history DB at manageable size (500 max entries)
-- **AI Streaming** — Claude responses stream in real-time instead of waiting for full response
-- About dialog with version info, credits, and license
-- Keyboard shortcuts (Ctrl+O, Ctrl+D, Ctrl+E, Ctrl+P, Ctrl+B, Ctrl+Q)
-- Recent files list (last 8 IBT files)
-- Window geometry persistence across sessions
-- Progress bar during telemetry loading
-- Tooltips on dashboard metrics
-- Comprehensive crash handler with log viewer
-- Batch IBT processing (load multiple files at once)
-- Application icon and professional branding
-- File input validation and security hardening
+- `main.py` — `_autostart_file_watcher()` — FileWatcher starts automatically 2s after launch
+- `main.py` — `_on_new_ibt_detected()` + `_show_ibt_toast()` — green banner notification when iRacing writes a new .ibt. Shows filename, "Load & Analyze" / "Dismiss" buttons, auto-dismisses after 30s
+- `main.py` — `_on_loaded()` now runs `enrich_session()` automatically on every IBT load:
+  builds flying-lap mask, extracts AirTemp/TrackTemp from session_info dict,
+  runs AmbientTempCorrector + BrakeLineSplitAnalyzer + DownforceTrimAdvisor + AnalysisConfidenceScorer
+- `main.py` — `_on_loaded()` now runs `generate_setup()` automatically after enrichments:
+  full IBT→setup pipeline with tech_pass guarantee. Stored as `self.cur_setup_result`
+- `core/session_enrichments.py` — `AmbientTempCorrector.from_session_info_dict()` — direct dict extraction (no regex)
+- `core/live_telemetry.py` — `LiveSample` new fields: `track_temp_c`, `air_temp_c`, `lap_delta_to_best`, `lap_delta_to_optimal`, `lap_delta_valid`, `tire_wear`, `brake_abs_active`, `tc_active`
+
+### Fixed
+- `core/session_enrichments.py` — `enrich_session()` now accepts dict or str for `session_info_str`
+  **Root cause:** Was rebuilding YAML string from already-parsed fields — fragile and lossy
+  **Fix:** Added `from_session_info_dict()` path, dict checked first
+
+---
+
+## [3.4.0] - 2026-04-05 | Setup Generator UI — Write to iRacing + Driver Brief
+
+### Added
+- `main.py` — `_show_recommend_dialog()` now has 3 new sections:
+  1. **IBT-Derived Setup Changes panel** — shows generator's changes_table grouped by garage tab
+     with current→recommended values, color-coded deltas, data-backed reasoning per change,
+     green TECH LEGAL badge, confidence %, lap count
+  2. **Write to iRacing Now button** (green) — applies all deltas via StoWriter,
+     saves `OS_Generated_YYYYMMDD_HHMM.sto` directly to car's iRacing setups folder
+  3. **Driver Brief panel** — streams `generate_setup_brief_stream()` when generator result
+     available; falls back to `get_setup_recommendation_stream()` for backward compatibility
+
+---
+
+## [3.3.0] - 2026-04-05 | Setup Generator + Car Profiles + Track DB Expansion
+
+### Added
+- `core/setup_generator.py` — IBT→setup engine (1,392 lines):
+  - `IBTSignalExtractor` — maps AnalysisReport/CornerReport to `SignalBundle`
+  - `SetupDeltaEngine` — confidence-gated rules: brake bias, ARB, springs, camber,
+    tire pressure, differential, dampers, aero. Min 3 laps + confidence threshold
+  - `SetupAssembler` — applies deltas to baseline, clamps through `tech_inspector`,
+    runs `validate_setup()`, guarantees `tech_pass=True` on output
+  - `build_brief_prompt()` — data-specific AI prompt builder (references actual IBT numbers)
+- `core/car_profiles.py` — 74 cars, 121 path entries from iracing-setup-advisor data:
+  per-car target hot pressures, temp windows, ride height minimums, engine layout notes
+- `core/ai_advisor.py` — `generate_setup_brief_stream()` streams driver brief from SetupResult
+- `data/track_corners.py` — 63 total tracks (was 48): Barber, Bathurst, Oulton Park,
+  Hockenheimring, Long Beach, Fuji, Okayama, Snetterton, Motegi, Vallelunga, + 8 more
+
+### Changed
+- `core/tech_inspector.py` — `validate_setup()` now accepts `car_name` param,
+  enforces per-car ride height minimums from `car_profiles` on top of class bounds
+
+---
+
+## [3.2.0] - 2026-04-05 | Session Enrichments + Ambient Temp Correction
+
+### Added
+- `core/session_enrichments.py` — 4 new capabilities:
+  1. `AmbientTempCorrector` — piecewise cold pressure correction from ambient temp
+     (<40°F: +0.45psi/10°F, 40-70°F: +0.35, >70°F: -0.25)
+  2. `BrakeLineSplitAnalyzer` — reads LFbrakeLinePress etc, computes actual vs dial split
+  3. `DownforceTrimAdvisor` — peak speed → High/Medium/Low downforce recommendation
+  4. `AnalysisConfidenceScorer` — 0-1 score, missing channels, lap count, ambient flag
+
+---
+
+## [3.1.0] - 2026-04-05 | Theme Recolor + Design System
+
+### Changed
+- Full purple→racing dark palette across all UI files:
+  `DARK=#08080A`, `PANEL=#0F0F13`, `CARD=#14141A`, `ACCENT=#E8611A`,
+  `BLUE=#4A9EE8`, `TEXT=#F0EEE8`, `DIM=#8A8890`
+- Files changed: `ui/theme.py`, `main.py`, `ui/tab_corners.py`, `ui/tab_stint.py`, `ui/tab_telemetry.py`
+
+### Added
+- `ui/ds_theme.py`, `ui/ds_components.py`, `ui/ds_base_tab.py`, `ui/ds_ai_renderer.py` — design system library
+- AI tab renders structured JSON cards instead of raw markdown text
+
+---
+
+## [2.1.0] - 2026-03-12 | Track Map, Multi-Stint, AI Caching
+
+### Added
+- Track Map Visualization — 2D track map colored by speed or braking zones
+- Multi-Stint Comparison — auto-detects pit stops and compares performance
+- AI Recommendation Caching — cached results load instantly on revisit
+- Session Comparison Export — CSV with lap deltas, issues, and metrics
+- Lap Replay Animation — scrub through telemetry with live readouts
+- History Rotation — automatic pruning keeps DB at manageable size
+- AI Streaming — Claude responses stream in real-time
+- About dialog, keyboard shortcuts, recent files, window geometry persistence
+- Progress bar during loading, tooltips, crash handler, batch IBT processing
 
 ### Fixed
 - `data_tick` walrus operator bug in driving style balance event detection
-- API key storage now enforces OS keyring with clear warning on fallback
+- API key storage enforces OS keyring
 
-### Security
-- Removed plaintext API key storage fallback — keyring-only with user warning
-- File size validation on all file inputs
-- Path traversal protection on drag-and-drop
-- Rate limiting on API calls
+---
 
-## [2.0.0] - 2025-12-01
+## [2.0.0] - 2025-12-01 | Full GUI Rewrite
 
 ### Added
-- 12-tab GUI (Dashboard, Telemetry, Issues, Driver, Sectors, Stint & Tires, Lap Times, Setup Files, AI Advisor, Templates, History, Compare)
-- Full IBT binary parser with 60Hz channel extraction
-- Sector analysis with theoretical best calculation
-- Driving style analysis (trail braking, coast time, steering reversals)
-- Tire degradation model with cliff detection
-- Fuel strategy planner with pit stop calculator
-- Car classifier with class-specific pressure targets
-- AI-powered recommendations via Claude API
-- PDF report export via ReportLab
-- CSV telemetry export
-- Setup file parser (.htm) with diff comparison
-- Track template database
-- Session history tracker with setup change detection
-- Per-lap overlay charts
-- G-G friction circle diagram
-- Drag-and-drop file loading
-- Dashboard with balance gauges and tire heatmap
-- Outlier detection and filtering (IQR + 107% median)
+- 12-tab GUI, IBT parser, sector analysis, driving style, tire degradation,
+  fuel strategy, car classifier, AI recommendations, PDF export, setup diff,
+  track templates, history tracker, G-G diagram, drag-and-drop
 
-## [1.0.0] - 2025-06-01
+---
+
+## [1.0.0] - 2025-06-01 | Initial Release
 
 ### Added
-- Initial release with basic telemetry analysis
+- Basic IBT parsing and tire temperature analysis
