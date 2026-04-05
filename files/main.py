@@ -3456,6 +3456,45 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 if _enrichments.downforce:
                     _enrichment_notes.append(
                         f'Downforce recommendation: {_enrichments.downforce.note}')
+
+            # Add Tier 1-3 SDK signals to enrichment notes if available
+            _setup_gen = getattr(self, 'cur_setup_result', None)
+            if _setup_gen:
+                _bundle_src = None  # signals already baked into setup_result
+                # Suspension travel summary
+                if self.cur_data:
+                    _ch = getattr(self.cur_data, 'channels', {}) or {}
+                    _susp_notes = []
+                    for _c in ['LF','RF','LR','RR']:
+                        _defl = _ch.get(f'{_c}shockDefl')
+                        if _defl is not None:
+                            import numpy as _np
+                            _valid = _defl[_defl > 0.001]
+                            if len(_valid) > 100:
+                                _mm = float(_np.mean(_valid)) * 1000
+                                _susp_notes.append(f'{_c}:{_mm:.1f}mm')
+                    if _susp_notes:
+                        _enrichment_notes.append(
+                            f'Avg shock travel: {", ".join(_susp_notes)}. '
+                            f'Values >30mm suggest soft springs; near max available '
+                            f'range indicates bottoming risk.')
+                    # Slip angle summary
+                    _slip_notes = []
+                    for _c in ['LF','RF','LR','RR']:
+                        _slip = _ch.get(f'WheelSlipAngle_{_c}')
+                        _lat  = _ch.get('LatAccel')
+                        if _slip is not None and _lat is not None:
+                            import numpy as _np2
+                            _cornering = _np2.abs(_lat) > 2.0
+                            _s = _np2.abs(_slip[_cornering])
+                            if len(_s) > 100:
+                                _slip_notes.append(
+                                    f'{_c}:{float(_np2.mean(_s)):.3f}rad')
+                    if _slip_notes:
+                        _enrichment_notes.append(
+                            f'Wheel slip angles (cornering avg): '
+                            f'{", ".join(_slip_notes)}. '
+                            f'Higher rear vs front = oversteer; higher front = understeer.')
             # Append setup generator results if available
             _setup_result = getattr(self, 'cur_setup_result', None)
             _setup_brief_prompt = None
@@ -7501,6 +7540,20 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         win._lap_num_lbl = lbl(lt, "Lap --", 11, color=DIM)
         win._lap_num_lbl.pack(side='right', padx=12)
 
+        # Delta + Conditions row
+        dc = ctk.CTkFrame(win, fg_color=PANEL, corner_radius=8)
+        dc.pack(fill='x', padx=10, pady=4)
+        win._delta_lbl = lbl(dc, "Δ ---", 14, bold=True, color=DIM)
+        win._delta_lbl.pack(side='left', padx=14, pady=6)
+        win._track_temp_lbl = lbl(dc, "Trk --", 11, color=DIM)
+        win._track_temp_lbl.pack(side='left', padx=8)
+        win._abs_lbl = lbl(dc, "ABS", 11, bold=True, color=DIM)
+        win._abs_lbl.pack(side='left', padx=6)
+        win._tc_lbl  = lbl(dc, "TC", 11, bold=True, color=DIM)
+        win._tc_lbl.pack(side='left', padx=4)
+        win._position_lbl = lbl(dc, "P--", 12, bold=True, color=TEXT)
+        win._position_lbl.pack(side='right', padx=14)
+
         # Fuel row
         fl = ctk.CTkFrame(win, fg_color=PANEL, corner_radius=8)
         fl.pack(fill='x', padx=10, pady=4)
@@ -7599,7 +7652,41 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             win._fuel_laps_lbl.configure(text="")
         win._pos_lbl.configure(text=f"Track: {sample.lap_dist_pct * 100:.1f}%")
 
-        self._status_lbl.configure(text=f"🔴 Live  {units.fmt_speed_from_kmh(sample.speed_kph, 0)}  Lap {sample.lap}")
+        # SDK lap delta — show when valid
+        if hasattr(win, '_delta_lbl'):
+            _sdk_delta = getattr(sample, 'lap_delta_to_best', None)
+            _sdk_valid  = getattr(sample, 'lap_delta_valid', False)
+            if _sdk_valid and _sdk_delta is not None and sample.lap_dist_pct > 0.05:
+                _dsign = "+" if _sdk_delta >= 0 else ""
+                _dcol  = GREEN if _sdk_delta < -0.05 else RED if _sdk_delta > 0.05 else YELLOW
+                win._delta_lbl.configure(
+                    text=f"Δ {_dsign}{_sdk_delta:.3f}s",
+                    text_color=_dcol)
+            else:
+                win._delta_lbl.configure(text="Δ ---", text_color=DIM)
+
+        # Track temp
+        if hasattr(win, '_track_temp_lbl'):
+            _tt = getattr(sample, 'track_temp_c', 0.0)
+            if _tt > 0:
+                win._track_temp_lbl.configure(
+                    text=f"Trk {units.fmt_temp(_tt, 0)}",
+                    text_color=TEXT)
+
+        # ABS / TC indicators
+        if hasattr(win, '_abs_lbl'):
+            _abs = getattr(sample, 'brake_abs_active', False)
+            win._abs_lbl.configure(text_color=YELLOW if _abs else DIM)
+        if hasattr(win, '_tc_lbl'):
+            _tc = getattr(sample, 'tc_active', False)
+            win._tc_lbl.configure(text_color=GREEN if _tc else DIM)
+
+        if hasattr(win, '_position_lbl') and sample.car_position > 0:
+            win._position_lbl.configure(
+                text=f"P{sample.car_position}",
+                text_color=ACCENT if sample.car_position == 1 else TEXT)
+
+        self._status_lbl.configure(text=f"🔴 Live  {units.fmt_speed_from_kmh(sample.speed_kph, 0)}  Lap {sample.lap}  P{sample.car_position if sample.car_position > 0 else '--'}")
 
         for corner, t_lbl in win._tire_lbls.items():
             temps = sample.tire_temps.get(corner, {})

@@ -102,6 +102,23 @@ class SignalBundle:
     lap_time_std: float = 0.0         # seconds
     laps_analyzed: int = 0
 
+    # Suspension signals (from shock channels)
+    shock_defl_avg: Dict[str, float] = field(default_factory=dict)   # avg travel mm per corner
+    shock_vel_histogram: Dict[str, Dict] = field(default_factory=dict) # LS/HS split
+    suspension_confidence: float = 0.0
+
+    # Wheel slip angles (radians, averaged per corner)
+    slip_angle_avg: Dict[str, float] = field(default_factory=dict)
+    slip_confidence: float = 0.0
+
+    # Traffic detection
+    clean_lap_mask: list = field(default_factory=list)  # which laps were traffic-free
+    contaminated_laps: int = 0
+
+    # Brake line actual split
+    brake_actual_front_pct: Optional[float] = None
+    brake_dial_pct: Optional[float] = None
+
     # Track character
     track_name: str = ""
     track_type: str = "road"          # 'road' | 'oval' | 'dirt'
@@ -276,6 +293,9 @@ class IBTSignalExtractor:
         self._extract_corners(bundle, corner_report)
         self._extract_consistency(bundle, analysis, consistency)
         self._classify_track(bundle, corner_report)
+        self._extract_suspension(bundle, analysis)
+        self._extract_slip_angles(bundle, analysis)
+        self._extract_traffic(bundle, analysis)
 
         return bundle
 
@@ -298,7 +318,6 @@ class IBTSignalExtractor:
         if tire_summary:
             bundle.tire_temps = tire_summary
             bundle.tire_confidence = min(1.0, bundle.laps_analyzed / 5.0)
-            # Store per-car temp window for downstream use
             if bundle.car_name:
                 try:
                     from core.car_profiles import get_tire_temp_range
@@ -310,6 +329,115 @@ class IBTSignalExtractor:
         tire_pressure = getattr(analysis, 'tire_pressure_hot', None)
         if tire_pressure:
             bundle.tire_pressure_hot = tire_pressure
+
+    def _extract_suspension(self, bundle: SignalBundle, analysis):
+        """Extract suspension travel and damper velocity signals."""
+        if not analysis:
+            return
+        channels = getattr(analysis, '_channels', None) or getattr(analysis, 'channels', None)
+        if channels is None:
+            return
+        try:
+            import numpy as np
+            corners = ['LF', 'RF', 'LR', 'RR']
+            any_data = False
+            for corner in corners:
+                defl = channels.get(f'{corner}shockDefl')
+                vel  = channels.get(f'{corner}shockVel')
+                if defl is None:
+                    continue
+                any_data = True
+                valid = defl[defl > 0.001]  # filter parked/zero
+                if len(valid) > 100:
+                    bundle.shock_defl_avg[corner] = float(np.mean(valid)) * 1000  # m → mm
+                if vel is not None:
+                    vel_valid = vel[np.abs(vel) > 0.001]
+                    if len(vel_valid) > 100:
+                        abs_vel = np.abs(vel_valid)
+                        bundle.shock_vel_histogram[corner] = {
+                            'low_speed_pct': float(np.mean(abs_vel < 0.05)),   # <50mm/s
+                            'high_speed_pct': float(np.mean(abs_vel >= 0.05)),
+                            'peak_vel': float(np.max(abs_vel)),
+                            'mean_vel': float(np.mean(abs_vel)),
+                        }
+            if any_data:
+                bundle.suspension_confidence = min(1.0, bundle.laps_analyzed / 5.0)
+        except Exception as e:
+            logger.debug("suspension extraction failed: %s", e)
+
+    def _extract_slip_angles(self, bundle: SignalBundle, analysis):
+        """Extract wheel slip angles for direct OS/US detection."""
+        if not analysis:
+            return
+        channels = getattr(analysis, '_channels', None) or getattr(analysis, 'channels', None)
+        if channels is None:
+            return
+        try:
+            import numpy as np
+            corners = ['LF', 'RF', 'LR', 'RR']
+            any_data = False
+            for corner in corners:
+                slip = channels.get(f'WheelSlipAngle_{corner}')
+                if slip is None:
+                    continue
+                any_data = True
+                lat = channels.get('LatAccel')
+                if lat is not None:
+                    cornering = np.abs(lat) > 2.0  # only read slip during cornering
+                    slip_corner = slip[cornering]
+                else:
+                    slip_corner = slip
+                if len(slip_corner) > 100:
+                    import math
+                    bundle.slip_angle_avg[corner] = float(np.mean(np.abs(slip_corner)))
+            if any_data:
+                bundle.slip_confidence = min(1.0, bundle.laps_analyzed / 5.0)
+        except Exception as e:
+            logger.debug("slip angle extraction failed: %s", e)
+
+    def _extract_traffic(self, bundle: SignalBundle, analysis):
+        """Detect contaminated laps using CarIdxLapDistPct proximity."""
+        if not analysis:
+            return
+        channels = getattr(analysis, '_channels', None) or getattr(analysis, 'channels', None)
+        if channels is None:
+            return
+        try:
+            import numpy as np
+            lap_ch   = channels.get('Lap')
+            dist_ch  = channels.get('LapDistPct')
+            if lap_ch is None or dist_ch is None:
+                return
+            lap_i = lap_ch.astype(np.int32)
+            laps  = sorted(set(lap_i.tolist()))
+            bundle.clean_lap_mask = []
+            contaminated = 0
+            # Check for any CarIdx distance within 0.02 (about 2 car lengths)
+            all_idx_channels = [channels.get(f'CarIdxLapDistPct')]
+            # Only first available array
+            car_idx_dist = all_idx_channels[0]
+            for lap in laps[1:-1]:  # skip in/out laps
+                lm = lap_i == lap
+                if lm.sum() < 50:
+                    continue
+                clean = True
+                if car_idx_dist is not None and hasattr(car_idx_dist[0], '__iter__'):
+                    my_dist = dist_ch[lm]
+                    for sample_i in range(0, int(lm.sum()), 30):
+                        my_pos = float(my_dist[min(sample_i, len(my_dist)-1)])
+                        try:
+                            for other_pos in car_idx_dist[lm][sample_i]:
+                                if other_pos and 0 < abs(my_pos - float(other_pos)) < 0.02:
+                                    clean = False
+                                    break
+                        except Exception:
+                            pass
+                    if not clean:
+                        contaminated += 1
+                bundle.clean_lap_mask.append({'lap': lap, 'clean': clean})
+            bundle.contaminated_laps = contaminated
+        except Exception as e:
+            logger.debug("traffic detection failed: %s", e)
 
     def _extract_braking(self, bundle: SignalBundle, analysis, style_report):
         if not analysis:
@@ -416,6 +544,8 @@ class SetupDeltaEngine:
         # Run all rule groups
         deltas += self._brake_bias_rules(bundle, effective_class)
         deltas += self._arb_rules(bundle, effective_class)
+        deltas += self._slip_angle_rules(bundle, effective_class)   # Tier 1: direct OS/US
+        deltas += self._suspension_rules(bundle, effective_class)    # Tier 1: shock travel
         deltas += self._spring_rules(bundle, effective_class)
         deltas += self._camber_rules(bundle, effective_class)
         deltas += self._tire_pressure_rules(bundle, effective_class)
@@ -622,6 +752,176 @@ class SetupDeltaEngine:
                     priority=0,
                 ))
 
+        return results
+
+    # ── SUSPENSION TRAVEL (shock_defl) ──────────────────────────────────────
+
+    def _suspension_rules(self, bundle: SignalBundle,
+                           car_class: CarClass) -> List[SetupDelta]:
+        """
+        Ride height and spring recommendations from actual shock travel data.
+        Requires suspension_confidence >= 0.5.
+        """
+        results = []
+        if bundle.suspension_confidence < 0.5 or not bundle.shock_defl_avg:
+            return results
+
+        bounds  = get_bounds(car_class)
+        corners = ['LF', 'RF', 'LR', 'RR']
+
+        # Bottom-out detection: if avg travel > 80% of available range, car is too low
+        rh_params = {'LF': 'rh_lf', 'RF': 'rh_rf', 'LR': 'rh_lr', 'RR': 'rh_rr'}
+        for corner in corners:
+            travel_mm = bundle.shock_defl_avg.get(corner, 0.0)
+            if travel_mm < 1.0:
+                continue
+            b_rh = bounds.get(rh_params[corner])
+            if not b_rh:
+                continue
+            # Available travel = ride_height - min_legal_ride_height
+            cur_rh = self._current(bundle, rh_params[corner],
+                                    (b_rh.min_val + b_rh.max_val) / 2)
+            available = cur_rh - b_rh.min_val
+            if available > 0 and travel_mm > available * 0.82:
+                results.append(SetupDelta(
+                    param=rh_params[corner],
+                    display_name=f'{corner} Ride Height',
+                    garage_tab='CHASSIS',
+                    garage_location=PARAM_GARAGE_INFO.get(rh_params[corner],
+                                    ('CHASSIS',''))[1],
+                    current_value=cur_rh,
+                    recommended_value=cur_rh,
+                    delta=+3.0,
+                    unit='mm',
+                    signal_source=(f'{corner} avg shock travel {travel_mm:.1f}mm '
+                                   f'= {travel_mm/available*100:.0f}% of available range'),
+                    confidence=bundle.suspension_confidence * 0.85,
+                    reasoning=(
+                        f'{corner} suspension is using {travel_mm:.1f}mm of '
+                        f'{available:.0f}mm available travel — near bottoming. '
+                        f'Raising ride height by 3mm reduces risk of grounding '
+                        f'and improves aero consistency.'),
+                    driver_feel='Less bottoming over kerbs. Slightly higher centre of gravity.',
+                    priority=0,
+                ))
+
+        # Damper HS/LS imbalance — if high-speed events dominate, springs too soft
+        for corner in corners:
+            hist = bundle.shock_vel_histogram.get(corner)
+            if not hist:
+                continue
+            if hist.get('high_speed_pct', 0) > 0.35:
+                # More than 35% of damper events are high-speed → spring rate issue
+                spring_param = {'LF':'spring_lf','RF':'spring_rf',
+                                'LR':'spring_lr','RR':'spring_rr'}.get(corner)
+                if not spring_param:
+                    continue
+                b_sp = bounds.get(spring_param)
+                if not b_sp:
+                    continue
+                cur_sp = self._current(bundle, spring_param,
+                                        (b_sp.min_val + b_sp.max_val) / 2)
+                results.append(SetupDelta(
+                    param=spring_param,
+                    display_name=f'{corner} Spring Rate',
+                    garage_tab='CHASSIS',
+                    garage_location=PARAM_GARAGE_INFO.get(spring_param,
+                                    ('CHASSIS',''))[1],
+                    current_value=cur_sp,
+                    recommended_value=cur_sp,
+                    delta=+b_sp.step,
+                    unit=b_sp.unit,
+                    signal_source=(f'{corner} HS damper events: '
+                                   f'{hist["high_speed_pct"]*100:.0f}% of stroke'),
+                    confidence=bundle.suspension_confidence * 0.7,
+                    reasoning=(
+                        f'{corner} damper is operating in high-speed territory '
+                        f'{hist["high_speed_pct"]*100:.0f}% of the time, indicating '
+                        f'the spring is too soft to support the body motion. '
+                        f'Increasing spring rate by {b_sp.step:.0f} {b_sp.unit} '
+                        f'shifts load from damper to spring.'),
+                    driver_feel='Less body movement. Firmer initial response over bumps.',
+                    priority=0,
+                ))
+        return results
+
+    # ── SLIP ANGLE RULES ─────────────────────────────────────────────────────
+
+    def _slip_angle_rules(self, bundle: SignalBundle,
+                           car_class: CarClass) -> List[SetupDelta]:
+        """
+        Direct understeer/oversteer diagnosis from wheel slip angles.
+        More precise than balance score alone.
+        """
+        results = []
+        if bundle.slip_confidence < 0.5 or not bundle.slip_angle_avg:
+            return results
+
+        bounds = get_bounds(car_class)
+        front_avg = (bundle.slip_angle_avg.get('LF', 0) +
+                     bundle.slip_angle_avg.get('RF', 0)) / 2
+        rear_avg  = (bundle.slip_angle_avg.get('LR', 0) +
+                     bundle.slip_angle_avg.get('RR', 0)) / 2
+
+        if front_avg < 0.001 and rear_avg < 0.001:
+            return results
+
+        # Oversteer: rear slip >> front slip
+        if rear_avg > front_avg * 1.4 and rear_avg > 0.02:
+            b = bounds.get('arb_rear')
+            if b:
+                cur = self._current(bundle, 'arb_rear',
+                                     (b.min_val + b.max_val) / 2)
+                results.append(SetupDelta(
+                    param='arb_rear',
+                    display_name='Rear ARB',
+                    garage_tab='CHASSIS',
+                    garage_location=PARAM_GARAGE_INFO.get('arb_rear',('CHASSIS',''))[1],
+                    current_value=cur,
+                    recommended_value=cur,
+                    delta=-1,
+                    unit='step',
+                    signal_source=(f'Rear slip {rear_avg:.3f}rad vs '
+                                   f'front {front_avg:.3f}rad '
+                                   f'({rear_avg/max(front_avg,0.001):.1f}x ratio)'),
+                    confidence=bundle.slip_confidence,
+                    reasoning=(
+                        f'Rear wheel slip angle ({rear_avg:.3f} rad) is '
+                        f'{rear_avg/max(front_avg,0.001):.1f}x the front '
+                        f'({front_avg:.3f} rad) — direct evidence of rear-end '
+                        f'breakaway. Softening rear ARB by 1 step distributes '
+                        f'load more evenly across both rear tires.'),
+                    driver_feel='More predictable rear. Reduced snap oversteer tendency.',
+                    priority=0,
+                ))
+
+        # Understeer: front slip >> rear slip
+        elif front_avg > rear_avg * 1.4 and front_avg > 0.02:
+            b = bounds.get('arb_front')
+            if b:
+                cur = self._current(bundle, 'arb_front',
+                                     (b.min_val + b.max_val) / 2)
+                results.append(SetupDelta(
+                    param='arb_front',
+                    display_name='Front ARB',
+                    garage_tab='CHASSIS',
+                    garage_location=PARAM_GARAGE_INFO.get('arb_front',('CHASSIS',''))[1],
+                    current_value=cur,
+                    recommended_value=cur,
+                    delta=-1,
+                    unit='step',
+                    signal_source=(f'Front slip {front_avg:.3f}rad vs '
+                                   f'rear {rear_avg:.3f}rad '
+                                   f'({front_avg/max(rear_avg,0.001):.1f}x ratio)'),
+                    confidence=bundle.slip_confidence,
+                    reasoning=(
+                        f'Front wheel slip angle ({front_avg:.3f} rad) is '
+                        f'{front_avg/max(rear_avg,0.001):.1f}x the rear — '
+                        f'direct evidence of front understeer. Softening front '
+                        f'ARB increases front grip by allowing more front body roll.'),
+                    driver_feel='More front response to steering input. Sharper turn-in.',
+                    priority=0,
+                ))
         return results
 
     # ── SPRINGS ─────────────────────────────────────────────────────────────

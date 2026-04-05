@@ -38,12 +38,39 @@ class LiveSample:
     tire_pressures: Dict[str, float] = field(default_factory=dict)
     tire_wear: Dict[str, float] = field(default_factory=dict)
     # Track conditions
-    track_temp_c: float = 0.0        # TrackTempCrew — live track surface temp
-    air_temp_c: float = 0.0          # AirTemp
+    track_temp_c: float = 0.0
+    air_temp_c: float = 0.0
     # Live sector deltas
-    lap_delta_to_best: float = 0.0   # LapDeltaToBestLap — +slow, -fast vs best
-    lap_delta_to_optimal: float = 0.0  # LapDeltaToOptimalLap
+    lap_delta_to_best: float = 0.0
+    lap_delta_to_optimal: float = 0.0
     lap_delta_valid: bool = False
+    # Suspension travel (meters)
+    shock_defl: Dict[str, float] = field(default_factory=dict)   # LF/RF/LR/RR
+    shock_vel: Dict[str, float] = field(default_factory=dict)    # damper velocity m/s
+    # Wheel slip angles (radians, + = understeer)
+    slip_angle: Dict[str, float] = field(default_factory=dict)
+    # Brake line pressures (Pa)
+    brake_line_press: Dict[str, float] = field(default_factory=dict)
+    # Tire wear (0=new, 1=worn) per zone
+    tire_wear_detail: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    # Race position
+    car_position: int = 0
+    car_class_position: int = 0
+    session_laps_remain: int = -1
+    # All cars track position (for traffic detection)
+    car_idx_lap_dist: Dict[int, float] = field(default_factory=dict)
+    car_idx_lap: Dict[int, int] = field(default_factory=dict)
+    # Driver coaching
+    brake_bias_pct: float = 0.0
+    tc_level: int = 0
+    abs_level: int = 0
+    shift_rpm: float = 0.0
+    blink_rpm: float = 0.0
+    shift_grind_rpm: float = 0.0
+    steering_torque: float = 0.0
+    clutch_pct: float = 0.0
+    is_on_track: bool = False
+    is_in_garage: bool = False
     # Driver inputs quality
     brake_abs_active: bool = False
     tc_active: bool = False
@@ -205,14 +232,64 @@ class LiveTelemetryMonitor:
         sample.air_temp_c   = float(g('AirTemp', 0.0))
 
         # Live sector delta channels
-        _delta_best = g('LapDeltaToBestLap', 0.0)
-        _delta_opt  = g('LapDeltaToOptimalLap', 0.0)
-        _delta_ok   = g('LapDeltaToBestLapOK', 0.0)
-        sample.lap_delta_to_best    = float(_delta_best)
-        sample.lap_delta_to_optimal = float(_delta_opt)
-        sample.lap_delta_valid      = bool(_delta_ok)
+        sample.lap_delta_to_best    = float(g('LapDeltaToBestLap', 0.0))
+        sample.lap_delta_to_optimal = float(g('LapDeltaToOptimalLap', 0.0))
+        sample.lap_delta_valid      = bool(g('LapDeltaToBestLapOK', 0.0))
 
-        # Driver aid activity
+        # ── TIER 1: Suspension travel + damper velocity ─────────────────────
+        for _c, _key in [('LF','LF'), ('RF','RF'), ('LR','LR'), ('RR','RR')]:
+            sample.shock_defl[_c] = float(g(f'{_key}shockDefl', 0.0))
+            sample.shock_vel[_c]  = float(g(f'{_key}shockVel', 0.0))
+
+        # Wheel slip angles
+        for _c, _key in [('LF','LF'), ('RF','RF'), ('LR','LR'), ('RR','RR')]:
+            sample.slip_angle[_c] = float(g(f'WheelSlipAngle_{_key}', 0.0))
+
+        # Brake line pressures
+        for _c, _key in [('LF','LF'), ('RF','RF'), ('LR','LR'), ('RR','RR')]:
+            sample.brake_line_press[_c] = float(g(f'{_key}brakeLinePress', 0.0))
+
+        # Tire wear per zone
+        for _c, _key in [('LF','LF'), ('RF','RF'), ('LR','LR'), ('RR','RR')]:
+            sample.tire_wear_detail[_c] = {
+                'L': float(g(f'{_key}wearL', 0.0)),
+                'M': float(g(f'{_key}wearM', 0.0)),
+                'R': float(g(f'{_key}wearR', 0.0)),
+            }
+
+        # ── TIER 2: Race position + strategy ───────────────────────────────
+        sample.car_position       = int(g('PlayerCarPosition', 0))
+        sample.car_class_position = int(g('PlayerCarClassPosition', 0))
+        sample.session_laps_remain = int(g('SessionLapsRemain', -1))
+
+        # All car track positions (traffic detection)
+        try:
+            _all_dist = ir['CarIdxLapDistPct']
+            _all_laps = ir['CarIdxLapCompleted']
+            if _all_dist is not None:
+                for _i, _d in enumerate(_all_dist):
+                    if _d is not None and _d >= 0:
+                        sample.car_idx_lap_dist[_i] = float(_d)
+            if _all_laps is not None:
+                for _i, _l in enumerate(_all_laps):
+                    if _l is not None:
+                        sample.car_idx_lap[_i] = int(_l)
+        except Exception:
+            pass
+
+        # ── TIER 3: Driver coaching channels ───────────────────────────────
+        sample.brake_bias_pct   = float(g('dcBrakeBias', 0.0)) * 100.0
+        sample.tc_level         = int(g('dcTractionControl', 0))
+        sample.abs_level        = int(g('dcABS', 0))
+        sample.shift_rpm        = float(g('PlayerCarSLShiftRPM', 0.0))
+        sample.blink_rpm        = float(g('PlayerCarSLBlinkRPM', 0.0))
+        sample.shift_grind_rpm  = float(g('ShiftGrindRPM', 0.0))
+        sample.steering_torque  = float(g('SteeringWheelTorque', 0.0))
+        sample.clutch_pct       = float(g('ClutchPct', 0.0))
+        sample.is_on_track      = bool(g('IsOnTrackCar', 0))
+        sample.is_in_garage     = bool(g('IsInGarage', 0))
+
+        # Aid activity
         sample.brake_abs_active = bool(g('BrakeABSactive', 0))
         sample.tc_active        = bool(g('dcTractionControl', 0) > 0 and
                                        g('ThrottleRaw', g('Throttle')) > g('Throttle') + 0.02)

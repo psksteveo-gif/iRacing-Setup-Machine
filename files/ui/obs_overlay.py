@@ -8,6 +8,9 @@ Shows in real-time:
   • Tire temperature grid (4 corners, colour-coded)
   • Fuel level + estimated laps remaining
   • Live lap-delta sparkline vs. session best (when IBT data is loaded)
+  • SDK lap delta (LapDeltaToBestLap) — more accurate when SDK connected
+  • Track surface temperature (TrackTempCrew)
+  • ABS / TC active indicators
 
 Designed to be captured by OBS as a Window or Display source — the window
 has a black background with a small footprint (~340 × 280 px) so it can be
@@ -31,7 +34,7 @@ import customtkinter as ctk
 try:
     from ui.theme import DARK, PANEL, CARD, TEXT, DIM, GREEN, YELLOW, RED, ACCENT
 except ImportError:
-    DARK = "#0c0a12"; PANEL = "#140e1e"; CARD = "#1e1530"
+    DARK = "#08080A"; PANEL = "#140e1e"; CARD = "#1e1530"
     TEXT = "#e0e0e0"; DIM = "#888"; GREEN = "#2ecc71"
     YELLOW = "#f1c40f"; RED = "#e74c3c"; ACCENT = "#e74c3c"
 
@@ -206,6 +209,19 @@ class OBSOverlay:
             self._tyre_lbls[name] = val
         grid.columnconfigure(0, weight=1); grid.columnconfigure(1, weight=1)
 
+        # ── Conditions + Aid row ────────────────────────────────────
+        cond_row = ctk.CTkFrame(win, fg_color=_BG, height=20)
+        cond_row.pack(fill='x', padx=4, pady=(2, 0))
+        cond_row.pack_propagate(False)
+        self._lbl_track_temp = self._small_lbl(cond_row, 'Trk --°C', color=DIM)
+        self._lbl_track_temp.pack(side='left', padx=(2, 8))
+        self._lbl_abs = self._small_lbl(cond_row, 'ABS', color=DIM)
+        self._lbl_abs.pack(side='left', padx=(0, 4))
+        self._lbl_tc  = self._small_lbl(cond_row, 'TC', color=DIM)
+        self._lbl_tc.pack(side='left')
+        self._lbl_sdk_delta = self._small_lbl(cond_row, '', color=DIM)
+        self._lbl_sdk_delta.pack(side='right', padx=4)
+
         # ── Delta sparkline canvas ───────────────────────────────────
         self._spark_canvas = ctk.CTkCanvas(win, width=_W - 8, height=28,
                                             bg=_BG, highlightthickness=0)
@@ -278,8 +294,14 @@ class OBSOverlay:
         self._lbl_best.configure(text=f"Best  {_fmt_time(s.best_lap)}")
         self._lbl_last.configure(text=f"Last  {_fmt_time(s.last_lap)}")
 
-        # Live delta vs best lap (interpolate from ref data)
-        delta = self._compute_delta(s)
+        # Live delta — prefer SDK delta (accurate) over interpolated ref delta
+        sdk_delta_used = False
+        if getattr(s, 'lap_delta_valid', False) and s.lap_dist_pct > 0.05:
+            delta = s.lap_delta_to_best
+            sdk_delta_used = True
+        else:
+            delta = self._compute_delta(s)
+
         if delta is not None:
             sign = "+" if delta >= 0 else ""
             self._lbl_delta.configure(
@@ -290,6 +312,10 @@ class OBSOverlay:
             if len(self._delta_history) > 120:
                 self._delta_history.pop(0)
             self._draw_spark()
+            # Show SDK vs ref source indicator
+            if hasattr(self, '_lbl_sdk_delta'):
+                src_txt = "SDK Δ" if sdk_delta_used else "Ref Δ"
+                self._lbl_sdk_delta.configure(text=src_txt, text_color=DIM)
         else:
             self._lbl_delta.configure(text="Δ ---.---", text_color=DIM)
 
@@ -315,6 +341,28 @@ class OBSOverlay:
         self._set_bar(self._thr_bar, s.throttle)
         self._set_bar(self._brk_bar, s.brake)
 
+        # Track temp + conditions
+        if hasattr(self, '_lbl_track_temp'):
+            tt = getattr(s, 'track_temp_c', 0.0)
+            if tt > 0:
+                from core import units
+                tt_disp = (tt * 9/5 + 32) if units.use_fahrenheit() else tt
+                unit_c = "°F" if units.use_fahrenheit() else "°C"
+                self._lbl_track_temp.configure(
+                    text=f"Trk {tt_disp:.0f}{unit_c}",
+                    text_color=TEXT)
+            else:
+                self._lbl_track_temp.configure(text="Trk --", text_color=DIM)
+
+        if hasattr(self, '_lbl_abs'):
+            abs_on = getattr(s, 'brake_abs_active', False)
+            self._lbl_abs.configure(
+                text_color=YELLOW if abs_on else DIM)
+        if hasattr(self, '_lbl_tc'):
+            tc_on = getattr(s, 'tc_active', False)
+            self._lbl_tc.configure(
+                text_color=GREEN if tc_on else DIM)
+
         # Tyre temps
         corner_map = {"FL": "lf", "FR": "rf", "RL": "lr", "RR": "rr"}
         for corner, key in corner_map.items():
@@ -337,6 +385,14 @@ class OBSOverlay:
         self._set_bar(self._thr_bar, 0); self._set_bar(self._brk_bar, 0)
         for lbl in self._tyre_lbls.values():
             lbl.configure(text="--°", text_color=DIM)
+        if hasattr(self, '_lbl_track_temp'):
+            self._lbl_track_temp.configure(text="Trk --", text_color=DIM)
+        if hasattr(self, '_lbl_abs'):
+            self._lbl_abs.configure(text_color=DIM)
+        if hasattr(self, '_lbl_tc'):
+            self._lbl_tc.configure(text_color=DIM)
+        if hasattr(self, '_lbl_sdk_delta'):
+            self._lbl_sdk_delta.configure(text="", text_color=DIM)
 
     def _compute_delta(self, s: LiveSample) -> Optional[float]:
         """Interpolate lap delta at current dist_pct from ref_delta data."""
