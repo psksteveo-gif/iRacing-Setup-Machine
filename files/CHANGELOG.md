@@ -207,3 +207,28 @@ All notable changes documented here. Format: `[version] - date | what changed | 
 ### Changed
 - `core/setup_generator.py` — `_body_motion_rules()` now runs in `compute_deltas()`
   after slip angle and suspension rules (all Tier 1 physics rules run before heuristic rules)
+
+---
+
+## [3.8.0] - 2026-04-06 | Compare Tab Upgrades
+
+### Added
+- `main.py` — `_draw_ab_corner_speeds()` — per-corner minimum speed table:
+  - Detects speed minima on each driver's best lap using local min algorithm
+  - Matches corners between sessions by track position (within 5%)
+  - Ranks by largest delta, shows top 12 corners color-coded green/red
+  - Data: Position %, A km/h, B km/h, Δ km/h with inline bar visualization
+- `main.py` — `_draw_ab_ai_brief()` — AI comparison streaming panel:
+  - Streams focused 3-4 sentence analysis via claude-haiku-4-5-20251001
+  - Prompt: session A vs B, lap delta, balance scores, top issues
+  - Plain text response (not JSON) — readable as narrative
+  - "Compare with AI" button, streams in real-time
+- `main.py` — A/B compare channel selector expanded from 13 → 24 channels:
+  - Added: LFshockDefl/Vel (suspension), WheelSlipAngle_LF/RF (slip angles),
+    LFbrakeLinePress/RFbrakeLinePress (brake line), SteeringWheelTorque,
+    YawRate, RollRate, FuelLevel
+  - Width: 150 → 180px to fit longer channel names
+
+### Notes
+- Corner detection uses 1000-point interpolated grid, 5% window deduplication
+- AI brief uses Haiku (fastest/cheapest) — not Sonnet — appropriate for short analysis

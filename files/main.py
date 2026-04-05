@@ -1170,9 +1170,14 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             values=["Speed", "Throttle", "Brake", "RPM",
                     "SteeringWheelAngle", "LatAccel", "LongAccel",
                     "LFpress", "RFpress", "LRpress", "RRpress",
-                    "WaterTemp", "OilTemp"],
+                    "LFshockDefl", "RFshockDefl", "LRshockDefl", "RRshockDefl",
+                    "LFshockVel", "RFshockVel",
+                    "WheelSlipAngle_LF", "WheelSlipAngle_RF",
+                    "LFbrakeLinePress", "RFbrakeLinePress",
+                    "SteeringWheelTorque", "YawRate", "RollRate",
+                    "FuelLevel", "WaterTemp", "OilTemp"],
             variable=self._ab_ch_var,
-            fg_color=CARD, button_color=ACCENT, width=150
+            fg_color=CARD, button_color=ACCENT, width=180
         ).pack(side='left', padx=4)
         ctk.CTkButton(ctrl_row, text="Compare →", height=28,
                       fg_color=ACCENT, command=self._ab_refresh).pack(side='left', padx=4)
@@ -1262,6 +1267,12 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                             10, color=color).pack(anchor='w', padx=8, pady=1)
             except Exception:
                 pass
+
+        # ── Per-corner minimum speed comparison ────────────────────────────
+        self._draw_ab_corner_speeds(f, da, db)
+
+        # ── AI Comparison Brief ────────────────────────────────────────────
+        self._draw_ab_ai_brief(f, da, db, ra, rb)
 
     def _draw_ab_time_delta(self, parent, da, db):
         """Cumulative time-delta map: how much time A gains/loses vs B at every track position."""
@@ -1377,6 +1388,196 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             dch.draw()
         except Exception:
             pass
+
+    def _draw_ab_corner_speeds(self, parent, da, db):
+        """Corner minimum speed comparison between two sessions."""
+        try:
+            spd_a  = da.get_channel('Speed')
+            spd_b  = db.get_channel('Speed')
+            dist_a = da.get_channel('LapDistPct')
+            dist_b = db.get_channel('LapDistPct')
+            if any(c is None for c in [spd_a, spd_b, dist_a, dist_b]):
+                return
+            if not da.lap_times or not db.lap_times:
+                return
+
+            def _best_arrays(data, spd_ch, dist_ch):
+                bi = int(np.argmin(data.lap_times))
+                if bi + 1 >= len(data.lap_boundaries):
+                    return None, None
+                s, e = data.lap_boundaries[bi], data.lap_boundaries[bi + 1]
+                return spd_ch[s:e] * 3.6, dist_ch[s:e]
+
+            spd_km_a, d_a = _best_arrays(da, spd_a, dist_a)
+            spd_km_b, d_b = _best_arrays(db, spd_b, dist_b)
+            if spd_km_a is None or spd_km_b is None:
+                return
+
+            def _find_corners(spd, dist):
+                n_pts = 1000
+                grid  = np.linspace(0, 1, n_pts)
+                spd_i = np.interp(grid, dist, spd)
+                window = n_pts // 20
+                raw = []
+                for i in range(window, n_pts - window):
+                    lo, hi = i - window // 2, i + window // 2
+                    if (spd_i[i] == np.min(spd_i[lo:hi]) and
+                            np.max(spd_i[i-window:i+window]) -
+                            np.min(spd_i[i-window:i+window]) > 20):
+                        raw.append((float(grid[i]), float(spd_i[i])))
+                deduped = []
+                for pct, v in sorted(raw, key=lambda x: x[0]):
+                    if not deduped or pct - deduped[-1][0] > 0.03:
+                        deduped.append((pct, v))
+                    elif v < deduped[-1][1]:
+                        deduped[-1] = (pct, v)
+                return deduped
+
+            ca = _find_corners(spd_km_a, d_a)
+            cb = _find_corners(spd_km_b, d_b)
+            if not ca or not cb:
+                return
+
+            matched = []
+            for pct_a, min_a in ca:
+                bm = min(cb, key=lambda x: abs(x[0] - pct_a))
+                if abs(bm[0] - pct_a) < 0.05:
+                    matched.append({'pct': pct_a, 'min_a': min_a,
+                                    'min_b': bm[1], 'delta': bm[1] - min_a})
+            if not matched:
+                return
+
+            hdr_row = ctk.CTkFrame(parent, fg_color='transparent')
+            hdr_row.pack(fill='x', pady=(8, 2))
+            lbl(hdr_row, '\U0001f3ce  Corner Minimum Speed Comparison',
+                12, bold=True, color=ACCENT).pack(side='left')
+            lbl(hdr_row, '  +\u2009=\u2009B faster   \u2212\u2009=\u2009A faster',
+                10, color=DIM).pack(side='left')
+
+            tbl = ctk.CTkFrame(parent, fg_color=PANEL, corner_radius=6)
+            tbl.pack(fill='x', pady=2)
+            hr = ctk.CTkFrame(tbl, fg_color=CARD, corner_radius=4)
+            hr.pack(fill='x', padx=4, pady=(4, 2))
+            for hd, w in [("Position", 100), ("A km/h", 100),
+                           ("B km/h", 100), ("\u0394 km/h", 100)]:
+                lbl(hr, hd, 9, bold=True, color=DIM).pack(
+                    side='left', padx=6, pady=4, width=w, anchor='w')
+
+            for c in sorted(matched, key=lambda x: abs(x['delta']), reverse=True)[:12]:
+                row = ctk.CTkFrame(tbl, fg_color='transparent')
+                row.pack(fill='x', padx=4, pady=1)
+                dv   = c['delta']
+                sign = '+' if dv > 0 else ''
+                dcol = GREEN if dv > 1 else RED if dv < -1 else DIM
+                for txt, w in [(f"{c['pct']*100:.0f}%", 100),
+                               (f"{c['min_a']:.1f}", 100),
+                               (f"{c['min_b']:.1f}", 100),
+                               (f"{sign}{dv:.1f}", 100)]:
+                    lbl(row, txt, 10,
+                        color=dcol if txt[:1] in ('+', '-') else TEXT).pack(
+                        side='left', padx=6, width=w, anchor='w')
+        except Exception as _cex:
+            logger.debug('Corner speed comparison failed: %s', _cex)
+
+    def _draw_ab_ai_brief(self, parent, da, db, ra, rb):
+        """AI comparison brief — streams focused analysis of two sessions."""
+        ai_frame = ctk.CTkFrame(parent, fg_color=PANEL, corner_radius=8)
+        ai_frame.pack(fill='x', pady=(8, 4))
+        ai_hdr = ctk.CTkFrame(ai_frame, fg_color='transparent')
+        ai_hdr.pack(fill='x', padx=12, pady=(8, 4))
+        lbl(ai_hdr, '\U0001f916  AI Comparison Analysis',
+            12, bold=True, color=ACCENT).pack(side='left')
+        lbl(ai_hdr, '  What changed, who is faster, and what to fix',
+            10, color=DIM).pack(side='left')
+
+        ai_box = ctk.CTkTextbox(ai_frame, height=140, fg_color='#111827',
+                                 font=ctk.CTkFont(size=12), wrap='word')
+        ai_box.pack(fill='x', padx=12, pady=(0, 4))
+        ai_box.insert('1.0', "Click '\u2728 Compare with AI' for analysis "
+                              "of what differs between these sessions.")
+        ai_box.configure(state='disabled')
+
+        btn_row = ctk.CTkFrame(ai_frame, fg_color='transparent')
+        btn_row.pack(fill='x', padx=12, pady=(0, 8))
+        ai_btn = ctk.CTkButton(btn_row, text='\u2728 Compare with AI',
+                                width=160, height=30,
+                                fg_color=ACCENT, hover_color='#C04A10')
+        ai_btn.pack(side='left')
+        ai_stat = lbl(btn_row, '', 10, color=DIM)
+        ai_stat.pack(side='left', padx=10)
+
+        def _compare():
+            k = _get_api_key().strip()
+            if not k:
+                messagebox.showwarning('API Key',
+                    'Set your API key in Settings (\u2699) first.')
+                return
+            if ra is None or rb is None:
+                return
+            ai_btn.configure(state='disabled', text='Analyzing\u2026')
+            ai_stat.configure(text='\u23f3 Streaming\u2026')
+            ai_box.configure(state='normal')
+            ai_box.delete('1.0', 'end')
+            ai_box.configure(state='disabled')
+
+            lap_d   = rb.best_lap - ra.best_lap
+            sign    = '+' if lap_d > 0 else ''
+            faster  = 'B faster' if lap_d < 0 else 'A faster'
+            a_iss   = ', '.join(i.title for i in ra.issues[:4]) or 'None'
+            b_iss   = ', '.join(i.title for i in rb.issues[:4]) or 'None'
+            prompt  = '\n'.join([
+                'Respond in plain text only. No JSON. No markdown headers.',
+                'Compare these two iRacing sessions concisely.',
+                '',
+                'Session A: ' + da.car_name + ' at ' + da.track_name,
+                '  Best: ' + format_laptime(ra.best_lap) +
+                    '  Balance: ' + f'{ra.balance_score:+.2f}',
+                '  Issues: ' + a_iss,
+                '',
+                'Session B: ' + db.car_name + ' at ' + db.track_name,
+                '  Best: ' + format_laptime(rb.best_lap) +
+                    '  Balance: ' + f'{rb.balance_score:+.2f}',
+                '  Issues: ' + b_iss,
+                '',
+                'Lap delta (B-A): ' + sign +
+                    format_laptime(abs(lap_d)) + ' (' + faster + ')',
+                '',
+                'In 3-4 sentences: what changed between sessions, which is '
+                'better and why, and the single most important change for '
+                'the next session. Be specific and data-driven.',
+            ])
+
+            def _stream():
+                try:
+                    import anthropic
+                    client = anthropic.Anthropic(api_key=k, timeout=45.0)
+                    with client.messages.stream(
+                        model='claude-haiku-4-5-20251001',
+                        max_tokens=400,
+                        messages=[{'role': 'user', 'content': prompt}],
+                    ) as stream:
+                        for chunk in stream.text_stream:
+                            def _append(c=chunk):
+                                ai_box.configure(state='normal')
+                                ai_box.insert('end', c)
+                                ai_box.configure(state='disabled')
+                                ai_box.see('end')
+                            parent.after(0, _append)
+                except Exception as ex:
+                    def _err(e=ex):
+                        ai_box.configure(state='normal')
+                        ai_box.insert('end', '\n\nError: ' + str(e))
+                        ai_box.configure(state='disabled')
+                    parent.after(0, _err)
+                parent.after(0, lambda: (
+                    ai_btn.configure(state='normal',
+                                     text='\u2728 Compare with AI'),
+                    ai_stat.configure(text='\u2705 Done')))
+
+            import threading
+            threading.Thread(target=_stream, daemon=True).start()
+
+        ai_btn.configure(command=_compare)
 
     def _draw_ab_setup_diff(self, parent, da, db):
         """Show a table of setup parameters that differ between A and B."""
