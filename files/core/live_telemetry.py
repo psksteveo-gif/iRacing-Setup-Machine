@@ -71,6 +71,10 @@ class LiveSample:
     clutch_pct: float = 0.0
     is_on_track: bool = False
     is_in_garage: bool = False
+    # Body motion (rotation rates rad/s)
+    yaw_rate: float = 0.0        # YawRate — rotation around vertical axis
+    pitch_rate: float = 0.0      # PitchRate — nose up/down
+    roll_rate: float = 0.0       # RollRate — body roll left/right
     # Driver inputs quality
     brake_abs_active: bool = False
     tc_active: bool = False
@@ -288,6 +292,11 @@ class LiveTelemetryMonitor:
         sample.clutch_pct       = float(g('ClutchPct', 0.0))
         sample.is_on_track      = bool(g('IsOnTrackCar', 0))
         sample.is_in_garage     = bool(g('IsInGarage', 0))
+
+        # Body motion rates
+        sample.yaw_rate   = float(g('YawRate',   0.0))
+        sample.pitch_rate = float(g('PitchRate', 0.0))
+        sample.roll_rate  = float(g('RollRate',  0.0))
 
         # Aid activity
         sample.brake_abs_active = bool(g('BrakeABSactive', 0))

@@ -119,6 +119,11 @@ class SignalBundle:
     brake_actual_front_pct: Optional[float] = None
     brake_dial_pct: Optional[float] = None
 
+    # Body motion (from YawRate / PitchRate / RollRate channels)
+    roll_rate_cornering: float = 0.0    # avg abs roll rate during cornering rad/s
+    pitch_rate_braking: float = 0.0     # avg abs pitch rate during braking rad/s
+    body_motion_confidence: float = 0.0
+
     # Track character
     track_name: str = ""
     track_type: str = "road"          # 'road' | 'oval' | 'dirt'
@@ -296,6 +301,7 @@ class IBTSignalExtractor:
         self._extract_suspension(bundle, analysis)
         self._extract_slip_angles(bundle, analysis)
         self._extract_traffic(bundle, analysis)
+        self._extract_body_motion(bundle, analysis)
 
         return bundle
 
@@ -504,6 +510,88 @@ class IBTSignalExtractor:
         elif analysis:
             bundle.consistency_score = getattr(analysis, 'consistency_score', 0) or 0
 
+    def _extract_body_motion(self, bundle: SignalBundle, analysis):
+        """
+        Extract body motion rates (roll/pitch) from YawRate/PitchRate/RollRate channels.
+        High roll rate during cornering = ARB too soft.
+        High pitch rate during braking = spring rate imbalance front/rear.
+        """
+        if not analysis:
+            return
+        channels = getattr(analysis, '_channels', None) or getattr(analysis, 'channels', None)
+        if channels is None:
+            return
+        try:
+            import numpy as np
+            roll_ch  = channels.get('RollRate')
+            pitch_ch = channels.get('PitchRate')
+            lat_ch   = channels.get('LatAccel')
+            brk_ch   = channels.get('Brake')
+            any_data = False
+            if roll_ch is not None and lat_ch is not None:
+                any_data = True
+                cornering = np.abs(lat_ch) > 3.0
+                if cornering.sum() > 200:
+                    bundle.roll_rate_cornering = float(np.mean(np.abs(roll_ch[cornering])))
+            if pitch_ch is not None and brk_ch is not None:
+                any_data = True
+                braking = brk_ch > 0.3
+                if braking.sum() > 200:
+                    bundle.pitch_rate_braking = float(np.mean(np.abs(pitch_ch[braking])))
+            if any_data:
+                bundle.body_motion_confidence = min(1.0, bundle.laps_analyzed / 5.0)
+        except Exception as e:
+            logger.debug("body motion extraction failed: %s", e)
+
+    def _body_motion_rules(self, bundle: SignalBundle,
+                            car_class: CarClass) -> List[SetupDelta]:
+        """ARB and spring recommendations from body roll/pitch rates."""
+        results = []
+        if bundle.body_motion_confidence < 0.5:
+            return results
+        bounds = get_bounds(car_class)
+        # High roll rate → ARBs too soft
+        if bundle.roll_rate_cornering > 0.8:
+            side = 'rear' if (bundle.balance_score or 0) > 0.3 else 'front'
+            param = f'arb_{side}'
+            b = bounds.get(param)
+            if b:
+                cur = self._current(bundle, param, (b.min_val + b.max_val) / 2)
+                results.append(SetupDelta(
+                    param=param,
+                    display_name=f'{side.title()} ARB',
+                    garage_tab='CHASSIS',
+                    garage_location=PARAM_GARAGE_INFO.get(param, ('CHASSIS',''))[1],
+                    current_value=cur, recommended_value=cur, delta=+1, unit='step',
+                    signal_source=f'Roll rate: {bundle.roll_rate_cornering:.2f} rad/s (threshold 0.8)',
+                    confidence=bundle.body_motion_confidence * 0.75,
+                    reasoning=(f'Body roll rate {bundle.roll_rate_cornering:.2f} rad/s during '
+                                f'cornering indicates excessive roll. Stiffening {side} ARB '
+                                f'by 1 step improves tire contact patch consistency.'),
+                    driver_feel='Sharper roll response. Slightly more mechanical understeer on turn-in.',
+                    priority=1,
+                ))
+        # High pitch → front springs too soft
+        if bundle.pitch_rate_braking > 1.0:
+            b = bounds.get('spring_lf') or bounds.get('spring_rf')
+            if b:
+                cur = self._current(bundle, 'spring_lf', (b.min_val + b.max_val) / 2)
+                results.append(SetupDelta(
+                    param='spring_lf',
+                    display_name='Front Spring Rate',
+                    garage_tab='CHASSIS',
+                    garage_location=PARAM_GARAGE_INFO.get('spring_lf', ('CHASSIS',''))[1],
+                    current_value=cur, recommended_value=cur, delta=+b.step, unit=b.unit,
+                    signal_source=f'Pitch rate braking: {bundle.pitch_rate_braking:.2f} rad/s (threshold 1.0)',
+                    confidence=bundle.body_motion_confidence * 0.65,
+                    reasoning=(f'Pitch rate {bundle.pitch_rate_braking:.2f} rad/s under braking '
+                                f'indicates nose-dive. Increasing front spring rate by '
+                                f'{b.step:.0f} {b.unit} reduces dive and stabilises brake balance.'),
+                    driver_feel='Less front dive under braking. More consistent brake pedal feel.',
+                    priority=1,
+                ))
+        return results
+
     def _classify_track(self, bundle: SignalBundle, corner_report):
         name = bundle.track_name.lower()
         if any(w in name for w in ('oval', 'daytona', 'talladega', 'bristol',
@@ -546,6 +634,7 @@ class SetupDeltaEngine:
         deltas += self._arb_rules(bundle, effective_class)
         deltas += self._slip_angle_rules(bundle, effective_class)   # Tier 1: direct OS/US
         deltas += self._suspension_rules(bundle, effective_class)    # Tier 1: shock travel
+        deltas += self._body_motion_rules(bundle, effective_class)   # body roll/pitch rates
         deltas += self._spring_rules(bundle, effective_class)
         deltas += self._camber_rules(bundle, effective_class)
         deltas += self._tire_pressure_rules(bundle, effective_class)

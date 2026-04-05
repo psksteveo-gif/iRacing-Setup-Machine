@@ -1558,6 +1558,35 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             sc_color = GREEN if cs.overall >= 85 else YELLOW if cs.overall >= 70 else RED
             stat_blk(sr, "Consistency", f"{cs.overall:.0f}  {cs.grade}", sc_color,
                      tooltip=f"Composite consistency rating: lap times ({cs.lap_time_score:.0f}), sectors ({cs.sector_score:.0f}), corners ({cs.corner_score:.0f}), brakes ({cs.brake_point_score:.0f}), speed ({cs.speed_score:.0f})")
+        # ── Analysis Confidence chip ─────────────────────────────────────────
+        _conf = getattr(self, 'cur_enrichments', None)
+        _conf = _conf.confidence if _conf else None
+        if _conf is not None:
+            _conf_col = (GREEN if _conf.score >= 0.85
+                         else YELLOW if _conf.score >= 0.60
+                         else RED)
+            _conf_badge = ctk.CTkFrame(self._di, fg_color='#0A0A0E',
+                                        corner_radius=6, border_width=1,
+                                        border_color=_conf_col)
+            _conf_badge.pack(fill='x', padx=12, pady=(2, 2))
+            _conf_inner = ctk.CTkFrame(_conf_badge, fg_color='transparent')
+            _conf_inner.pack(fill='x', padx=10, pady=5)
+            lbl(_conf_inner,
+                f"📊  Analysis Confidence: {_conf.label}  —  {_conf.score:.0%}",
+                11, bold=True, color=_conf_col).pack(side='left')
+            lbl(_conf_inner,
+                f"{_conf.flying_laps} clean laps",
+                10, color=DIM).pack(side='right')
+            if _conf.issues:
+                _conf_issues_row = ctk.CTkFrame(_conf_badge, fg_color='transparent')
+                _conf_issues_row.pack(fill='x', padx=10, pady=(0, 4))
+                # Show up to 2 issues inline
+                _issue_txt = '  •  '.join(_conf.issues[:2])
+                if len(_conf.issues) > 2:
+                    _issue_txt += f'  •  +{len(_conf.issues)-2} more'
+                lbl(_conf_issues_row, _issue_txt, 10, color=DIM,
+                    wraplength=600, justify='left').pack(anchor='w')
+
         # ── Track Conditions card ─────────────────────────────────────────────
         _cond_items = []
         at = d.session_info.get('air_temp_c')
@@ -7756,78 +7785,86 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                     text="⏳ Waiting for iRacing…", text_color=YELLOW)
             return
 
-        # Connected — update all widgets
-        win._conn_lbl.configure(text="🟢 Connected", text_color=GREEN)
-        win._hint_lbl.configure(text="")
-        if sample.car_name:
-            win._car_lbl.configure(text=f"{sample.car_name}  •  {sample.track_name}")
+        # Connected — update all widgets (wrapped in try/except for winfo_exists safety)
+        try:
+            win._conn_lbl.configure(text="🟢 Connected", text_color=GREEN)
+            win._hint_lbl.configure(text="")
+            if sample.car_name:
+                win._car_lbl.configure(text=f"{sample.car_name}  •  {sample.track_name}")
 
-        spd_color = GREEN if sample.speed_kph > 10 else DIM
-        win._spd_lbl.configure(text=units.fmt_speed_from_kmh(sample.speed_kph, 0), text_color=spd_color)
-        win._gear_lbl.configure(text=f"G{sample.gear}")
-        win._rpm_lbl.configure(text=f"RPM: {sample.rpm:.0f}")
+            spd_color = GREEN if sample.speed_kph > 10 else DIM
+            win._spd_lbl.configure(text=units.fmt_speed_from_kmh(sample.speed_kph, 0), text_color=spd_color)
+            win._gear_lbl.configure(text=f"G{sample.gear}")
+            win._rpm_lbl.configure(text=f"RPM: {sample.rpm:.0f}")
 
-        win._thr_bar.set(sample.throttle)
-        win._thr_pct.configure(text=f"{sample.throttle * 100:.0f}%")
-        win._brk_bar.set(sample.brake)
-        win._brk_pct.configure(text=f"{sample.brake * 100:.0f}%")
+            win._thr_bar.set(sample.throttle)
+            win._thr_pct.configure(text=f"{sample.throttle * 100:.0f}%")
+            win._brk_bar.set(sample.brake)
+            win._brk_pct.configure(text=f"{sample.brake * 100:.0f}%")
 
-        win._laptime_lbl.configure(text=f"Lap: {format_laptime(sample.lap_time)}")
-        win._lastlap_lbl.configure(text=f"Last: {format_laptime(sample.last_lap)}")
-        win._bestlap_lbl.configure(text=f"Best: {format_laptime(sample.best_lap)}")
-        win._lap_num_lbl.configure(text=f"Lap {sample.lap}")
+            win._laptime_lbl.configure(text=f"Lap: {format_laptime(sample.lap_time)}")
+            win._lastlap_lbl.configure(text=f"Last: {format_laptime(sample.last_lap)}")
+            win._bestlap_lbl.configure(text=f"Best: {format_laptime(sample.best_lap)}")
+            win._lap_num_lbl.configure(text=f"Lap {sample.lap}")
 
-        win._fuel_lbl.configure(text=f"Fuel: {sample.fuel_level:.1f}L  ({sample.fuel_pct * 100:.0f}%)")
-        laps_left = self._live_fuel_tracker.laps_remaining(sample.fuel_level)
-        if laps_left > 0:
-            lr_col = GREEN if laps_left > 3 else YELLOW if laps_left > 1 else RED
-            win._fuel_laps_lbl.configure(text=f"~{laps_left:.1f} laps", text_color=lr_col)
-        else:
-            win._fuel_laps_lbl.configure(text="")
-        win._pos_lbl.configure(text=f"Track: {sample.lap_dist_pct * 100:.1f}%")
-
-        # SDK lap delta — show when valid
-        if hasattr(win, '_delta_lbl'):
-            _sdk_delta = getattr(sample, 'lap_delta_to_best', None)
-            _sdk_valid  = getattr(sample, 'lap_delta_valid', False)
-            if _sdk_valid and _sdk_delta is not None and sample.lap_dist_pct > 0.05:
-                _dsign = "+" if _sdk_delta >= 0 else ""
-                _dcol  = GREEN if _sdk_delta < -0.05 else RED if _sdk_delta > 0.05 else YELLOW
-                win._delta_lbl.configure(
-                    text=f"Δ {_dsign}{_sdk_delta:.3f}s",
-                    text_color=_dcol)
+            win._fuel_lbl.configure(text=f"Fuel: {sample.fuel_level:.1f}L  ({sample.fuel_pct * 100:.0f}%)")
+            laps_left = self._live_fuel_tracker.laps_remaining(sample.fuel_level)
+            if laps_left > 0:
+                lr_col = GREEN if laps_left > 3 else YELLOW if laps_left > 1 else RED
+                win._fuel_laps_lbl.configure(text=f"~{laps_left:.1f} laps", text_color=lr_col)
             else:
-                win._delta_lbl.configure(text="Δ ---", text_color=DIM)
+                win._fuel_laps_lbl.configure(text="")
+            win._pos_lbl.configure(text=f"Track: {sample.lap_dist_pct * 100:.1f}%")
 
-        # Track temp
-        if hasattr(win, '_track_temp_lbl'):
-            _tt = getattr(sample, 'track_temp_c', 0.0)
-            if _tt > 0:
+            # SDK lap delta
+            if hasattr(win, '_delta_lbl'):
+                _sdk_delta = getattr(sample, 'lap_delta_to_best', None)
+                _sdk_valid  = getattr(sample, 'lap_delta_valid', False)
+                if _sdk_valid and _sdk_delta is not None and sample.lap_dist_pct > 0.05:
+                    _dsign = "+" if _sdk_delta >= 0 else ""
+                    _dcol  = GREEN if _sdk_delta < -0.05 else RED if _sdk_delta > 0.05 else YELLOW
+                    win._delta_lbl.configure(text=f"Δ {_dsign}{_sdk_delta:.3f}s", text_color=_dcol)
+                else:
+                    win._delta_lbl.configure(text="Δ ---", text_color=DIM)
+
+            # Track temp
+            if hasattr(win, '_track_temp_lbl'):
+                _tt = getattr(sample, 'track_temp_c', 0.0)
                 win._track_temp_lbl.configure(
-                    text=f"Trk {units.fmt_temp(_tt, 0)}",
-                    text_color=TEXT)
+                    text=f"Trk {units.fmt_temp(_tt, 0)}" if _tt > 0 else "Trk --",
+                    text_color=TEXT if _tt > 0 else DIM)
 
-        # ABS / TC indicators
-        if hasattr(win, '_abs_lbl'):
-            _abs = getattr(sample, 'brake_abs_active', False)
-            win._abs_lbl.configure(text_color=YELLOW if _abs else DIM)
-        if hasattr(win, '_tc_lbl'):
-            _tc = getattr(sample, 'tc_active', False)
-            win._tc_lbl.configure(text_color=GREEN if _tc else DIM)
+            # ABS / TC indicators
+            if hasattr(win, '_abs_lbl'):
+                win._abs_lbl.configure(
+                    text_color=YELLOW if getattr(sample, 'brake_abs_active', False) else DIM)
+            if hasattr(win, '_tc_lbl'):
+                win._tc_lbl.configure(
+                    text_color=GREEN if getattr(sample, 'tc_active', False) else DIM)
 
-        if hasattr(win, '_position_lbl') and sample.car_position > 0:
-            win._position_lbl.configure(
-                text=f"P{sample.car_position}",
-                text_color=ACCENT if sample.car_position == 1 else TEXT)
+            # Position
+            if hasattr(win, '_position_lbl') and sample.car_position > 0:
+                win._position_lbl.configure(
+                    text=f"P{sample.car_position}",
+                    text_color=ACCENT if sample.car_position == 1 else TEXT)
 
-        self._status_lbl.configure(text=f"🔴 Live  {units.fmt_speed_from_kmh(sample.speed_kph, 0)}  Lap {sample.lap}  P{sample.car_position if sample.car_position > 0 else '--'}")
+            self._status_lbl.configure(
+                text=f"🔴 Live  {units.fmt_speed_from_kmh(sample.speed_kph, 0)}"
+                     f"  Lap {sample.lap}"
+                     f"  P{sample.car_position if sample.car_position > 0 else '--'}")
 
-        for corner, t_lbl in win._tire_lbls.items():
-            temps = sample.tire_temps.get(corner, {})
-            avg_t = (temps.get('inner', 0) + temps.get('mid', 0) + temps.get('outer', 0)) / 3
-            if avg_t > 0:
-                col = RED if avg_t > 105 else YELLOW if avg_t > 95 else GREEN if avg_t > 70 else BLUE
-                t_lbl.configure(text=units.fmt_temp(avg_t, 0), text_color=col)
+            for corner, t_lbl in win._tire_lbls.items():
+                temps = sample.tire_temps.get(corner, {})
+                avg_t = (temps.get('inner', 0) + temps.get('mid', 0) + temps.get('outer', 0)) / 3
+                if avg_t > 0:
+                    col = RED if avg_t > 105 else YELLOW if avg_t > 95 else GREEN if avg_t > 70 else BLUE
+                    t_lbl.configure(text=units.fmt_temp(avg_t, 0), text_color=col)
+
+        except Exception as _live_ex:
+            # Window may have been destroyed between winfo_exists check and widget update
+            # This is a benign race condition — suppress and let next sample retry
+            logger.debug("Live dashboard update suppressed (window closing): %s", _live_ex)
+            self._live_win = None
 
     def _check_live_session_change(self, sample: LiveSample):
         """Detect when the iRacing session changes (new car or track) and auto-tag."""

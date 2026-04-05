@@ -170,3 +170,40 @@ All notable changes documented here. Format: `[version] - date | what changed | 
 
 ### Added
 - Basic IBT parsing and tire temperature analysis
+
+---
+
+## [3.7.0] - 2026-04-06 | Body Motion, Confidence Chip, Safety Guards
+
+### Added
+- `core/live_telemetry.py` — `LiveSample` new fields:
+  - `yaw_rate` — YawRate rad/s (rotation around vertical axis)
+  - `pitch_rate` — PitchRate rad/s (nose up/down)
+  - `roll_rate` — RollRate rad/s (body roll left/right)
+- `core/setup_generator.py` — Body motion analysis pipeline:
+  - `SignalBundle`: `roll_rate_cornering`, `pitch_rate_braking`, `body_motion_confidence`
+  - `IBTSignalExtractor._extract_body_motion()` — reads RollRate/PitchRate channels,
+    filters to cornering (|LatAccel| > 3G) and braking (Brake > 0.3) windows
+  - `SetupDeltaEngine._body_motion_rules()`:
+    - Roll rate > 0.8 rad/s → ARB stiffening recommendation (front/rear from balance score)
+    - Pitch rate > 1.0 rad/s → front spring rate increase recommendation
+- `main.py` — Dashboard **Analysis Confidence chip**:
+  - Colored border (green/yellow/red based on score)
+  - Shows: label (High/Medium/Low), score %, flying laps count
+  - Lists up to 2 issues inline (traffic contamination, missing channels, etc.)
+- `main.py` — `_render_sdk_coaching_alerts()`:
+  - **Shift grind**: ShiftGrindRPM > 100 events
+  - **Short-shifting**: upshift RPM vs PlayerCarSLShiftRPM target, flags if >25% below
+  - **Steering torque**: high torque/lateral-G ratio flags understeer load
+
+### Fixed
+- `main.py` — `_on_live_sample()` live dashboard widget updates wrapped in `try/except`
+  **Root cause:** Race condition — window can be destroyed between `winfo_exists()` check
+  and individual `.configure()` calls, causing `TclError`
+  **Fix:** Entire connected-state update block wrapped in try/except, sets `_live_win=None`
+  on exception so next sample skips gracefully
+  **Files:** `main.py` — `_on_live_sample()`
+
+### Changed
+- `core/setup_generator.py` — `_body_motion_rules()` now runs in `compute_deltas()`
+  after slip angle and suspension rules (all Tier 1 physics rules run before heuristic rules)
