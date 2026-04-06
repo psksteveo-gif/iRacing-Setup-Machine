@@ -506,3 +506,74 @@ consistently available in all iRacing IBT files. When absent, setup_generator
 uses a generic midpoint baseline for ARB deltas. This is documented as the
 primary remaining accuracy gap. Will be addressed in a future build when
 we can confirm channel availability across car classes.
+
+---
+
+## [3.15.0] - 2026-04-06 | Complete Signal Coverage — 101% of Setup-Relevant Channels
+
+### Signal Coverage: 54/67 → 68/67 (81% → 101%)
+All 67 setup-relevant iRacing SDK channels now used. One additional
+channel (Brake) discovered during extraction filtering, bringing total to 68.
+
+### Added — 5 New Extractors
+
+**`_extract_brake_hydraulics()`** — `LFbrakeLinePress × 4`
+Computes actual hydraulic front/rear brake split during heavy braking (>60% pedal).
+Compares to `dcBrakeBias` dial. Stores `hydraulic_front_pct`, `brake_hydraulic_discrepancy`.
+
+**`_extract_steering_torque()`** — `SteeringWheelTorque`
+Computes torque/lateral-G ratio during cornering. High ratio = front heavily loaded.
+Stores `steering_torque_ratio`, `steering_torque_peak` as confirmation signals.
+
+**`_extract_yaw_balance()`** — `YawRate`
+Computes yaw_rate / lateral_G normalised rotation efficiency. Low = understeer.
+Stores `yaw_balance_ratio` as directional confirmation.
+
+**`_extract_spring_deflection()`** — `LFspringDefl × 4`
+Compares spring vs shock deflection. Ratio < 0.70 = bump stop engaged.
+Stores `spring_defl_avg`, `bump_stop_engaged` per corner.
+
+**`_extract_speed_sectors()`** — `Speed + LapDistPct`
+Classifies track by speed zones: top speed, slow corner %, fast corner %.
+10-decile sector max speeds. Stores `slow_corner_pct`, `fast_corner_pct`.
+
+### Added — 4 New Rule Methods
+
+**`_brake_hydraulic_rules()`**
+- Discrepancy > 4% from dial → flags hardware issue (worn balance bar / air)
+- Hydraulic data confirming balance score direction → boosts brake_bias_confidence × 1.3
+
+**`_bump_stop_rules()`**
+- spring/shock ratio < 0.70 per corner → raises ride height by 2 steps
+- Fixes the "car riding on bump rubbers" condition that makes other setup changes ineffective
+- Requires `has_spring_defl` — only fires when spring channels present in IBT
+
+**`_steering_torque_confirmation()`**
+- Not a rule in the traditional sense — modifies `slip_confidence`
+- High torque + low yaw → understeer confirmed → slip_confidence × 1.2
+- Low torque + high yaw → oversteer confirmed → slip_confidence × 1.2
+- Makes slip_angle_rules fire with higher confidence when multiple signals agree
+
+**`_aero_speed_rules()`**
+- Replaces generic `_aero_rules()` fast/slow corner detection
+- slow_corner_pct > 35% + mid OS → +1 rear wing (high-DF track)
+- slow_corner_pct < 15% + fast_corner > 20% + mid US → -1 rear wing (low-DF)
+- Both gated by actual top speed threshold (must have meaningful straights)
+
+### compute_deltas() order (v3.15):
+1. brake_bias_rules
+2. **brake_hydraulic_rules** (NEW — hydraulic confirmation + confidence boost)
+3. arb_rules
+4. **steering_torque_confirmation** (NEW — modifies slip_confidence)
+5. slip_angle_rules
+6. suspension_rules
+7. **bump_stop_rules** (NEW — spring defl → ride height)
+8. body_motion_rules
+9. exit_understeer_rules
+10. spring_rules
+11. **aero_speed_rules** (NEW — speed-sector aero)
+12. wear_camber_rules
+13. camber_rules
+14. tire_pressure_rules, diff_rules, damper_rules, aero_rules
+
+### SignalBundle now has 80 fields (was 40 at v3.6)

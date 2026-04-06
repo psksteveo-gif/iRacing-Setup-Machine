@@ -132,6 +132,27 @@ class SignalBundle:
     # Actual ride heights (from LFrideHeight channels)
     ride_heights_mm: dict = field(default_factory=dict)
     has_ride_height_data: bool = False
+    # Brake hydraulic actual split vs dial
+    hydraulic_front_pct: float = 0.0
+    has_brake_hydraulics: bool = False
+    brake_hydraulic_discrepancy: float = 0.0
+    # Steering torque (understeer load confirmation)
+    steering_torque_ratio: float = 0.0
+    steering_torque_peak: float = 0.0
+    has_steering_torque: bool = False
+    # Yaw balance ratio (rotation efficiency)
+    yaw_balance_ratio: float = 0.0
+    has_yaw_data: bool = False
+    # Spring deflection vs shock deflection (bump stop detection)
+    spring_defl_avg: dict = field(default_factory=dict)
+    bump_stop_engaged: dict = field(default_factory=dict)
+    has_spring_defl: bool = False
+    # Speed sector analysis (aero rules)
+    top_speed_kph: float = 0.0
+    slow_corner_pct: float = 0.0
+    fast_corner_pct: float = 0.0
+    sector_max_speeds: list = field(default_factory=list)
+    has_speed_sectors: bool = False
 
     # Track character
     track_name: str = ""
@@ -314,6 +335,11 @@ class IBTSignalExtractor:
         self._extract_tire_wear(bundle, analysis)
         self._extract_throttle_exit(bundle, analysis)
         self._extract_actual_ride_heights(bundle, analysis)
+        self._extract_brake_hydraulics(bundle, analysis)
+        self._extract_steering_torque(bundle, analysis)
+        self._extract_yaw_balance(bundle, analysis)
+        self._extract_spring_deflection(bundle, analysis)
+        self._extract_speed_sectors(bundle, analysis)
 
         return bundle
 
@@ -427,6 +453,267 @@ class IBTSignalExtractor:
             logger.debug('Exit understeer signal: %.1f%% of laps', bundle.exit_us_pct)
         except Exception as e:
             logger.debug('throttle exit extraction failed: %s', e)
+
+    def _extract_brake_hydraulics(self, bundle: SignalBundle, analysis):
+        """
+        Extract actual brake line pressures per corner from
+        LFbrakeLinePress/RFbrakeLinePress/LRbrakeLinePress/RRbrakeLinePress.
+
+        Computes the actual hydraulic front/rear split and compares to
+        the dial setting (dcBrakeBias). A significant discrepancy indicates
+        the hydraulic system isn't delivering the dialled split — worn
+        balance bar, air in lines, or a pad/calliper issue.
+
+        Also computes per-corner peak braking G to weight the balance score.
+        """
+        if not analysis:
+            return
+        channels = getattr(analysis, '_channels', None) or getattr(analysis, 'channels', None)
+        if channels is None:
+            return
+        try:
+            import numpy as np
+            lf = channels.get('LFbrakeLinePress')
+            rf = channels.get('RFbrakeLinePress')
+            lr = channels.get('LRbrakeLinePress')
+            rr = channels.get('RRbrakeLinePress')
+            brake_ch = channels.get('Brake')
+
+            if lf is None or rf is None or lr is None or rr is None:
+                return
+
+            # Only sample during heavy braking (>60% pedal)
+            if brake_ch is not None:
+                heavy = brake_ch > 0.60
+                if heavy.sum() < 200:
+                    return
+                lf_h = lf[heavy]; rf_h = rf[heavy]
+                lr_h = lr[heavy]; rr_h = rr[heavy]
+            else:
+                lf_h, rf_h, lr_h, rr_h = lf, rf, lr, rr
+
+            # Pressure averages during heavy braking
+            front_avg = float(np.mean(lf_h) + np.mean(rf_h)) / 2
+            rear_avg  = float(np.mean(lr_h) + np.mean(rr_h)) / 2
+            total_avg = front_avg + rear_avg
+            if total_avg < 1e4:  # < 10 kPa = no meaningful data
+                return
+
+            hydraulic_front_pct = front_avg / total_avg * 100
+
+            bundle.hydraulic_front_pct   = hydraulic_front_pct
+            bundle.has_brake_hydraulics  = True
+
+            # Compare to dial setting
+            dial_pct = bundle.current_setup.get('brake_bias', None)
+            if dial_pct is not None:
+                try:
+                    dial_f  = float(dial_pct)
+                    discrepancy = hydraulic_front_pct - dial_f
+                    bundle.brake_hydraulic_discrepancy = discrepancy
+                    logger.debug(
+                        'Brake hydraulics: dial=%.1f%% hydraulic=%.1f%% '
+                        'discrepancy=%+.1f%%',
+                        dial_f, hydraulic_front_pct, discrepancy)
+                except (TypeError, ValueError):
+                    pass
+        except Exception as e:
+            logger.debug('brake hydraulics extraction failed: %s', e)
+
+    def _extract_steering_torque(self, bundle: SignalBundle, analysis):
+        """
+        Extract SteeringWheelTorque as a confirmation signal for understeer.
+
+        High torque/lateral-G ratio during cornering = front is overloaded
+        (understeer). Used to CONFIRM slip-angle-based US diagnosis, not
+        replace it. Avoids false positives from driver technique alone.
+        """
+        if not analysis:
+            return
+        channels = getattr(analysis, '_channels', None) or getattr(analysis, 'channels', None)
+        if channels is None:
+            return
+        try:
+            import numpy as np
+            torque = channels.get('SteeringWheelTorque')
+            lat    = channels.get('LatAccel')
+            if torque is None or lat is None:
+                return
+
+            G = 9.80665
+            lat_g = np.abs(lat) / G
+            in_corner = lat_g > 0.4  # > 0.4G lateral
+
+            if in_corner.sum() < 500:
+                return
+
+            torque_cornering = np.abs(torque[in_corner])
+            lat_g_cornering  = lat_g[in_corner]
+
+            # Torque-per-G ratio: high = front working harder than it should
+            ratio = torque_cornering / np.maximum(lat_g_cornering, 0.1)
+            bundle.steering_torque_ratio = float(np.mean(ratio))
+            bundle.steering_torque_peak  = float(np.percentile(torque_cornering, 95))
+            bundle.has_steering_torque   = True
+
+            logger.debug(
+                'Steering torque: ratio=%.2f Nm/G  peak=%.1f Nm',
+                bundle.steering_torque_ratio, bundle.steering_torque_peak)
+        except Exception as e:
+            logger.debug('steering torque extraction failed: %s', e)
+
+    def _extract_yaw_balance(self, bundle: SignalBundle, analysis):
+        """
+        Use YawRate to compute rotation efficiency during cornering.
+
+        yaw_rate / (lateral_G × speed) = normalised rotation — a measure
+        of how much the car yaws relative to how hard it's cornering.
+        Low = understeer (not rotating enough). High = oversteer tendency.
+        This is used as a confirmation signal alongside slip angles.
+        """
+        if not analysis:
+            return
+        channels = getattr(analysis, '_channels', None) or getattr(analysis, 'channels', None)
+        if channels is None:
+            return
+        try:
+            import numpy as np
+            yaw  = channels.get('YawRate')
+            lat  = channels.get('LatAccel')
+            spd  = channels.get('Speed')
+            if yaw is None or lat is None or spd is None:
+                return
+
+            G = 9.80665
+            lat_g = np.abs(lat) / G
+            in_corner = (lat_g > 0.5) & (spd > 10.0)  # > 0.5G, > 36 km/h
+
+            if in_corner.sum() < 500:
+                return
+
+            yaw_c = np.abs(yaw[in_corner])
+            lat_c = lat_g[in_corner]
+            spd_c = spd[in_corner]
+
+            # Normalise: yaw_rate / (lat_G) gives rotation per unit lateral load
+            # Higher = more rotation = more oversteer tendency
+            norm_yaw = yaw_c / np.maximum(lat_c, 0.1)
+            bundle.yaw_balance_ratio = float(np.mean(norm_yaw))
+            bundle.has_yaw_data      = True
+
+            logger.debug(
+                'Yaw balance ratio: %.3f rad/s per G (>0.8 = OS tendency)',
+                bundle.yaw_balance_ratio)
+        except Exception as e:
+            logger.debug('yaw balance extraction failed: %s', e)
+
+    def _extract_spring_deflection(self, bundle: SignalBundle, analysis):
+        """
+        Extract LFspringDefl/RFspringDefl/LRspringDefl/RRspringDefl.
+
+        Spring deflection separate from shock deflection reveals bump stop
+        engagement: if shock travels but spring barely moves, the bump
+        rubber is absorbing — car is riding on bump stops, not springs.
+        This is a critical setup problem that makes the car unpredictable.
+        """
+        if not analysis:
+            return
+        channels = getattr(analysis, '_channels', None) or getattr(analysis, 'channels', None)
+        if channels is None:
+            return
+        try:
+            import numpy as np
+            bundle.spring_defl_avg = {}
+            bundle.bump_stop_engaged = {}
+            any_data = False
+
+            for corner in ['LF', 'RF', 'LR', 'RR']:
+                sd = channels.get(f'{corner}springDefl')
+                shd = channels.get(f'{corner}shockDefl')
+                if sd is None:
+                    continue
+                any_data = True
+                valid_sd  = sd[sd > 0.001]
+                if len(valid_sd) < 100:
+                    continue
+                sd_mm = float(np.mean(valid_sd)) * 1000
+
+                bundle.spring_defl_avg[corner] = sd_mm
+
+                # Compare spring vs shock deflection — large ratio = bump stop
+                if shd is not None:
+                    valid_shd = shd[shd > 0.001]
+                    if len(valid_shd) > 100:
+                        shd_mm = float(np.mean(valid_shd)) * 1000
+                        if shd_mm > 0:
+                            ratio = sd_mm / shd_mm
+                            # ratio < 0.7 = spring barely moving vs shock = bump stop
+                            bundle.bump_stop_engaged[corner] = (ratio < 0.70)
+
+            if any_data:
+                bundle.has_spring_defl = True
+        except Exception as e:
+            logger.debug('spring deflection extraction failed: %s', e)
+
+    def _extract_speed_sectors(self, bundle: SignalBundle, analysis):
+        """
+        Use Speed + LapDistPct to classify the track into high/low speed zones.
+
+        Computes:
+        - top_speed_kph: peak speed in session (straight-line)
+        - slow_corner_pct: % of lap below 80 km/h (slow corner dominance)
+        - fast_corner_pct: % of lap above 160 km/h in cornering
+        - sector_max_speeds: per-decile max speed
+
+        Used by _aero_rules() to differentiate:
+        - High-DF track: many slow corners → more wing
+        - Low-DF track: mostly fast → less wing, lower drag
+        """
+        if not analysis:
+            return
+        channels = getattr(analysis, '_channels', None) or getattr(analysis, 'channels', None)
+        if channels is None:
+            return
+        try:
+            import numpy as np
+            spd  = channels.get('Speed')
+            dist = channels.get('LapDistPct')
+            lat  = channels.get('LatAccel')
+            if spd is None or dist is None:
+                return
+
+            spd_kph = spd * 3.6
+            G       = 9.80665
+
+            bundle.top_speed_kph     = float(np.percentile(spd_kph, 99))
+            bundle.slow_corner_pct   = float(np.mean(spd_kph < 80.0) * 100)
+
+            if lat is not None:
+                lat_g        = np.abs(lat) / G
+                fast_corner  = (spd_kph > 160.0) & (lat_g > 0.5)
+                bundle.fast_corner_pct = float(np.mean(fast_corner) * 100)
+            else:
+                bundle.fast_corner_pct = 0.0
+
+            # Per-decile max speeds (10 sectors of 10% each)
+            bundle.sector_max_speeds = []
+            for i in range(10):
+                lo, hi = i * 0.1, (i + 1) * 0.1
+                mask = (dist >= lo) & (dist < hi)
+                if mask.sum() > 10:
+                    bundle.sector_max_speeds.append(
+                        float(np.max(spd_kph[mask])))
+                else:
+                    bundle.sector_max_speeds.append(0.0)
+
+            bundle.has_speed_sectors = True
+            logger.debug(
+                'Speed sectors: top=%.0f km/h slow=%.0f%% fast_corner=%.0f%%',
+                bundle.top_speed_kph,
+                bundle.slow_corner_pct,
+                bundle.fast_corner_pct)
+        except Exception as e:
+            logger.debug('speed sector extraction failed: %s', e)
 
     def _extract_actual_ride_heights(self, bundle: SignalBundle, analysis):
         """
@@ -810,12 +1097,16 @@ class SetupDeltaEngine:
 
         # Run all rule groups
         deltas += self._brake_bias_rules(bundle, effective_class)
+        deltas += self._brake_hydraulic_rules(bundle, effective_class)  # hydraulic confirmation
         deltas += self._arb_rules(bundle, effective_class)
+        self._steering_torque_confirmation(bundle, effective_class)   # boosts slip confidence
         deltas += self._slip_angle_rules(bundle, effective_class)   # Tier 1: direct OS/US
         deltas += self._suspension_rules(bundle, effective_class)    # Tier 1: shock travel
+        deltas += self._bump_stop_rules(bundle, effective_class)     # spring defl detection
         deltas += self._body_motion_rules(bundle, effective_class)   # body roll/pitch rates
         deltas += self._exit_understeer_rules(bundle, effective_class)  # throttle-induced US
         deltas += self._spring_rules(bundle, effective_class)
+        deltas += self._aero_speed_rules(bundle, effective_class)   # speed-sector aero
         deltas += self._wear_camber_rules(bundle, effective_class)  # ground truth camber
         deltas += self._camber_rules(bundle, effective_class)       # temp-based camber fallback
         deltas += self._tire_pressure_rules(bundle, effective_class)
@@ -915,6 +1206,246 @@ class SetupDeltaEngine:
         return results
 
     # ── ARB ─────────────────────────────────────────────────────────────────
+
+    def _brake_hydraulic_rules(self, bundle: SignalBundle,
+                                car_class: CarClass) -> List[SetupDelta]:
+        """
+        Detect discrepancy between the brake bias dial and actual hydraulic
+        front/rear split. A discrepancy > 3% indicates a hydraulic system
+        issue — worn balance bar, air in lines, or calliper problem.
+        Also validates the balance score interpretation using actual pressures.
+        """
+        results = []
+        if not getattr(bundle, 'has_brake_hydraulics', False):
+            return results
+
+        disc = getattr(bundle, 'brake_hydraulic_discrepancy', 0.0)
+        hyd  = getattr(bundle, 'hydraulic_front_pct', 0.0)
+        if hyd < 1.0:
+            return results
+
+        # Large discrepancy from dial setting — flag as hardware issue
+        if abs(disc) > 4.0:
+            results.append(SetupDelta(
+                param='brake_bias',
+                display_name='Brake Balance Bar (hardware)',
+                garage_tab='CHASSIS',
+                garage_location=PARAM_GARAGE_INFO.get('brake_bias', ('CHASSIS',''))[1],
+                current_value=hyd,
+                recommended_value=hyd - disc,  # what dial says it should be
+                delta=0.0,
+                unit='%',
+                signal_source=(f'Hydraulic actual={hyd:.1f}% vs '
+                               f'dial={hyd - disc:.1f}% — '
+                               f'{abs(disc):.1f}% discrepancy'),
+                confidence=min(0.85, 0.5 + abs(disc) / 20),
+                reasoning=(
+                    f'The brake system is delivering {hyd:.1f}% front bias '
+                    f'hydraulically, but your dial is set to {hyd-disc:.1f}%. '
+                    f'A {abs(disc):.1f}% discrepancy suggests a hardware issue: '
+                    f'{"worn balance bar" if abs(disc) < 8 else "air in brake lines or calliper problem"}. '
+                    f'Check and service the brake system before adjusting the dial further.'),
+                driver_feel='Unpredictable brake feel. May improve with hardware service.',
+                priority=0,
+            ))
+
+        # Hydraulic data confirms brake bias direction from entry balance
+        # Use to boost confidence of brake bias recommendation
+        if (bundle.brake_bias_direction == 'too_rearward' and hyd < 51.0) or            (bundle.brake_bias_direction == 'too_forward'  and hyd > 54.0):
+            # Hydraulic data and balance score agree — boost confidence
+            bundle.brake_bias_confidence = min(
+                1.0, bundle.brake_bias_confidence * 1.3)
+            logger.debug(
+                'Brake hydraulics confirm brake bias direction — '
+                'confidence boosted to %.2f', bundle.brake_bias_confidence)
+
+        return results
+
+    def _bump_stop_rules(self, bundle: SignalBundle,
+                          car_class: CarClass) -> List[SetupDelta]:
+        """
+        Detect bump stop engagement from spring vs shock deflection ratio.
+        When shock travels but spring barely moves, the car is riding on
+        bump rubbers — makes handling unpredictable and untunable.
+        Fix: raise ride height or soften spring rate.
+        """
+        results = []
+        if not getattr(bundle, 'has_spring_defl', False):
+            return results
+
+        bounds = get_bounds(car_class)
+
+        for corner, engaged in bundle.bump_stop_engaged.items():
+            if not engaged:
+                continue
+
+            sd_mm  = bundle.spring_defl_avg.get(corner, 0.0)
+            shd_mm = bundle.shock_defl_avg.get(corner, 0.0)
+
+            if sd_mm < 0.1 or shd_mm < 0.1:
+                continue
+
+            # Primary fix: increase ride height at this corner
+            rh_param = {
+                'LF': 'ride_height_lf', 'RF': 'ride_height_rf',
+                'LR': 'ride_height_lr', 'RR': 'ride_height_rr',
+            }.get(corner)
+            if rh_param:
+                b = bounds.get(rh_param)
+                if b:
+                    cur = self._current(bundle, rh_param,
+                                         (b.min_val + b.max_val) / 2)
+                    results.append(SetupDelta(
+                        param=rh_param,
+                        display_name=f'{corner} Ride Height',
+                        garage_tab='CHASSIS',
+                        garage_location=PARAM_GARAGE_INFO.get(
+                            rh_param, ('CHASSIS',''))[1],
+                        current_value=cur,
+                        recommended_value=cur,
+                        delta=+b.step * 2,
+                        unit=b.unit,
+                        signal_source=(
+                            f'{corner} spring={sd_mm:.1f}mm '
+                            f'shock={shd_mm:.1f}mm '
+                            f'ratio={sd_mm/max(shd_mm,0.1):.2f} '
+                            f'(threshold 0.70)'),
+                        confidence=0.80,
+                        reasoning=(
+                            f'{corner} spring deflects only {sd_mm:.1f}mm '
+                            f'while shock travels {shd_mm:.1f}mm '
+                            f'(ratio {sd_mm/max(shd_mm,0.1):.2f}) — the bump '
+                            f'rubber is absorbing the stroke instead of the spring. '
+                            f'Raising ride height gives the suspension more free travel '
+                            f'before hitting the bump stop.'),
+                        driver_feel='More predictable handling. Spring rate changes '
+                                    'become effective again.',
+                        priority=0,
+                    ))
+
+        return results
+
+    def _steering_torque_confirmation(self, bundle: SignalBundle,
+                                       car_class: CarClass) -> List[SetupDelta]:
+        """
+        Use SteeringWheelTorque to confirm and adjust confidence of
+        understeer recommendations from slip angle rules.
+        High torque/G ratio = front heavily loaded = confirms US diagnosis.
+        Does not produce standalone deltas — modifies existing confidence.
+        """
+        if not getattr(bundle, 'has_steering_torque', False):
+            return []
+        if not getattr(bundle, 'has_yaw_data', False):
+            return []
+
+        torque_ratio = bundle.steering_torque_ratio
+        yaw_ratio    = bundle.yaw_balance_ratio
+
+        # High steering torque + low yaw rotation = understeer confirmed
+        # Typical GT3: torque_ratio > 4.0 Nm/G = loaded, yaw < 0.5 = not rotating
+        us_confirmed = torque_ratio > 4.0 and yaw_ratio < 0.55
+        os_confirmed = torque_ratio < 2.5 and yaw_ratio > 0.75
+
+        if us_confirmed:
+            logger.debug(
+                'Understeer confirmed by steering torque (%.1f Nm/G) '
+                'and yaw ratio (%.2f)', torque_ratio, yaw_ratio)
+            # Boost slip_confidence to reflect corroboration
+            bundle.slip_confidence = min(1.0, bundle.slip_confidence * 1.2)
+        elif os_confirmed:
+            logger.debug(
+                'Oversteer confirmed by steering torque (%.1f Nm/G) '
+                'and yaw ratio (%.2f)', torque_ratio, yaw_ratio)
+            bundle.slip_confidence = min(1.0, bundle.slip_confidence * 1.2)
+
+        return []  # Confidence modifier only — rules handled by slip_angle_rules
+
+    def _aero_speed_rules(self, bundle: SignalBundle,
+                           car_class: CarClass) -> List[SetupDelta]:
+        """
+        Upgrade _aero_rules with speed-sector data from _extract_speed_sectors().
+        Differentiates between:
+        - High-DF track (>40% of lap below 80km/h) → add wing
+        - Low-DF track (<15% slow corners, >20% fast corner time) → reduce wing
+        """
+        results = []
+        if not getattr(bundle, 'has_speed_sectors', False):
+            return results
+
+        bounds = get_bounds(car_class)
+        b_rear = bounds.get('wing_rear')
+        b_front = bounds.get('wing_front')
+
+        if not b_rear or b_rear.max_val <= 3:
+            return results  # Fixed aero car
+
+        slow_pct  = bundle.slow_corner_pct
+        fast_pct  = bundle.fast_corner_pct
+        top_spd   = bundle.top_speed_kph
+        conf = min(bundle.balance_confidence, 0.75)
+
+        # High-DF track: >35% of lap at sub-80km/h
+        if slow_pct > 35.0 and top_spd > 180.0:
+            cur_rear = self._current(bundle, 'wing_rear',
+                                      (b_rear.min_val + b_rear.max_val) / 2)
+            # Only recommend if balance shows OS tendency at high speed
+            if bundle.balance_mid > 0.1:
+                results.append(SetupDelta(
+                    param='wing_rear',
+                    display_name='Rear Wing',
+                    garage_tab='TIRES/AERO',
+                    garage_location=PARAM_GARAGE_INFO.get(
+                        'wing_rear', ('TIRES/AERO',''))[1],
+                    current_value=cur_rear,
+                    recommended_value=cur_rear,
+                    delta=+1,
+                    unit='step',
+                    signal_source=(
+                        f'Slow corners: {slow_pct:.0f}% of lap below 80km/h '
+                        f'| Mid-corner OS: {bundle.balance_mid:+.2f}'),
+                    confidence=conf,
+                    reasoning=(
+                        f'{slow_pct:.0f}% of this lap is spent below 80 km/h '
+                        f'(high mechanical-grip track). Combined with mid-corner '
+                        f'oversteer ({bundle.balance_mid:+.2f}), adding 1 rear '
+                        f'wing step improves balance in slow corners where '
+                        f'aerodynamic stability matters most.'),
+                    driver_feel='More rear stability in slow corners. '
+                                'Negligible drag penalty at this track.',
+                    priority=1,
+                ))
+
+        # Low-DF track: <15% slow corners, >20% fast corner time
+        elif slow_pct < 15.0 and fast_pct > 20.0 and top_spd > 220.0:
+            cur_rear = self._current(bundle, 'wing_rear',
+                                      (b_rear.min_val + b_rear.max_val) / 2)
+            if bundle.balance_mid < -0.1:  # understeer at high speed
+                results.append(SetupDelta(
+                    param='wing_rear',
+                    display_name='Rear Wing',
+                    garage_tab='TIRES/AERO',
+                    garage_location=PARAM_GARAGE_INFO.get(
+                        'wing_rear', ('TIRES/AERO',''))[1],
+                    current_value=cur_rear,
+                    recommended_value=cur_rear,
+                    delta=-1,
+                    unit='step',
+                    signal_source=(
+                        f'Fast corners: {fast_pct:.0f}% above 160km/h '
+                        f'| Top speed: {top_spd:.0f}km/h '
+                        f'| Mid-corner US: {bundle.balance_mid:+.2f}'),
+                    confidence=conf,
+                    reasoning=(
+                        f'High-speed track ({fast_pct:.0f}% fast corner time, '
+                        f'{top_spd:.0f} km/h peak). Mid-corner understeer '
+                        f'({bundle.balance_mid:+.2f}) on a low-DF track suggests '
+                        f'too much rear wing creating aero understeer. -1 rear '
+                        f'wing step reduces drag and rebalances aero load forward.'),
+                    driver_feel='Faster on straights. More neutral mid-corner balance.',
+                    priority=1,
+                ))
+
+        return results
 
     def _arb_rules(self, bundle: SignalBundle,
                     car_class: CarClass) -> List[SetupDelta]:
