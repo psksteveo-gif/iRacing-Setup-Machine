@@ -8429,6 +8429,14 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         # Update the live dashboard car label
         if self._live_win and self._live_win.winfo_exists():
             self._live_win._car_lbl.configure(text=f"{car}  •  {track}")
+        # Fire pre-session briefing in background
+        api_key = _get_api_key().strip()
+        if api_key and self.cfg.get('voice_coaching', True):
+            threading.Thread(
+                target=self._run_presession_briefing,
+                args=(car, track, api_key),
+                daemon=True,
+            ).start()
 
     def _check_live_lap_complete(self, sample: LiveSample):
         """Detect a completed lap and trigger Steven coaching if active."""

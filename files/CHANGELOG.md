@@ -315,3 +315,41 @@ Key difference: Track Titan flows are pre-written for common mistakes.
 Optimal Sector flows are generated from YOUR specific session data —
 the issue list is different every time based on what actually happened
 in your IBT file.
+
+---
+
+## [3.11.0] - 2026-04-06 | Pre-Session Briefing
+
+### Added
+- `main.py` — `_run_presession_briefing(car, track, api_key)`:
+  Fires automatically in background when SDK detects a new car+track combo.
+  Aggregates context from 4 data sources:
+  1. `HistoryTracker` — previous best lap, improvement trend (+/- delta),
+     user notes from last session, most recent setup change
+  2. `TirePressureDB` — learned pressure deltas for this car at this temp
+  3. `SetupPerfDB` — which setup params correlate with lap time here
+  4. `track_corners` — priority 1 corners for this track
+  Sends to claude-haiku-4-5-20251001, max_tokens=120, plain text.
+  Prompt enforces exactly 2 sentences:
+    Sentence 1: key context from prior sessions
+    Sentence 2: single most important focus for this session
+  Output: shown in live dashboard "Voice Coaching" tip area + spoken aloud
+  via _speak_text() at rate=145 wpm (slightly slower for clarity at session start)
+
+- `main.py` — `_check_live_session_change()`: now triggers pre-session briefing
+  when API key is set and voice_coaching is enabled. Runs in daemon thread —
+  non-blocking, ~1-2s latency after session detection.
+
+### Notes
+- Only fires when voice_coaching cfg is True (respects driver's toggle)
+- Only fires when API key is configured — silent fallback if not
+- Rate: once per car/track combo per app session (session change detection
+  only fires when car OR track changes, not on every lap)
+- No history = "First recorded session" context + track corner focus only
+- With history: pulls most recent entry (sorted by timestamp desc)
+
+### Competitive context
+This matches Trophi.ai's "Track Acclimatization" and "Weekly Series Prep"
+features. Key difference: their briefings are pre-written by humans.
+Ours are generated from the driver's own session history — different
+every time you return to a track you've driven before.
