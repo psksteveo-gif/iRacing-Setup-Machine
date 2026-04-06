@@ -504,6 +504,18 @@ Any recommendation that violates these bounds will cause the driver to FAIL tech
         for _note in enrichment_notes:
             enrichment_text += f"  - {_sanitize(str(_note), 300)}\n"
 
+    # ── Weather / track conditions section ────────────────────────────────────
+    weather_text = ""
+    try:
+        from core.weather_engine import WeatherConditions, WeatherEngine
+        si = session_info or {}
+        if si.get('air_temp_c') or si.get('track_temp_c'):
+            _cond = WeatherConditions.from_session_info(si)
+            _weng = WeatherEngine(_cond)
+            weather_text = "\n" + _weng.prompt_section() + "\n"
+    except Exception:
+        pass
+
     return f"""YOU MUST RESPOND WITH VALID JSON ONLY. NO MARKDOWN. NO PROSE. NO EXPLANATIONS OUTSIDE THE JSON.
 Start your response with {{ and end with }}. Nothing before {{. Nothing after }}.
 
@@ -514,7 +526,7 @@ Track: {track_name}
 Best Lap: {format_laptime(report.best_lap)}
 Average Lap: {format_laptime(report.avg_lap)}
 Balance Score: {report.balance_score:.2f} (-1=understeer, +1=oversteer)
-{conditions_text}{quality_text}{enrichment_text}
+{weather_text}{conditions_text}{quality_text}{enrichment_text}
 Issues Found:
 {issues_text if issues_text else "No major issues detected."}
 

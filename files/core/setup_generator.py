@@ -208,6 +208,7 @@ class SetupResult:
     confidence_overall: float          # 0–1
     driver_brief: str = ""             # populated by BriefGenerator
     changes_table: List[dict] = field(default_factory=list)  # UI-ready rows
+    weather_report: Optional[dict] = field(default=None)     # WeatherEngine.condition_report()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2624,6 +2625,7 @@ def generate_setup(
     car_class=None,
     car_name: str = "",
     track_name: str = "",
+    session_info: dict = None,
 ) -> SetupResult:
     """
     Main entry point. Takes all available analysis objects and returns a
@@ -2635,17 +2637,13 @@ def generate_setup(
     corner_report   : CornerAnalysisReport from corner_analysis
     style_report    : DriverStyleReport from driving_style
     consistency     : ConsistencyBreakdown from consistency_score
-    baseline_setup  : dict — current setup values (from parsed_setup.flat or
-                      similar). Keys should match tech_inspector param names
-                      where possible.
+    baseline_setup  : dict — current setup values
     car_class       : CarClass enum or string
-    car_name        : str — used for display and bounds lookup
-    track_name      : str — used for display and track character detection
-
-    Returns
-    -------
-    SetupResult with tech_pass=True and populated deltas, final_setup,
-    and driver_brief prompt (call ai_advisor to render brief text).
+    car_name        : str
+    track_name      : str
+    session_info    : dict — IBT session YAML fields (air_temp_c, track_temp_c,
+                      wind_speed_ms, wind_direction_deg, skies, etc.)
+                      Used by WeatherEngine to condition-adjust all deltas.
     """
     # Resolve car class
     if car_class is None:
@@ -2675,6 +2673,36 @@ def generate_setup(
     engine = SetupDeltaEngine()
     deltas = engine.compute_deltas(bundle, car_class)
 
+    # 2b. Weather-condition adjustments (post-processing pass)
+    weather_report = None
+    weather_adjustments = []
+    try:
+        from core.weather_engine import WeatherConditions, WeatherEngine
+        si = session_info or (getattr(analysis, 'session_info', None) if analysis else None) or {}
+        conditions = WeatherConditions.from_session_info(si)
+        w_engine = WeatherEngine(conditions)
+        # Adjust existing deltas for conditions
+        deltas = w_engine.adjust_deltas(
+            deltas,
+            car_class_str=car_class.value if hasattr(car_class, 'value') else str(car_class),
+            car_name=car_name,
+        )
+        # Get standalone weather-only adjustments
+        weather_adjustments = w_engine.get_weather_adjustments(
+            car_class_str=car_class.value if hasattr(car_class, 'value') else str(car_class))
+        weather_report = w_engine.condition_report()
+        logger.info(
+            'WeatherEngine: condition=%s track=%.0f°C air=%.0f°C '
+            'grip=%.2f pressure_corr=%+.2f psi',
+            weather_report['condition'],
+            conditions.track_temp_c,
+            conditions.air_temp_c,
+            weather_report['grip_factor'],
+            weather_report['pressure_correction_avg_psi'],
+        )
+    except Exception as _we:
+        logger.debug('WeatherEngine failed: %s', _we)
+
     logger.info(
         "setup_generator: %d deltas computed from %d laps "
         "(car=%s, track=%s)",
@@ -2694,7 +2722,8 @@ def generate_setup(
     )
 
     # 4. Build brief prompt (stored on result — AI call is caller's job)
-    result.driver_brief = build_brief_prompt(result)
+    result.driver_brief   = build_brief_prompt(result)
+    result.weather_report = weather_report
 
     logger.info(
         "setup_generator: result tech_pass=%s, %d changes, "

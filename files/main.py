@@ -1946,6 +1946,71 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 lbl(_conf_issues_row, _issue_txt, 10, color=DIM,
                     wraplength=600, justify='left').pack(anchor='w')
 
+        # ── Weather Engine chip ───────────────────────────────────────────────
+        try:
+            from core.weather_engine import WeatherConditions, WeatherEngine
+            _w_si = d.session_info or {}
+            if _w_si.get('air_temp_c') or _w_si.get('track_temp_c'):
+                _wc = WeatherConditions.from_session_info(_w_si)
+                _we = WeatherEngine(_wc)
+                _wr = _we.condition_report()
+                _cond_name = _wr['condition'].replace('_', ' ').title()
+                _grip_pct  = int(_wr['grip_factor'] * 100)
+                _grip_col  = (GREEN if _grip_pct >= 95
+                              else YELLOW if _grip_pct >= 80
+                              else RED)
+                _psi_corr  = _wr['pressure_correction_avg_psi']
+
+                wx_badge = ctk.CTkFrame(self._di, fg_color='#0A0E18',
+                                         corner_radius=6, border_width=1,
+                                         border_color='#1E2E4E')
+                wx_badge.pack(fill='x', padx=12, pady=(2, 2))
+                wx_inner = ctk.CTkFrame(wx_badge, fg_color='transparent')
+                wx_inner.pack(fill='x', padx=10, pady=5)
+
+                # Condition icon
+                _icons = {
+                    'dry rubbered': '🏎', 'dry green': '🌱',
+                    'dry hot': '🔥', 'dry cold': '🧊',
+                    'damp': '🌧', 'wet': '🌊', 'very wet': '⛈',
+                }
+                _icon = _icons.get(_cond_name.lower(), '🌤')
+                lbl(wx_inner,
+                    f"{_icon}  {_cond_name}  —  Grip {_grip_pct}%  "
+                    f"  {_wr['time_of_day'].replace('_',' ').title()}",
+                    11, bold=True, color=_grip_col).pack(side='left')
+
+                # Pressure correction
+                if abs(_psi_corr) > 0.1:
+                    _psi_col = BLUE if _psi_corr > 0 else YELLOW
+                    lbl(wx_inner,
+                        f"Pressure: {_psi_corr:+.2f} psi",
+                        10, color=_psi_col).pack(side='right', padx=(0, 4))
+
+                # Aero density note
+                if abs(_wr['aero_delta_steps']) > 0:
+                    lbl(wx_inner,
+                        f"Wing: {_wr['aero_delta_steps']:+d} step",
+                        10, color=ACCENT).pack(side='right', padx=(0, 8))
+
+                # Time-of-day notes
+                tod_notes = _wr.get('tod_notes', [])
+                if tod_notes:
+                    wx_note = ctk.CTkFrame(wx_badge, fg_color='transparent')
+                    wx_note.pack(fill='x', padx=10, pady=(0, 5))
+                    lbl(wx_note, f"⏱  {tod_notes[0][:120]}",
+                        9, color=DIM, wraplength=680, justify='left').pack(anchor='w')
+
+                # Wind note
+                wind_ctx = _wr.get('wind_context', '')
+                if wind_ctx:
+                    wx_wind = ctk.CTkFrame(wx_badge, fg_color='transparent')
+                    wx_wind.pack(fill='x', padx=10, pady=(0, 5))
+                    lbl(wx_wind, f"💨  {wind_ctx[:120]}",
+                        9, color=DIM, wraplength=680, justify='left').pack(anchor='w')
+        except Exception as _wx_err:
+            logger.debug('Weather chip failed: %s', _wx_err)
+
         # ── Track Conditions card ─────────────────────────────────────────────
         _cond_items = []
         at = d.session_info.get('air_temp_c')
@@ -3440,6 +3505,83 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         _on_mode_change(_mode_var.get())
 
         chk_vars = []  # kept for compat with downstream code that may reference it
+
+        # ── Weather Conditions Panel ───────────────────────────────────────────
+        _wx_result = getattr(self, 'cur_setup_result', None)
+        _wx_report = getattr(_wx_result, 'weather_report', None) if _wx_result else None
+        if _wx_report is None and self.cur_data:
+            # Build fresh if not on result
+            try:
+                from core.weather_engine import WeatherConditions, WeatherEngine
+                _wc = WeatherConditions.from_session_info(self.cur_data.session_info or {})
+                _wx_report = WeatherEngine(_wc).condition_report()
+            except Exception:
+                pass
+
+        if _wx_report:
+            wx_frame = ctk.CTkFrame(win, fg_color='#080E1A', corner_radius=8,
+                                     border_width=1, border_color='#1E2E4E')
+            wx_frame.pack(fill='x', padx=12, pady=(0, 4))
+            wx_hdr = ctk.CTkFrame(wx_frame, fg_color='transparent')
+            wx_hdr.pack(fill='x', padx=12, pady=(8, 4))
+
+            _cond_name = _wx_report['condition'].replace('_', ' ').title()
+            _grip_pct  = int(_wx_report['grip_factor'] * 100)
+            _grip_col  = (GREEN if _grip_pct >= 95
+                          else YELLOW if _grip_pct >= 80
+                          else RED)
+            _icons = {
+                'dry rubbered': '🏎', 'dry green': '🌱',
+                'dry hot': '🔥', 'dry cold': '🧊',
+                'damp': '🌧', 'wet': '🌊', 'very wet': '⛈',
+            }
+            _icon = _icons.get(_cond_name.lower(), '🌤')
+            lbl(wx_hdr,
+                f"{_icon}  Track Conditions: {_cond_name}",
+                12, bold=True, color=BLUE).pack(side='left')
+            lbl(wx_hdr, f"Grip {_grip_pct}%",
+                11, bold=True, color=_grip_col).pack(side='right')
+
+            # Key weather adjustments applied to the setup
+            wx_row = ctk.CTkFrame(wx_frame, fg_color='transparent')
+            wx_row.pack(fill='x', padx=10, pady=(0, 6))
+
+            _psi  = _wx_report.get('pressure_correction_avg_psi', 0)
+            _arb  = _wx_report.get('arb_modifier', 1.0)
+            _spr  = _wx_report.get('spring_modifier', 1.0)
+            _bb   = _wx_report.get('brake_bias_adj', 0)
+            _cam  = _wx_report.get('camber_adj_deg', 0)
+            _wing = _wx_report.get('aero_delta_steps', 0)
+
+            adjustments = []
+            if abs(_psi) > 0.05:
+                adjustments.append(f"Pressure {_psi:+.2f} psi")
+            if abs(_arb - 1.0) > 0.03:
+                adjustments.append(f"ARB ×{_arb:.2f}")
+            if abs(_spr - 1.0) > 0.03:
+                adjustments.append(f"Spring ×{_spr:.2f}")
+            if abs(_bb) > 0.1:
+                adjustments.append(f"Brake bias {_bb:+.1f}%")
+            if abs(_cam) > 0.05:
+                adjustments.append(f"Camber {_cam:+.2f}°")
+            if _wing:
+                adjustments.append(f"Wing {_wing:+d} step")
+
+            if adjustments:
+                lbl(wx_row,
+                    "Applied adjustments:  " + "   •   ".join(adjustments),
+                    10, color=TEXT, wraplength=680).pack(anchor='w', padx=4)
+
+            # Time-of-day note
+            for note in _wx_report.get('tod_notes', [])[:1]:
+                lbl(wx_frame, f"  ⏱  {note}",
+                    9, color=DIM, wraplength=680).pack(anchor='w', padx=12, pady=(0, 4))
+
+            # Wind note
+            wind_ctx = _wx_report.get('wind_context', '')
+            if wind_ctx:
+                lbl(wx_frame, f"  💨  {wind_ctx}",
+                    9, color=DIM, wraplength=680).pack(anchor='w', padx=12, pady=(0, 6))
 
         # ── Setup Generator Results Panel ─────────────────────────────────────
         _gen_result = getattr(self, 'cur_setup_result', None)
@@ -9834,6 +9976,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 car_class=_car_class_str,
                 car_name=data.car_name or '',
                 track_name=data.track_name or '',
+                session_info=data.session_info or {},
             )
             # Store contaminated lap count for confidence scorer
             if self.cur_setup_result:

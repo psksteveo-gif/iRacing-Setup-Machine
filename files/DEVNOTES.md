@@ -174,3 +174,75 @@ The brief stream uses `build_brief_prompt()` which constructs a prompt from actu
 - [ ] Font files in `files/assets/fonts/`: BarlowCondensed-SemiBold.ttf, Barlow-Regular.ttf, JetBrainsMono-Regular.ttf
 - [ ] Stripe paywall integration ($12.99/month)
 - [ ] iRacing EULA compliance review before public launch
+
+---
+
+## Recent Fixes (3.12–3.17)
+
+### [FIXED 3.12.0] IBT parse double-copy
+**Symptom:** Slow parse on large endurance sessions (20+ laps)
+**Root cause:** `np.ascontiguousarray().tobytes()` + `np.frombuffer()` = 2 full copies per channel
+**Fix:** `core/ibt_parser.py` — direct `.view(np_dtype)` on raw matrix slice when contiguous
+**Files:** `core/ibt_parser.py`
+
+### [FIXED 3.12.0] OBS overlay CPU spike during live session
+**Symptom:** High CPU usage from sparkline canvas redraws at 10Hz
+**Fix:** `ui/obs_overlay.py` — throttle `_draw_spark()` to every 3rd sample (~3Hz)
+**Files:** `ui/obs_overlay.py`
+
+### [FIXED 3.12.0] Live dashboard widget thrash
+**Symptom:** All 30+ widgets reconfiguring at 10Hz even when values don't change
+**Fix:** `main.py` — `_live_sample_n % 3` gate: speed/gear/throttle at 10Hz, rest at 4Hz
+**Files:** `main.py`
+
+### [FIXED 3.12.0] Anthropic API latency
+**Symptom:** Slow time-to-first-token on AI recommendations
+**Root cause:** 18,543-char system prompt reprocessed on every call
+**Fix:** `core/ai_advisor.py` — prompt caching via `betas=['prompt-caching-2024-07-31']`
+**Files:** `core/ai_advisor.py`
+
+### [KNOWN] dcAntiRollFront/Rear not in all IBT files
+**Status:** Channels extracted when present; midpoint baseline used when absent
+**Impact:** ARB deltas less precise for cars where channels aren't recorded
+**Mitigation:** _current() fallback returns midpoint of tech inspector bounds
+
+### [KNOWN] Weekly Prep iRacing API auth
+**Status:** Works with standard email/password auth. 2FA must be disabled.
+**Note:** iRacing Data API is still in controlled access — some endpoints may return 403
+
+## Architecture Notes (3.13–3.17)
+
+### Setup Generator Pipeline (v3.17)
+```
+generate_setup(analysis, session_info, ...)
+  ├── IBTSignalExtractor.extract()  — 17 extractors, 80 SignalBundle fields
+  ├── SetupDeltaEngine.compute_deltas()
+  │   ├── 16 rule methods (physics-based, per-car-class thresholds)
+  │   ├── SetupLearningDB magnitude scaling (after rules, before dedup)
+  │   └── Dedup + prioritise
+  ├── WeatherEngine.adjust_deltas()  — condition-specific modifiers
+  ├── WeatherEngine.get_weather_adjustments()  — standalone weather deltas
+  └── SetupAssembler.assemble()  — clamps to tech inspector, tech_pass=True
+```
+
+### WeatherEngine Modifiers Applied Per Condition
+| Modifier | Dry Cold | Dry Hot | Wet | Very Wet |
+|---|---|---|---|---|
+| Tire pressure | +0.5–3.5 psi | −0.75 psi | −0.75–2.0 psi | −2.0 psi |
+| ARB | ×0.90 | ×1.0 | ×0.75 | ×0.65 |
+| Spring | ×0.85 | ×1.10 | ×0.80 | ×0.80 |
+| Brake bias | +0.5% fwd | 0 | +1.5% fwd | +2.0% fwd |
+| Camber | −0.2° | +0.15° | 0 | 0 |
+| Grip factor | 0.88 | 0.92 | 0.50 | 0.35 |
+
+### SetupLearningDB
+- File: `~/.optimalsector/setup_learning.json`
+- Activated after 3+ outcomes per param+class
+- Scales delta magnitude ±30% max based on driver feel reports
+- `record_outcome()` triggered from `_check_pending_outcomes()` after next IBT load
+
+### Feature Gating
+- `_is_pro()`: subscription_key >= 16 chars
+- `_require_pro(feature)`: 3 free AI calls/session, then upgrade prompt
+- Gated: `_get_ai`, `_start_coaching_flow`, `_load_weekly_prep`
+- Soft warning fires after last free call (still allows that call)

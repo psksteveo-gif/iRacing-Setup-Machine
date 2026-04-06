@@ -448,4 +448,66 @@ important than average — compare to class minimum from tech_inspector.
 
 If min < class_minimum_mm: ride height must increase. Override all other
 recommendations that would lower the car further.
+
+
+## WEATHER & TRACK CONDITIONS PHYSICS
+
+### Why Conditions Change Setup
+
+iRacing models track conditions with real physics. A setup optimal at
+30°C rubbered track is wrong for a cold morning, wet race, or high altitude.
+
+### Temperature → Tire Pressure
+Air temp change: ±0.11 psi cold pressure per 10°F (5.6°C).
+Warmer air = tires build more pressure → start cold pressure LOWER.
+Track temp above baseline (30°C): each °C above = −0.025 psi cold start.
+Track temp below baseline: each °C below = +0.035 psi cold start.
+Hot track (>45°C): −0.75 psi additional. Cold track (<15°C): +0.5 psi.
+
+### Temperature → Camber
+Cold track (<15°C): add 0.2° more negative camber. Generates heat faster
+on cold tires, bringing them into operating window sooner.
+Hot track (>45°C): reduce 0.15° negative camber. Already plenty of heat
+— over-cambering causes inner shoulder overheating and uneven wear.
+
+### Grip Factor by Condition
+Dry Rubbered: 1.00 (baseline). Dry Green: 0.82. Dry Cold: 0.88.
+Dry Hot: 0.92. Damp: 0.75. Wet: 0.50. Very Wet: 0.35.
+When grip_factor < 0.85: do NOT recommend aggressive setup changes.
+Low grip rewards mechanical compliance (soft ARBs, soft springs).
+A stiff dry-optimised setup will be unpredictable at 0.50 grip.
+
+### Air Density → Aero Downforce
+Downforce ∝ air_density × velocity². Formula: ρ = P/(R_air × T_Kelvin).
+At 20°C sea level: 1.225 kg/m³. At 35°C: ~1.165 kg/m³ (−5%).
+At 35°C + 1000m altitude: ~1.055 kg/m³ (−14%).
+Every 3% density loss ≈ 1 additional wing step to maintain downforce.
+Mexico City (2285m, 30°C) needs +2 to +3 rear wing vs Spa (450m).
+
+### Wet Condition Philosophy
+DO: Soften ARBs 1−2 steps. Soften springs. Move brake bias +1.5% forward.
+Raise ride height slightly. Higher cold tyre pressures (wet tyres run cooler).
+DO NOT: Use aggressive camber (reduces wet contact patch). Run stiff ARBs.
+Use dry qualifying brake bias (rear locks easily in wet).
+
+### Green Track (Low Rubber Level)
+Track temp close to air temp = low rubber = less grip. Expect grip to build
+lap by lap for first 10 laps. Soften rear ARB 1 step to avoid snap oversteer
+on the slippery early laps. Do not set up for peak grip.
+
+### Time of Day
+Dawn/Morning: track still warming, pressures build more than normal — start
+cold pressures 0.5 psi lower. Evening/Night: rapid cooling, dew risk, grip
+drops mid-session. Midday/Afternoon: peak temp and rubber — best grip window.
+
+### Wind Effects
+Wind >14 km/h affects high-speed corner balance. Headwind into corner =
+more effective downforce (stable). Tailwind = less downforce (loose).
+Strong crosswind (>25 km/h) warrants +1 rear wing step for straight stability.
+
+### Weekly Series: Different Conditions Every Week
+iRacing rotates car+track weekly. Previous week setup is almost never optimal.
+Always recalculate: tire pressures for new track temp, wing for new altitude,
+ride height for new track surface, ARB for new corner speed profile.
+Weather adjustments are applied automatically — do not double-apply them.
 """.strip()

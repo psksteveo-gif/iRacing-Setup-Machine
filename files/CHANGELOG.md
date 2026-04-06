@@ -624,3 +624,70 @@ Classifies track by speed zones: top speed, slow corner %, fast corner %.
   - Speed sector classification → aero rules
   Each section explains: what the signal means, thresholds, car-class sensitivity,
   why it's more/less reliable than alternatives, and expected driver feel
+
+---
+
+## [3.17.0] - 2026-04-06 | Weather & Track Condition Engine
+
+### New Module: `core/weather_engine.py` (709 lines)
+
+Full physics model for track condition and weather-aware setup adjustments.
+Runs as a post-processing pass on every setup_generator output.
+
+**`WeatherConditions`** — parsed from IBT session_info:
+  AirTemp, TrackTempCrew, WindVel, WindDir, Skies, WeatherType,
+  SessionTimeOfDay, TrackWetness, altitude_m, humidity_pct
+  Derived: track_condition (7 states), time_of_day (6 states),
+           air_density (ISA formula), temp_delta_from_baseline
+
+**`TrackCondition` states:** DRY_RUBBERED, DRY_GREEN, DRY_COLD, DRY_HOT,
+  DAMP, WET, VERY_WET — classified from temp, wetness, skies, weather_type
+
+**`WeatherEngine` computes:**
+- `tire_pressure_corrections()` — per-corner psi adjustment from air+track temp delta
+  Formula: ±0.11 psi per 10°F air temp + ±0.025 psi/°C track temp
+  Wet: −0.75 to −2.0 psi. Cold: +0.5 psi. Hot: −0.75 psi. Wind: right-side load.
+- `mechanical_grip_factor()` — 0.35 (very wet) to 1.0 (dry rubbered)
+- `aero_downforce_factor()` — air_density / 1.225 (ISA formula: ρ = P/R×T)
+- `wing_adjustment_steps()` — 1 step per 3% density loss, capped ±2
+- `spring_stiffness_modifier()` — ×0.80 wet, ×0.85 cold, ×1.10 hot
+- `arb_stiffness_modifier()` — ×0.65 very wet → ×1.0 dry rubbered
+- `brake_bias_adjustment()` — +2.0% wet, +1.5% wet, +0.5% cold/green
+- `camber_temperature_modifier()` — −0.2° at <15°C, +0.15° at >45°C
+- `time_of_day_context()` — dawn/morning/midday/afternoon/evening/night notes
+- `wind_context()` — speed, direction, balance impact description
+- `adjust_deltas(deltas)` — applies all modifiers to existing deltas in-place
+- `get_weather_adjustments()` — standalone weather-only deltas
+- `condition_report()` — structured dict for UI display
+- `prompt_section()` — formatted block for AI prompt injection
+
+### Wired Throughout the Stack
+
+`core/setup_generator.py`:
+- `generate_setup()` now accepts `session_info: dict` parameter
+- After compute_deltas(): `WeatherEngine.adjust_deltas()` modifies all deltas
+- `SetupResult.weather_report` field stores full condition report
+- Standalone weather adjustments computed and available on result
+
+`main.py`:
+- `generate_setup()` call passes `session_info=data.session_info`
+- **Dashboard weather chip**: condition name, grip%, pressure correction,
+  time-of-day note, wind context — shown between Confidence chip and Track Conditions
+- **Recommend dialog weather panel**: shows every weather adjustment applied to the
+  recommendations — pressure corr, ARB modifier, spring modifier, brake bias adj,
+  camber adj, wing steps
+
+`core/ai_advisor.py`:
+- `_build_prompt()` builds `WeatherEngine.prompt_section()` from session_info
+- Full weather context injected as `weather_text` before issues/tires in prompt
+- AI now knows exact conditions and that adjustments are pre-applied
+
+`core/knowledge_base.py`:
+- Extended to 25,826 chars with comprehensive weather physics section:
+  temperature→pressure formulas, grip factor table, wet philosophy,
+  air density→aero, green track handling, time-of-day effects, wind effects,
+  weekly series condition reset guidance
+
+### Also in 3.17: Pending items from 3.16
+- `core/setup_generator.py`: `weather_report` field on SetupResult
+- `DEVNOTES.md`: Architecture docs updated through 3.17
