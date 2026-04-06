@@ -500,6 +500,13 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self._ai_cache:dict[int,str]={}  # session-index -> AI recommendation text
         self.cur_data:TelemetryData|None=None
         self.cur_rpt:AnalysisReport|None=None
+
+        # ── Subscription / feature gating ────────────────────────────────────
+        # Free tier: core telemetry, dashboard, basic AI recommendations (3/session)
+        # Pro tier ($12.99/mo): unlimited AI, coaching flow, voice, weekly prep,
+        #                       write to iRacing, setup generator, compare AI brief
+        self._pro_ai_calls_today = 0   # tracked per app session for free tier
+        self._FREE_AI_CALLS = 3        # free calls before paywall
         self.cur_sec:SectorAnalysisReport|None=None
         self.cur_best:BestLapReport|None=None
         self.cur_stint:TireDegReport|None=None
@@ -671,6 +678,126 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             self.title(f"{APP_NAME}  —  {car}  @  {trk}  (v{VERSION})")
         else:
             self.title(f"{APP_NAME}  v{VERSION}")
+
+    def _check_pending_outcomes(self, data):
+        """
+        After an IBT load, check if the driver applied a generated setup
+        last session. If so, show a quick feedback dialog to record
+        whether the changes helped — feeds the Setup Learning DB.
+        """
+        pending = self.cfg.get('pending_outcomes', [])
+        if not pending:
+            return
+        # Only ask if the loaded session matches the car+track of the applied setup
+        if not data or not data.car_name:
+            return
+        first = pending[0]
+        if (data.car_name.lower() not in first.get('car', '').lower() and
+                first.get('car', '').lower() not in data.car_name.lower()):
+            return  # Different car — skip
+
+        # Build feedback dialog
+        win = ctk.CTkToplevel(self)
+        win.title('Setup Outcome — How Did It Go?')
+        win.geometry('520x380')
+        win.configure(fg_color=DARK)
+        win.lift()
+        win.grab_set()
+
+        lbl(win, '🏁  Setup Change Outcome', 14, bold=True, color=ACCENT).pack(pady=(18, 4))
+        lbl(win, f'You applied {len(pending)} Optimal Sector recommendation(s)\n'
+            f'for {first.get("car", "unknown")} at {first.get("track", "unknown")}.',
+            11, color=DIM, justify='center').pack(pady=(0, 12))
+
+        changes_frame = ctk.CTkScrollableFrame(win, fg_color=PANEL,
+                                                corner_radius=6, height=100)
+        changes_frame.pack(fill='x', padx=20, pady=(0, 12))
+        for p in pending[:6]:
+            sign = '+' if p.get('delta', 0) >= 0 else ''
+            lbl(changes_frame,
+                f"  {p.get('param','?')}:  {sign}{p.get('delta', 0):.3g}",
+                10, color=TEXT).pack(anchor='w', pady=1)
+
+        lbl(win, 'How did the car feel after the changes?',
+            12, bold=True, color=TEXT).pack(pady=(4, 8))
+
+        feel_var = ctk.StringVar(value='')
+        feel_frame = ctk.CTkFrame(win, fg_color='transparent')
+        feel_frame.pack(pady=(0, 12))
+        for feel, label, col in [
+            ('much_better', '🚀  Much Better',  GREEN),
+            ('better',      '✓   Better',        '#5dca8a'),
+            ('neutral',     '→   No change',     DIM),
+            ('worse',       '✗   Worse',         YELLOW),
+            ('much_worse',  '⚠   Much Worse',   RED),
+        ]:
+            ctk.CTkRadioButton(feel_frame, text=label,
+                               variable=feel_var, value=feel,
+                               font=ctk.CTkFont(size=12),
+                               fg_color=col, hover_color=col
+                               ).pack(anchor='w', padx=20, pady=3)
+
+        def _record():
+            feel = feel_var.get()
+            if not feel:
+                messagebox.showwarning('Select an option',
+                    'Please select how the changes felt.', parent=win)
+                return
+            # Record each delta as an outcome
+            try:
+                from core.setup_learning_db import get_learning_db
+                from core.car_classifier import classify_car
+                ldb = get_learning_db()
+                _car_class = classify_car(data.car_name).value
+                _lap_delta = 0.0
+                # Try to infer lap delta from session history
+                try:
+                    from core.advanced_analysis import HistoryTracker
+                    hist = HistoryTracker().get_history(
+                        car=data.car_name, track=data.track_name)
+                    if len(hist) >= 2:
+                        _lap_delta = hist[0].best_lap - hist[1].best_lap
+                except Exception:
+                    pass
+                for p in pending:
+                    ldb.record_outcome(
+                        car=data.car_name,
+                        track=data.track_name,
+                        car_class=_car_class,
+                        param=p.get('param', ''),
+                        delta=p.get('delta', 0),
+                        lap_delta_s=_lap_delta,
+                        driver_feel=feel,
+                        conditions=p.get('conditions', {}),
+                        confidence=p.get('confidence', 1.0),
+                    )
+                logger.info('Recorded %d outcomes (%s)', len(pending), feel)
+            except Exception as e:
+                logger.warning('Outcome recording failed: %s', e)
+
+            # Clear pending
+            self.cfg.pop('pending_outcomes', None)
+            save_cfg(self.cfg)
+            win.destroy()
+            self._status_lbl.configure(
+                text=f'✓ Outcome recorded — Optimal Sector is learning from your feedback')
+            self.after(5000, lambda: self._status_lbl.configure(text=''))
+
+        def _skip():
+            self.cfg.pop('pending_outcomes', None)
+            save_cfg(self.cfg)
+            win.destroy()
+
+        btn_row = ctk.CTkFrame(win, fg_color='transparent')
+        btn_row.pack(pady=8)
+        ctk.CTkButton(btn_row, text='Record Feedback', width=160, height=34,
+                      fg_color=ACCENT, hover_color='#C04A10',
+                      font=ctk.CTkFont(size=12, weight='bold'),
+                      command=_record).pack(side='left', padx=8)
+        ctk.CTkButton(btn_row, text='Skip', width=80, height=34,
+                      fg_color=CARD, hover_color=PANEL,
+                      command=_skip).pack(side='left')
+        win.bind('<Escape>', lambda e: _skip())
 
     def _safe_geometry(self, geo: str) -> str:
         """Validate geometry string against screen bounds; center if position is off-screen."""
@@ -3427,12 +3554,38 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                     _gen_status.configure(
                         text=f"✅ Written to {os.path.basename(dest_path)}",
                         text_color=GREEN)
+
+                    # Record applied deltas for outcome tracking
+                    try:
+                        _car  = (self.cur_data.car_name or '') if self.cur_data else ''
+                        _trk  = (self.cur_data.track_name or '') if self.cur_data else ''
+                        _cond = {}
+                        if self.cur_data and self.cur_data.session_info:
+                            _si = self.cur_data.session_info
+                            if _si.get('track_temp_c'): _cond['track_temp_c'] = _si['track_temp_c']
+                            if _si.get('air_temp_c'):   _cond['air_temp_c']   = _si['air_temp_c']
+                        # Store pending outcomes — will be resolved after next session load
+                        _pending = [
+                            {'car': _car, 'track': _trk,
+                             'param': d.display_name,
+                             'delta': d.delta,
+                             'confidence': d.confidence,
+                             'conditions': _cond}
+                            for d in _gr.deltas
+                        ]
+                        self.cfg['pending_outcomes'] = _pending
+                        save_cfg(self.cfg)
+                    except Exception:
+                        pass
+
                     messagebox.showinfo(
                         "Setup Written!",
                         f"Setup saved to:\n{dest_path}\n\n"
                         f"Load '{default_name}' in iRacing garage.\n"
                         f"All {len(_gr.deltas)} changes have been applied.\n"
-                        f"Tech inspection: PASS ✓",
+                        f"Tech inspection: PASS ✓\n\n"
+                        f"After your next session, load the IBT and\n"
+                        f"Optimal Sector will ask how the changes felt.",
                         parent=win)
                 except Exception as _we:
                     logger.exception("Failed to write generator setup")
@@ -3807,6 +3960,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
 
     def _get_ai(self):
         if not self.cur_rpt: messagebox.showwarning("No Session","Load a session first."); return
+        if not self._require_pro('AI Recommendations'): return
         # One-time consent for AI data transmission
         if not self.cfg.get('ai_consent'):
             ok = messagebox.askyesno("AI Data Notice",
@@ -4063,6 +4217,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         Works through the driver's issues one at a time in priority order.
         Each step: show the issue + what to do → driver marks done → next issue.
         """
+        if not self._require_pro('Coaching Flow'): return
         if not self.cur_rpt:
             messagebox.showwarning("No Session",
                 "Load an IBT telemetry file first.")
@@ -5114,6 +5269,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
 
     def _load_weekly_prep(self):
         """Fetch current iRacing weekly schedule and build prep content."""
+        if not self._require_pro('Weekly Series Prep'): return
         email = self.cfg.get('iracing_email', '').strip()
         pw    = self.cfg.get('iracing_password', '')
         if not email or not pw:
@@ -5999,6 +6155,88 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
     # ══════════════════════════════════════════════════════════════════════════
     # ABOUT / HELP
     # ══════════════════════════════════════════════════════════════════════════
+    def _is_pro(self) -> bool:
+        """Return True if user has a valid Pro subscription key."""
+        key = self.cfg.get('subscription_key', '').strip()
+        # Valid key: non-empty, at least 16 chars, not the placeholder
+        return bool(key and len(key) >= 16 and key != 'ENTER_KEY_HERE')
+
+    def _require_pro(self, feature_name: str = 'This feature') -> bool:
+        """
+        Gate a Pro feature. Returns True if allowed (is_pro OR within free quota).
+        Shows upgrade dialog if blocked. Call at the START of any Pro feature.
+
+        Free tier gets _FREE_AI_CALLS AI calls per app session.
+        All non-AI Pro features are blocked immediately for free users.
+        """
+        if self._is_pro():
+            return True
+
+        # AI calls: allow up to _FREE_AI_CALLS before paywall
+        if 'AI' in feature_name or 'recommendation' in feature_name.lower():
+            if self._pro_ai_calls_today < self._FREE_AI_CALLS:
+                self._pro_ai_calls_today += 1
+                remaining = self._FREE_AI_CALLS - self._pro_ai_calls_today
+                if remaining == 0:
+                    # Show soft warning — still allows this call
+                    self.after(500, lambda: self._show_upgrade_prompt(
+                        f"You've used your {self._FREE_AI_CALLS} free AI "
+                        f"analyses. Upgrade to Pro for unlimited access."))
+                return True
+            # Free quota exhausted
+            self._show_upgrade_prompt(
+                f"You've used your {self._FREE_AI_CALLS} free AI analyses "
+                f"for this session. Upgrade to Optimal Sector Pro for "
+                f"unlimited AI recommendations, coaching flow, voice coaching, "
+                f"weekly prep, and more.")
+            return False
+
+        # All other Pro features blocked for free tier
+        self._show_upgrade_prompt(
+            f"{feature_name} is an Optimal Sector Pro feature. "
+            f"Upgrade for $12.99/month to unlock unlimited AI analysis, "
+            f"Coaching Flow, Voice Coaching, Weekly Series Prep, "
+            f"Write to iRacing, and all Pro features.")
+        return False
+
+    def _show_upgrade_prompt(self, message: str):
+        """Show a non-blocking upgrade nudge dialog."""
+        win = ctk.CTkToplevel(self)
+        win.title('Upgrade to Pro')
+        win.geometry('480x260')
+        win.configure(fg_color=DARK)
+        win.grab_set()
+        win.lift()
+
+        ctk.CTkLabel(win, text='🏁  Optimal Sector Pro',
+                     font=ctk.CTkFont(size=16, weight='bold'),
+                     text_color=ACCENT).pack(pady=(20, 4))
+        ctk.CTkLabel(win, text=message, font=ctk.CTkFont(size=12),
+                     text_color=TEXT, wraplength=420,
+                     justify='center').pack(padx=20, pady=8)
+
+        btn_row = ctk.CTkFrame(win, fg_color='transparent')
+        btn_row.pack(pady=(8, 20))
+        ctk.CTkButton(btn_row, text='✨ Upgrade — $12.99/mo',
+                      width=200, height=38,
+                      fg_color=ACCENT, hover_color='#C04A10',
+                      font=ctk.CTkFont(size=13, weight='bold'),
+                      command=lambda: (
+                          __import__('webbrowser').open(
+                              'https://optimalsector.com/upgrade'),
+                          win.destroy()
+                      )).pack(side='left', padx=8)
+        ctk.CTkButton(btn_row, text='Maybe later',
+                      width=110, height=38,
+                      fg_color=CARD, hover_color=PANEL,
+                      command=win.destroy).pack(side='left', padx=4)
+
+        # Enter key = upgrade
+        win.bind('<Return>', lambda e: (
+            __import__('webbrowser').open('https://optimalsector.com/upgrade'),
+            win.destroy()))
+        win.bind('<Escape>', lambda e: win.destroy())
+
     def _about(self):
         win=ctk.CTkToplevel(self); win.title("About"); win.geometry("480x420")
         win.configure(fg_color=DARK); win.grab_set(); win.resizable(False,False)
@@ -9612,6 +9850,9 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             self.cur_setup_result = None
         self._last_opt_result_fixed = None
         self._update_title(data)
+
+        # Check for pending setup outcomes from a previous Write to iRacing
+        self.after(2000, lambda: self._check_pending_outcomes(data))
 
         # Auto-populate session mode from IBT session type
         _sess_type_raw = (data.session_info.get('session_type') or

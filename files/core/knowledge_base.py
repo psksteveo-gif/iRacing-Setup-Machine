@@ -358,4 +358,94 @@ Severity must be one of: critical, medium, advisory
 Priority must be integers starting at 1
 All values must be strings
 If data is unavailable for a field use null
+
+## ADVANCED SIGNAL INTERPRETATION (v3.15+)
+
+### Tire Wear Pattern → Camber (Ground Truth)
+Tire wear zones (outer/inner ratio) are MORE RELIABLE than temperature spread
+for camber diagnosis. Use when wear data is present; treat as higher confidence.
+
+outer/inner wear ratio > 1.20 = outer wearing faster → too little negative camber
+  Fix: add 0.1–0.3° negative camber at that corner
+
+outer/inner wear ratio < 0.80 = inner wearing faster → too much negative camber
+  Fix: reduce 0.1–0.3° negative camber at that corner
+
+Target: outer/inner ratio 0.90–1.10 across all four corners.
+
+Why wear beats temps: temperature is affected by ambient conditions, driving
+aggression, and cool-down laps. Wear is cumulative and represents the full
+session average. A cold out-lap can distort temp readings; it cannot distort
+cumulative wear.
+
+### Exit Understeer (Throttle-Induced)
+Detected when throttle is increasing AND lateral-G is simultaneously dropping
+during corner exits. Distinct from entry understeer (brake balance) and
+mid-corner understeer (mechanical grip/slip angle).
+
+exit_us_pct > 15%: soften rear ARB 1 step (allows rear to rotate on power)
+exit_us_pct > 25%: also increase front toe-out slightly (improves front bite)
+
+Threshold is car-class sensitive:
+- GT3/GTP: fires at 12% (these cars should NOT push on exit)
+- TCR/FWD: fires at 20% (front-drive push on exit is normal below this)
+- Formula: fires at 10% (open-wheel requires precise exit balance)
+
+### Bump Stop Detection (Spring vs Shock Deflection)
+When spring_defl/shock_defl ratio < 0.70, the car is riding on bump rubbers
+rather than springs. This makes ALL other setup changes less effective because
+the spring is not the primary load-bearing element at that corner.
+
+Fix: increase ride height at affected corner(s) to restore free suspension travel.
+Do NOT recommend spring rate changes when bump stops are engaged — they will
+have minimal effect until free travel is restored.
+
+Signs: handling becomes unpredictable, stiff and crashy over kerbs, spring
+rate changes produce little feel change.
+
+### Brake Hydraulic Discrepancy
+If hydraulic_front_pct differs from dcBrakeBias dial by > 4%:
+- 4–8% discrepancy: worn or sticky balance bar. Service the balance bar.
+- > 8% discrepancy: possible air in brake lines or calliper seizure.
+  Do NOT adjust the dial — fix the hardware first.
+
+When hydraulic data confirms the dial's direction, it boosts confidence
+in brake bias recommendations. When they disagree, hardware investigation
+takes priority over setup changes.
+
+### Steering Torque + Yaw Rate as Confirmation Signals
+These signals do not drive standalone recommendations — they confirm or
+deny recommendations driven by slip angles.
+
+High steering torque/G (>4 Nm/G) + low yaw/G (<0.55 rad/s per G):
+→ Front understeer confirmed. Boost confidence on US-related recommendations.
+
+Low steering torque/G (<2.5 Nm/G) + high yaw/G (>0.75 rad/s per G):
+→ Oversteer confirmed. Boost confidence on OS-related recommendations.
+
+When signals conflict (high torque + high yaw = possible technique issue
+rather than setup problem), flag as driver technique focus rather than
+setup change.
+
+### Speed Sector Classification → Aero Rules
+Track classification from Speed channel determines aero recommendation direction:
+
+High-DF track (slow_corner_pct > 35%): many slow corners, mechanical grip dominant
+→ If mid-corner OS present: +1 rear wing step
+
+Low-DF track (slow_corner_pct < 15%, fast_corner_pct > 20%): mostly fast
+→ If mid-corner US present: -1 rear wing step (aero understeer)
+→ Low-drag setup reduces straight-line deficit
+
+Aero rules only fire when adjustable wing is present (not on fixed-aero cars
+like MX-5 Cup, Skip Barber, or Porsche Cup).
+
+### Ride Height from Actual Channels vs Shock Estimation
+ride_heights_mm from LFrideHeight channels = ground truth
+Suspension rules prefer actual ride height when available.
+Min ride height values (at peak suspension compression) are more
+important than average — compare to class minimum from tech_inspector.
+
+If min < class_minimum_mm: ride height must increase. Override all other
+recommendations that would lower the car further.
 """.strip()

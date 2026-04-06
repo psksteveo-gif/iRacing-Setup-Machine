@@ -577,3 +577,50 @@ Classifies track by speed zones: top speed, slow corner %, fast corner %.
 14. tire_pressure_rules, diff_rules, damper_rules, aero_rules
 
 ### SignalBundle now has 80 fields (was 40 at v3.6)
+
+---
+
+## [3.16.0] - 2026-04-06 | Feature Gating + Setup Learning DB + Knowledge Base
+
+### Added — Feature Gating (Subscription)
+- `main.py` — `_is_pro()`: validates `subscription_key` length ≥ 16 chars
+- `main.py` — `_require_pro(feature_name)`:
+  - Free tier: 3 AI calls per app session before paywall
+  - After free quota: shows upgrade dialog with Upgrade button
+  - Non-AI Pro features blocked immediately for free users
+  - Soft warning after last free call (still allows that call)
+- `main.py` — `_show_upgrade_prompt(message)`: modal upgrade dialog
+  - Upgrade button → `https://optimalsector.com/upgrade`
+  - Enter key = upgrade, Escape = dismiss
+- Gated features: `_get_ai()`, `_start_coaching_flow()`, `_load_weekly_prep()`
+
+### Added — Setup Learning DB
+- `core/setup_learning_db.py` — `SetupLearningDB`:
+  - `record_outcome(car, track, car_class, param, delta, lap_delta_s, driver_feel)`
+    Records result of an applied setup change. `driver_feel`: much_better/better/neutral/worse/much_worse
+  - `get_magnitude_scale(car_class, param)` → float (0.5–2.0)
+    Returns learned scaling factor. Needs `_MIN_SAMPLES=3` before activating.
+    Algorithm: weighted avg of feel scores × recency × confidence → ±30% magnitude adjust
+  - Stored at `~/.optimalsector/setup_learning.json`, capped at 2000 entries
+  - `get_learning_db()` — singleton accessor
+- `core/setup_generator.py` — `compute_deltas()` now applies learning scale before dedup:
+  Each delta magnitude × `get_magnitude_scale(car_class, param)` when scale ≠ 1.0
+- `main.py` — Write to iRacing now stores applied deltas in `cfg['pending_outcomes']`
+- `main.py` — `_check_pending_outcomes(data)`: fires 2s after next IBT load
+  - Only triggers if loaded session matches car/track of applied setup
+  - Shows outcome dialog: 5 feel options with radio buttons
+  - Records all deltas via `SetupLearningDB.record_outcome()`
+  - Infers lap_delta_s from HistoryTracker if available
+  - Clears pending outcomes on submit or skip
+
+### Updated — Knowledge Base (v3.15+ signals)
+- `core/knowledge_base.py` — Extended from 18,691 → 22,692 chars (+4,001 chars)
+  Added full documentation for 6 new signal types:
+  - Tire wear outer/inner ratio → camber ground truth
+  - Exit understeer detection from throttle trace
+  - Bump stop detection from spring vs shock deflection ratio
+  - Brake hydraulic discrepancy → hardware issue flags
+  - Steering torque + yaw rate as confirmation signals
+  - Speed sector classification → aero rules
+  Each section explains: what the signal means, thresholds, car-class sensitivity,
+  why it's more/less reliable than alternatives, and expected driver feel

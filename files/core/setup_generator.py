@@ -1117,6 +1117,23 @@ class SetupDeltaEngine:
         # Filter below confidence threshold
         deltas = [d for d in deltas if d.confidence >= MIN_CONFIDENCE]
 
+        # Apply learned magnitude scaling per param + car class
+        try:
+            from core.setup_learning_db import get_learning_db
+            _ldb = get_learning_db()
+            _cls_str = (effective_class.value
+                        if hasattr(effective_class, 'value')
+                        else str(effective_class))
+            for d in deltas:
+                _scale = _ldb.get_magnitude_scale(_cls_str, d.param)
+                if abs(_scale - 1.0) > 0.05 and d.delta != 0:
+                    d.delta = round(d.delta * _scale, 3)
+                    d.recommended_value = d.current_value + d.delta
+                    logger.debug('Learning scale %s %s: ×%.2f → %.3f',
+                                 _cls_str, d.param, _scale, d.delta)
+        except Exception:
+            pass  # Learning DB unavailable — raw recommendations unchanged
+
         # Deduplicate — keep highest confidence per param
         seen: Dict[str, SetupDelta] = {}
         for d in deltas:
