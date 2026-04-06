@@ -803,3 +803,39 @@ Runs as a post-processing pass on every setup_generator output.
 - **Privacy Notice** — full GDPR notice viewer
 - **Clear All My Data** — Art. 17 erasure (two-step confirmation:
   yes/no dialog + type "ERASE ALL MY DATA" phrase)
+
+---
+
+## [3.19.1] - 2026-04-06 | Security Hardening Patch
+
+### Fixes
+
+**[HIGH] Subscription key no longer written to cfg dict**
+- `main.py` Settings save: removed `cfg['subscription_key'] = ...` assignment
+  that bypassed `_NEVER_SAVE`. Key now only stored via `_activate_key()` → keyring.
+
+**[MEDIUM] Network error messages sanitized in UI**
+- Leaderboard fetch errors: `"⚠ {str(e)[:35]}"` → `"⚠ Request failed — check credentials"`
+  Full detail logged via `logger.warning()`, never shown in UI
+- AI Race Prep errors: `"Error: {e}"` → `"AI request failed — check API key in Settings"`
+  Prevents raw network URLs, auth headers, or stack traces appearing in the interface
+
+**[MEDIUM] pending_outcomes moved out of config**
+- Was stored in `cfg['pending_outcomes']` — written to config.enc on every save
+- Now stored in `~/.optimalsector/pending_outcomes.json` (dedicated sidecar file)
+- Added to `erase_all_local_data()` erasure list in `core/privacy.py`
+- Removes session metadata (car, track, temp, param deltas) from config file
+
+**[MEDIUM] PyInstaller spec created**
+- `optimal_sector.spec`: full build spec with all hidden imports, UPX compression
+- Build: `pyinstaller optimal_sector.spec`
+- Encrypted bytecode: `pyinstaller optimal_sector.spec --key=<32-char-key>`
+  (AES-256 on .pyc — raises bar for casual reverse engineering)
+- `disable_windowed_traceback=True`: Python tracebacks never shown to end users
+
+### AES / Fernet — Decision Record
+The Fernet encryption on `config.enc` is retained for two reasons:
+1. `recent_files` contains full filesystem paths (personal data under GDPR)
+2. `iracing_email` is personal data under GDPR Art. 4
+The cryptography package dependency is justified. The OS keyring remains
+the primary security layer for all credentials — Fernet is defence in depth.

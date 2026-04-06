@@ -141,6 +141,7 @@ def erase_all_local_data(confirm_phrase: str = '') -> dict[str, bool]:
         ('fuel_database',      _DATA_DIR / 'fuel_db.json'),
         ('shift_database',     _DATA_DIR / 'shift_db.json'),
         ('tire_pressure_db',   _DATA_DIR / 'tire_pressure_db.json'),
+        ('pending_outcomes',   _DATA_DIR / 'pending_outcomes.json'),
         ('config_encrypted',   _CONFIG_ENC),
         ('config_plaintext',   _CONFIG_FILE),
     ]

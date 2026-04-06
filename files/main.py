@@ -703,7 +703,16 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         last session. If so, show a quick feedback dialog to record
         whether the changes helped — feeds the Setup Learning DB.
         """
-        pending = self.cfg.get('pending_outcomes', [])
+        # Load pending outcomes from sidecar file (not config)
+        pending = []
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+            _po_file = _Path.home() / '.optimalsector' / 'pending_outcomes.json'
+            if _po_file.exists():
+                pending = _json.loads(_po_file.read_text(encoding='utf-8'))
+        except Exception:
+            pending = self.cfg.get('pending_outcomes', [])
         if not pending:
             return
         # Only ask if the loaded session matches the car+track of the applied setup
@@ -793,7 +802,14 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             except Exception as e:
                 logger.warning('Outcome recording failed: %s', e)
 
-            # Clear pending
+            # Clear pending outcomes from sidecar file and cfg fallback
+            try:
+                from pathlib import Path as _Path
+                _po_file = _Path.home() / '.optimalsector' / 'pending_outcomes.json'
+                if _po_file.exists():
+                    _po_file.unlink()
+            except Exception:
+                pass
             self.cfg.pop('pending_outcomes', None)
             save_cfg(self.cfg)
             win.destroy()
@@ -3808,7 +3824,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                             _si = self.cur_data.session_info
                             if _si.get('track_temp_c'): _cond['track_temp_c'] = _si['track_temp_c']
                             if _si.get('air_temp_c'):   _cond['air_temp_c']   = _si['air_temp_c']
-                        # Store pending outcomes — will be resolved after next session load
+                        # Store pending outcomes in sidecar file, NOT in config
                         _pending = [
                             {'car': _car, 'track': _trk,
                              'param': d.display_name,
@@ -3817,8 +3833,15 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                              'conditions': _cond}
                             for d in _gr.deltas
                         ]
-                        self.cfg['pending_outcomes'] = _pending
-                        save_cfg(self.cfg)
+                        try:
+                            import json as _json
+                            from pathlib import Path as _Path
+                            _po_file = _Path.home() / '.optimalsector' / 'pending_outcomes.json'
+                            _po_file.write_text(
+                                _json.dumps(_pending, indent=2), encoding='utf-8')
+                        except Exception as _po_err:
+                            logger.warning('pending_outcomes sidecar write failed: %s', _po_err)
+                            # Fallback silently — outcomes are non-critical
                     except Exception:
                         pass
 
@@ -5826,8 +5849,9 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                                 return
                         self.after(0, lambda: sl.configure(text="No data"))
                     except Exception as ex:
-                        self.after(0, lambda e=ex:
-                            sl.configure(text=f"⚠ {str(e)[:35]}"))
+                        logger.warning('Leaderboard fetch error: %s', ex)
+                        self.after(0, lambda:
+                            sl.configure(text="⚠ Request failed — check credentials"))
                 threading.Thread(target=_worker, daemon=True).start()
 
             ctk.CTkButton(lb_hdr, text="Load", width=50, height=20,
@@ -5896,7 +5920,9 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                     if self.cfg.get("voice_coaching", True):
                         self._speak_text("".join(parts), rate=150)
                 except Exception as ex:
-                    self.after(0, lambda e=ex: al.configure(text=f"Error: {e}"))
+                    logger.warning('AI race prep error: %s', ex)
+                    self.after(0, lambda: al.configure(
+                        text="AI request failed — check API key in Settings"))
                 if pb: self.after(0, lambda:
                     pb.configure(state="normal", text="✨ AI Race Prep"))
             threading.Thread(target=_stream, daemon=True).start()
@@ -7276,8 +7302,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             self.cfg['default_chart'] = default_chart_var.get()
             self.cfg['outlier_threshold'] = round(outlier_var.get(), 2)
             self.cfg['show_corner_labels'] = corner_labels_var.get()
-            if sub_key_var.get().strip():
-                self.cfg['subscription_key'] = sub_key_var.get().strip()
+            # subscription_key stored in OS keyring via _activate_key()
+            # NEVER written to cfg dict — _NEVER_SAVE enforcement
             update_consent_preferences(
                 learning_data=privacy_learning_var.get(),
                 driver_profile=privacy_profile_var.get(),
