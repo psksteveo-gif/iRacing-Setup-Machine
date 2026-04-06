@@ -1418,17 +1418,42 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 return
 
             def _find_corners(spd, dist):
+                # Fully vectorized — no Python loops over the 1000-point grid
                 n_pts = 1000
                 grid  = np.linspace(0, 1, n_pts)
                 spd_i = np.interp(grid, dist, spd)
                 window = n_pts // 20
-                raw = []
-                for i in range(window, n_pts - window):
-                    lo, hi = i - window // 2, i + window // 2
-                    if (spd_i[i] == np.min(spd_i[lo:hi]) and
-                            np.max(spd_i[i-window:i+window]) -
-                            np.min(spd_i[i-window:i+window]) > 20):
-                        raw.append((float(grid[i]), float(spd_i[i])))
+                half_w = window // 2
+
+                # Rolling min over [i-half_w : i+half_w] using stride tricks
+                # np.lib.stride_tricks for local min without a Python loop
+                from numpy.lib.stride_tricks import sliding_window_view
+                win_view = sliding_window_view(spd_i, 2 * half_w + 1)
+                local_min = win_view.min(axis=1)
+                pad = half_w
+                # A point is a local minimum if it equals the local min
+                is_local_min = np.zeros(n_pts, dtype=bool)
+                is_local_min[pad:pad + len(local_min)] = (
+                    spd_i[pad:pad + len(local_min)] == local_min)
+
+                # Speed drop threshold: local_max - local_min > 20 km/h
+                win_view_wide = sliding_window_view(spd_i, 2 * window + 1)
+                local_range = win_view_wide.max(axis=1) - win_view_wide.min(axis=1)
+                has_range = np.zeros(n_pts, dtype=bool)
+                has_range[window:window + len(local_range)] = local_range > 20
+
+                # Candidates: interior points that are local min with enough speed drop
+                candidates = np.where(
+                    is_local_min & has_range &
+                    (np.arange(n_pts) >= window) &
+                    (np.arange(n_pts) < n_pts - window)
+                )[0]
+
+                if len(candidates) == 0:
+                    return []
+
+                # Deduplicate: keep lowest speed within 3% track position windows
+                raw = list(zip(grid[candidates].tolist(), spd_i[candidates].tolist()))
                 deduped = []
                 for pct, v in sorted(raw, key=lambda x: x[0]):
                     if not deduped or pct - deduped[-1][0] > 0.03:
@@ -4972,6 +4997,277 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
     # ══════════════════════════════════════════════════════════════════════════
     # SETUP PERFORMANCE TRACKER
     # ══════════════════════════════════════════════════════════════════════════
+    def _t_weekly_prep(self, parent=None):
+        """Weekly Series Prep tab."""
+        tab = parent or ctk.CTkFrame(self, fg_color=DARK)
+        tab.configure(fg_color=DARK)
+
+        hdr = ctk.CTkFrame(tab, fg_color=PANEL, corner_radius=8)
+        hdr.pack(fill='x', padx=10, pady=(8, 4))
+        hdr_inner = ctk.CTkFrame(hdr, fg_color='transparent')
+        hdr_inner.pack(fill='x', padx=12, pady=8)
+        lbl(hdr_inner, '🏁  iRacing Weekly Series Prep', 13,
+            bold=True, color=ACCENT).pack(side='left')
+        self._weekly_refresh_btn = ctk.CTkButton(
+            hdr_inner, text='🔄 Refresh', width=90, height=28,
+            fg_color=CARD, hover_color=BLUE,
+            command=self._load_weekly_prep)
+        self._weekly_refresh_btn.pack(side='right', padx=(0, 4))
+
+        cred_frame = ctk.CTkFrame(tab, fg_color='#0A0A14',
+                                   corner_radius=6, border_width=1,
+                                   border_color='#1E1E2E')
+        cred_frame.pack(fill='x', padx=10, pady=(0, 4))
+        cr = ctk.CTkFrame(cred_frame, fg_color='transparent')
+        cr.pack(fill='x', padx=12, pady=8)
+        lbl(cr, 'iRacing Email:', 11, color=DIM).pack(side='left', padx=(0, 6))
+        self._weekly_email_var = ctk.StringVar(
+            value=self.cfg.get('iracing_email', ''))
+        ctk.CTkEntry(cr, textvariable=self._weekly_email_var,
+                     width=200, height=28, placeholder_text='you@email.com',
+                     font=ctk.CTkFont(size=11)).pack(side='left', padx=(0, 12))
+        lbl(cr, 'Password:', 11, color=DIM).pack(side='left', padx=(0, 6))
+        self._weekly_pw_var = ctk.StringVar(
+            value=self.cfg.get('iracing_password', ''))
+        ctk.CTkEntry(cr, textvariable=self._weekly_pw_var,
+                     width=150, height=28, show='*',
+                     font=ctk.CTkFont(size=11)).pack(side='left', padx=(0, 8))
+        ctk.CTkButton(cr, text='Save', width=60, height=28,
+                      fg_color=CARD, hover_color=BLUE,
+                      command=self._save_weekly_creds).pack(side='left')
+        lbl(cr, '  Stored locally only.',
+            10, color=DIM).pack(side='left', padx=8)
+
+        self._weekly_sc = ctk.CTkScrollableFrame(
+            tab, fg_color='transparent')
+        self._weekly_sc.pack(fill='both', expand=True, padx=10, pady=(0, 8))
+        lbl(self._weekly_sc,
+            'Click Refresh to load this week\'s iRacing schedule.\n'
+            'Requires iRacing credentials above.',
+            13, color=DIM, justify='center').pack(expand=True, pady=40)
+
+    def _save_weekly_creds(self):
+        self.cfg['iracing_email']    = self._weekly_email_var.get().strip()
+        self.cfg['iracing_password'] = self._weekly_pw_var.get()
+        save_cfg(self.cfg)
+        self._status_lbl.configure(text='iRacing credentials saved')
+        self.after(3000, lambda: self._status_lbl.configure(text=''))
+
+    def _load_weekly_prep(self):
+        """Fetch current iRacing weekly schedule and build prep content."""
+        email = self.cfg.get('iracing_email', '').strip()
+        pw    = self.cfg.get('iracing_password', '')
+        if not email or not pw:
+            messagebox.showwarning('Credentials Required',
+                'Enter your iRacing email and password above first.')
+            return
+        self._weekly_refresh_btn.configure(state='disabled', text='⏳ Loading…')
+        for w in self._weekly_sc.winfo_children():
+            w.destroy()
+        lbl(self._weekly_sc, '⏳ Fetching schedule from iRacing…',
+            12, color=DIM).pack(pady=20)
+
+        def _worker():
+            try:
+                schedule = self._fetch_iracing_schedule(email, pw)
+                err = None
+            except Exception as ex:
+                schedule = None
+                err = str(ex)
+            self.after(0, lambda: self._render_weekly_prep(schedule, err))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _fetch_iracing_schedule(self, email: str, password: str) -> list:
+        """Authenticate with iRacing Data API and fetch current season schedule."""
+        import requests
+        import hashlib
+        import base64
+
+        pw_hash = base64.b64encode(
+            hashlib.sha256(
+                (password + email.lower()).encode('utf-8')
+            ).digest()
+        ).decode('utf-8')
+
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'OptimalSector/3.11',
+            'Content-Type': 'application/json',
+        })
+
+        auth_resp = session.post(
+            'https://members-ng.iracing.com/auth',
+            json={'email': email, 'password': pw_hash},
+            timeout=15)
+        if auth_resp.status_code != 200:
+            raise ConnectionError(
+                f'iRacing auth failed ({auth_resp.status_code}). '
+                f'Check email and password.')
+        auth_data = auth_resp.json()
+        if not auth_data.get('authcode'):
+            raise ConnectionError(
+                'iRacing auth failed: ' +
+                auth_data.get('message', 'unknown error'))
+
+        sched_resp = session.get(
+            'https://members-ng.iracing.com/data/series/seasons',
+            timeout=15)
+        if sched_resp.status_code != 200:
+            raise ConnectionError(
+                f'Schedule fetch failed ({sched_resp.status_code})')
+
+        sched_data = sched_resp.json()
+        if 'link' in sched_data:
+            sched_data = session.get(sched_data['link'], timeout=15).json()
+
+        results = []
+        for series in (sched_data if isinstance(sched_data, list) else []):
+            try:
+                for week in series.get('schedules', []):
+                    track_info = week.get('track', {})
+                    results.append({
+                        'series_name':   series.get('series_name', ''),
+                        'car_class_name': series.get('car_class_name', ''),
+                        'track_name':    track_info.get('track_name', ''),
+                        'config_name':   track_info.get('config_name', ''),
+                        'race_week_num': week.get('race_week_num', 0),
+                    })
+            except Exception:
+                continue
+        return results
+
+    def _render_weekly_prep(self, schedule: list, error: str):
+        """Render weekly prep cards."""
+        self._weekly_refresh_btn.configure(state='normal', text='🔄 Refresh')
+        for w in self._weekly_sc.winfo_children():
+            w.destroy()
+
+        if error:
+            ef = ctk.CTkFrame(self._weekly_sc, fg_color='#1A0A0A',
+                               corner_radius=6, border_width=1,
+                               border_color='#5A1A1A')
+            ef.pack(fill='x', pady=8)
+            lbl(ef, f'⚠  {error}', 12, color=RED,
+                wraplength=700).pack(padx=12, pady=10)
+            lbl(ef, 'Tip: Make sure 2FA is disabled for API access.',
+                10, color=DIM).pack(padx=12, pady=(0, 8))
+            return
+
+        if not schedule:
+            lbl(self._weekly_sc, 'No schedule data returned.', 12, color=DIM).pack(pady=20)
+            return
+
+        max_week = max(s.get('race_week_num', 0) for s in schedule)
+        current  = [s for s in schedule if s.get('race_week_num', 0) == max_week]
+        if not current:
+            current = schedule[:20]
+
+        lbl(self._weekly_sc,
+            f'Week {max_week}  —  {len(current)} active series',
+            12, bold=True, color=ACCENT).pack(anchor='w', pady=(8, 4))
+
+        for item in current[:15]:
+            self._render_weekly_card(item)
+
+    def _render_weekly_card(self, item: dict):
+        """Render one series card with history and AI prep button."""
+        series    = item.get('series_name', 'Unknown Series')
+        car_cls   = item.get('car_class_name', '')
+        track     = item.get('track_name', '')
+        config    = item.get('config_name', '')
+        full_trk  = f'{track} — {config}' if config and config != track else track
+
+        card = ctk.CTkFrame(self._weekly_sc, fg_color=CARD,
+                             corner_radius=8, border_width=1,
+                             border_color='#1E1E26')
+        card.pack(fill='x', pady=4)
+
+        ch = ctk.CTkFrame(card, fg_color='transparent')
+        ch.pack(fill='x', padx=12, pady=(10, 2))
+        lbl(ch, series, 12, bold=True).pack(side='left')
+        lbl(ch, car_cls, 10, color=DIM).pack(side='left', padx=8)
+        lbl(card, f'📍  {full_trk}', 11, color=BLUE,
+            anchor='w').pack(anchor='w', padx=12, pady=(0, 4))
+
+        hist = self.history.get_history(track=track)
+        hist_row = ctk.CTkFrame(card, fg_color='#0A1A0A', corner_radius=4)
+        hist_row.pack(fill='x', padx=12, pady=(0, 4))
+        if hist:
+            best = min(hist, key=lambda e: e.best_lap)
+            sessions = len(hist)
+            lbl(hist_row,
+                f'Your best: {format_laptime(best.best_lap)}  '
+                f'({sessions} session{"s" if sessions > 1 else ""})',
+                11, color='#2ECC71').pack(side='left', padx=10, pady=5)
+        else:
+            lbl(hist_row, 'No history here yet', 10, color=DIM).pack(
+                side='left', padx=10, pady=4)
+
+        btn_row = ctk.CTkFrame(card, fg_color='transparent')
+        btn_row.pack(fill='x', padx=12, pady=(0, 10))
+        ai_lbl = lbl(btn_row, '', 11, color=TEXT, wraplength=600, justify='left')
+
+        def _get_prep(s=series, t=track, c=car_cls, al=ai_lbl, br=btn_row):
+            pb = br.winfo_children()[0] if br.winfo_children() else None
+            if pb:
+                pb.configure(state='disabled', text='Generating…')
+            k = _get_api_key().strip()
+            if not k:
+                al.configure(text='Set API key in Settings first.')
+                if pb:
+                    pb.configure(state='normal', text='✨ AI Race Prep')
+                return
+            h_entries = self.history.get_history(track=t)
+            h_ctx = []
+            if h_entries:
+                best = min(h_entries, key=lambda e: e.best_lap)
+                h_ctx.append(f'Best: {format_laptime(best.best_lap)}')
+                if best.notes:
+                    h_ctx.append(f'Notes: {best.notes[:100]}')
+            prompt = '\n'.join([
+                'You are a professional iRacing race engineer.',
+                'Give a 2-3 sentence pre-race briefing. Plain text only.',
+                '',
+                f'Series: {s}   Car class: {c}   Track: {t}',
+                'Driver history: ' + (', '.join(h_ctx) if h_ctx
+                                       else 'No previous sessions here.'),
+                '',
+                'Focus: what to expect, key corners, setup priorities.',
+            ])
+
+            def _stream():
+                try:
+                    import anthropic
+                    parts = []
+                    client = anthropic.Anthropic(api_key=k, timeout=30.0)
+                    with client.messages.stream(
+                        model='claude-haiku-4-5-20251001',
+                        max_tokens=150,
+                        messages=[{'role': 'user', 'content': prompt}],
+                    ) as stream:
+                        for chunk in stream.text_stream:
+                            parts.append(chunk)
+                            txt = ''.join(parts)
+                            self.after(0, lambda t=txt: al.configure(text=t))
+                    if self.cfg.get('voice_coaching', True):
+                        self._speak_text(''.join(parts), rate=150)
+                except Exception as ex:
+                    self.after(0, lambda e=ex:
+                        al.configure(text=f'Error: {e}'))
+                if pb:
+                    self.after(0, lambda:
+                        pb.configure(state='normal', text='✨ AI Race Prep'))
+
+            threading.Thread(target=_stream, daemon=True).start()
+
+        prep_btn = ctk.CTkButton(
+            btn_row, text='✨ AI Race Prep', width=130, height=28,
+            fg_color=ACCENT, hover_color='#C04A10',
+            font=ctk.CTkFont(size=11), command=_get_prep)
+        prep_btn.pack(side='left', pady=4)
+        ai_lbl.pack(side='left', padx=10, fill='x', expand=True)
+
     def _t_setup_perf_tab(self, parent=None):
         tab = parent if parent is not None else ctk.CTkFrame(self, fg_color=DARK)
         tab.configure(fg_color=DARK)
@@ -8308,8 +8604,9 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
 
     def _on_live_sample(self, sample: LiveSample):
         """Receive a live sample and update the dashboard window."""
-        # Always update fuel tracker and check for session/lap events
+        # Always update fuel tracker and check for session/lap events at full rate
         self._live_fuel_tracker.update(sample)
+        self._live_sample_n = getattr(self, '_live_sample_n', 0) + 1
         if sample.is_connected:
             self._check_live_session_change(sample)
             self._check_live_lap_complete(sample)
@@ -8317,6 +8614,24 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         if self._live_win is None or not self._live_win.winfo_exists():
             return
         win = self._live_win
+
+        # Throttle dashboard widget updates to ~4Hz (every 3rd sample at 10Hz poll)
+        # Speed/gear/throttle update at full rate; lap times and tire data at 4Hz
+        _full_rate = (self._live_sample_n % 3 == 0)
+        if not _full_rate and sample.is_connected:
+            # Still update speed-critical widgets at full rate
+            try:
+                from core import units as _u
+                spd = sample.speed_kph
+                win._spd_lbl.configure(
+                    text=_u.fmt_speed_from_kmh(spd, 0),
+                    text_color=GREEN if spd > 10 else DIM)
+                win._gear_lbl.configure(text=f"G{sample.gear}")
+                win._thr_bar.set(sample.throttle)
+                win._brk_bar.set(sample.brake)
+            except Exception:
+                pass
+            return
 
         if not sample.is_connected:
             if self._live_monitor and self._live_monitor.sdk_missing:

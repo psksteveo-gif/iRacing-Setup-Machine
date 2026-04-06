@@ -274,6 +274,7 @@ class OBSOverlay:
 
     def _on_sample(self, sample: LiveSample):
         self._last_sample = sample
+        self._sample_count = getattr(self, '_sample_count', 0) + 1
         self._fuel_tracker.update(sample)
 
     # ── UI refresh loop ───────────────────────────────────────────────────
@@ -311,7 +312,10 @@ class OBSOverlay:
             self._delta_history.append(delta)
             if len(self._delta_history) > 120:
                 self._delta_history.pop(0)
-            self._draw_spark()
+            # Throttle sparkline redraws to ~3Hz (every 3rd sample at 10Hz)
+            # Canvas pixel updates are expensive — data still collected at full rate
+            if getattr(self, '_sample_count', 0) % 3 == 0:
+                self._draw_spark()
             # Show SDK vs ref source indicator
             if hasattr(self, '_lbl_sdk_delta'):
                 src_txt = "SDK Δ" if sdk_delta_used else "Ref Δ"

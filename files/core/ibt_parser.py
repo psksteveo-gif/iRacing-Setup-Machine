@@ -221,8 +221,15 @@ class IBTParser:
                     vo = vh['offset']
                     if vo < 0 or vo + sz > buf_len:
                         continue
-                    col_bytes = np.ascontiguousarray(raw_matrix[:, vo:vo + sz])
-                    channel_data = np.frombuffer(col_bytes.tobytes(), dtype=np_dtype).astype(np.float64)
+                    # Direct view into the raw matrix — no copy.
+                    # Stride trick: view each row's [vo:vo+sz] bytes as the
+                    # target dtype, then squeeze the sub-element axis away.
+                    col_view = raw_matrix[:, vo:vo + sz]
+                    if col_view.flags['C_CONTIGUOUS']:
+                        channel_data = col_view.view(np_dtype).reshape(-1).astype(np.float64)
+                    else:
+                        # Fallback: single contiguous copy only when needed
+                        channel_data = np.ascontiguousarray(col_view).view(np_dtype).reshape(-1).astype(np.float64)
                     data.set_channel(vh['name'], channel_data)
                 except (KeyError, IndexError, ValueError, struct.error) as e:
                     logger.debug("Skipping channel %s: %s", vh.get('name', '?'), e)

@@ -75,11 +75,13 @@ def _is_retryable_error(exc: Exception) -> bool:
 
 
 def _stream_with_retry(client, *, model: str, max_tokens: int,
-                       messages: list, system: str = "") -> list[str]:
+                       messages: list, system = "",
+                       betas: list = None) -> list[str]:
     """
     Call client.messages.stream() with up to _MAX_RETRIES retries on transient errors.
     Returns all text chunks as a list (collected before yielding to allow retry).
     Raises the final exception if all retries are exhausted.
+    Supports Anthropic prompt caching via betas=['prompt-caching-2024-07-31'].
     """
     kwargs: dict = dict(model=model, max_tokens=max_tokens, messages=messages)
     if system:
@@ -88,11 +90,21 @@ def _stream_with_retry(client, *, model: str, max_tokens: int,
     for attempt in range(_MAX_RETRIES + 1):
         try:
             chunks: list[str] = []
-            with client.messages.stream(**kwargs) as stream:
-                for text in stream.text_stream:
-                    chunks.append(text)
+            if betas:
+                # Use beta client path for prompt caching
+                with client.beta.messages.stream(**kwargs, betas=betas) as stream:
+                    for text in stream.text_stream:
+                        chunks.append(text)
+            else:
+                with client.messages.stream(**kwargs) as stream:
+                    for text in stream.text_stream:
+                        chunks.append(text)
             return chunks
         except Exception as exc:
+            # Fall back to non-cached path if beta endpoint fails
+            if betas and attempt == 0:
+                betas = None
+                continue
             last_exc = exc
             if attempt < _MAX_RETRIES and _is_retryable_error(exc):
                 delay = _RETRY_BASE_DELAY * (2 ** attempt)
@@ -735,10 +747,21 @@ def get_ai_recommendations_stream(report: AnalysisReport, car_name: str,
                                incident_report=incident_report, evolution_report=evolution_report,
                                car_class_str=car_class_str)
 
+        # Use Anthropic prompt caching — COACHING_KNOWLEDGE_BASE is ~4600 tokens.
+        # Cache persists 5 min server-side: saves re-processing on back-to-back calls.
+        # Falls back to uncached if the beta header is not accepted.
+        _system_cached = [
+            {
+                "type": "text",
+                "text": COACHING_KNOWLEDGE_BASE,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
         chunks = _stream_with_retry(
             client, model=_MODEL_SONNET, max_tokens=1024,
-            system=COACHING_KNOWLEDGE_BASE,
+            system=_system_cached,
             messages=[{"role": "user", "content": prompt}],
+            betas=["prompt-caching-2024-07-31"],
         )
         for text in chunks:
             yield text
