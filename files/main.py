@@ -526,6 +526,10 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self.history=HistoryTracker()
         self._ai_last_text = ""
         self._ai_chat_history: list[tuple[str, str]] = []
+        # Coaching Flow state
+        self._flow_issues: list = []    # ordered list of issues to work through
+        self._flow_idx: int = 0         # current issue index
+        self._flow_active: bool = False
         self._loading = False
         # Stub for chart StringVar — fully initialised inside _t_telemetry when tab is active
         self._tv = ctk.StringVar(value='Speed + Throttle + Brake')
@@ -3691,6 +3695,16 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             command=self._get_evolution_summary)
         self._ai_evo_btn.pack(side='left', padx=(0, 6))
 
+        self._ai_flow_btn = ctk.CTkButton(hdr_right, text="🎯 Coaching Flow", width=130, height=30,
+            fg_color="#1A2A1A", hover_color="#2ECC71",
+            border_width=1, border_color="#2A3A2A",
+            font=ctk.CTkFont(size=12), text_color="#2ECC71",
+            command=self._start_coaching_flow)
+        self._ai_flow_btn.pack(side='left', padx=(0, 6))
+        _Tooltip(self._ai_flow_btn,
+            "Guided Coaching Flow — works through your biggest issue one at a time.\n"
+            "Interactive: tells you what to fix, you confirm when done, then moves to the next.")
+
         self._aib = ctk.CTkButton(hdr_right, text="Get Recommendations", width=160, height=30,
             fg_color=ACCENT, hover_color="#C04A10",
             font=ctk.CTkFont(size=12, weight="bold"),
@@ -3956,6 +3970,304 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         """Remove all widgets from the cards scroll area."""
         for w in self._ai_cards_sc.winfo_children():
             w.destroy()
+
+    # ── COACHING FLOW ─────────────────────────────────────────────────────────
+
+    def _start_coaching_flow(self):
+        """
+        Start a guided Coaching Flow session.
+        Works through the driver's issues one at a time in priority order.
+        Each step: show the issue + what to do → driver marks done → next issue.
+        """
+        if not self.cur_rpt:
+            messagebox.showwarning("No Session",
+                "Load an IBT telemetry file first.")
+            return
+        key = _get_api_key().strip()
+        if not key:
+            messagebox.showwarning("API Key Needed",
+                "Set your API key in Settings (⚙) first.")
+            return
+
+        # Build issue list from report + setup generator + SDK coaching alerts
+        issues = []
+
+        # From AnalysisReport (sorted by severity already)
+        if self.cur_rpt and self.cur_rpt.issues:
+            for iss in self.cur_rpt.issues[:8]:
+                issues.append({
+                    'source': 'analysis',
+                    'severity': iss.severity.value,
+                    'title': iss.title,
+                    'description': iss.description,
+                    'recommendation': getattr(iss, 'recommendation', ''),
+                })
+
+        # From setup generator deltas (top 3 highest priority)
+        _sr = getattr(self, 'cur_setup_result', None)
+        if _sr and _sr.tech_pass and _sr.deltas:
+            for d in sorted(_sr.deltas, key=lambda x: x.confidence, reverse=True)[:3]:
+                issues.append({
+                    'source': 'setup_generator',
+                    'severity': 'medium',
+                    'title': f'Setup: {d.display_name}',
+                    'description': d.reasoning,
+                    'recommendation': (
+                        f'Change {d.display_name} by {d.delta:+.3g} {d.unit} '
+                        f'({d.current_value:.3g} → {d.recommended_value:.3g}).'
+                    ),
+                    'driver_feel': getattr(d, 'driver_feel', ''),
+                    'confidence': d.confidence,
+                })
+
+        # SDK coaching signals from current channels
+        _ch = getattr(self.cur_data, 'channels', {}) or {} if self.cur_data else {}
+        try:
+            import numpy as np
+            sg = _ch.get('ShiftGrindRPM')
+            if sg is not None and int(np.sum(sg > 100)) > 3:
+                issues.append({
+                    'source': 'sdk',
+                    'severity': 'warning',
+                    'title': f'Shift Grind ({int(np.sum(sg > 100))} events)',
+                    'description': 'Gearbox detected mis-shifts — missed sync window.',
+                    'recommendation': 'Increase heel-toe blip depth on downshifts.',
+                })
+        except Exception:
+            pass
+
+        if not issues:
+            messagebox.showinfo("No Issues Found",
+                "No issues detected in this session. Drive more laps for better data.")
+            return
+
+        self._flow_issues = issues
+        self._flow_idx = 0
+        self._flow_active = True
+
+        # Switch to flow mode UI
+        self._clear_ai_cards()
+        self._ai_flow_btn.configure(
+            text="⏹ End Flow", command=self._end_coaching_flow,
+            fg_color="#3A1A1A", hover_color=RED, text_color=RED,
+            border_color="#5A1A1A")
+        self._aib.configure(state='disabled')
+
+        self._render_flow_step(key)
+
+    def _render_flow_step(self, api_key: str):
+        """Render the current coaching flow step."""
+        if not self._flow_active or self._flow_idx >= len(self._flow_issues):
+            self._end_coaching_flow(completed=True)
+            return
+
+        self._clear_ai_cards()
+        sc = self._ai_cards_sc
+        issue = self._flow_issues[self._flow_idx]
+        total = len(self._flow_issues)
+        step_n = self._flow_idx + 1
+
+        # ── Progress header ───────────────────────────────────────────────────
+        prog_frame = ctk.CTkFrame(sc, fg_color='#0A0A0E', corner_radius=6)
+        prog_frame.pack(fill='x', padx=14, pady=(10, 4))
+        prog_inner = ctk.CTkFrame(prog_frame, fg_color='transparent')
+        prog_inner.pack(fill='x', padx=12, pady=8)
+        lbl(prog_inner, f"🎯  Coaching Flow  —  Issue {step_n} of {total}",
+            12, bold=True, color='#2ECC71').pack(side='left')
+        lbl(prog_inner, f"{'●' * step_n}{'○' * (total - step_n)}",
+            11, color=DIM).pack(side='right')
+        # Progress bar
+        bar_outer = ctk.CTkFrame(prog_frame, fg_color='#1A1A22',
+                                  height=4, corner_radius=2)
+        bar_outer.pack(fill='x', padx=12, pady=(0, 8))
+        bar_outer.pack_propagate(False)
+        bar_fill = ctk.CTkFrame(bar_outer, fg_color='#2ECC71',
+                                 height=4, corner_radius=2)
+        bar_fill.place(relx=0, rely=0,
+                       relwidth=step_n / total, relheight=1)
+
+        # ── Issue card ────────────────────────────────────────────────────────
+        sev_col = {'critical': RED, 'warning': YELLOW,
+                   'medium': YELLOW, 'info': BLUE}.get(
+            issue.get('severity', 'info'), DIM)
+
+        issue_card = ctk.CTkFrame(sc, fg_color=CARD, corner_radius=8,
+                                   border_width=1, border_color=sev_col)
+        issue_card.pack(fill='x', padx=14, pady=4)
+
+        issue_hdr = ctk.CTkFrame(issue_card, fg_color='transparent')
+        issue_hdr.pack(fill='x', padx=14, pady=(12, 4))
+        src_icon = {'analysis': '📊', 'setup_generator': '⚙',
+                    'sdk': '🔧'}.get(issue.get('source', ''), '●')
+        lbl(issue_hdr, f"{src_icon}  {issue['title']}", 14,
+            bold=True, color=sev_col).pack(side='left')
+        lbl(issue_hdr, issue.get('severity', '').upper(),
+            10, color=sev_col).pack(side='right')
+
+        lbl(issue_card, issue.get('description', ''), 12, color=TEXT,
+            wraplength=740, justify='left').pack(
+            anchor='w', padx=14, pady=(0, 8))
+
+        # ── Recommendation block ──────────────────────────────────────────────
+        if issue.get('recommendation'):
+            rec_frame = ctk.CTkFrame(issue_card, fg_color='#0A1A0A',
+                                      corner_radius=6)
+            rec_frame.pack(fill='x', padx=14, pady=(0, 8))
+            lbl(rec_frame, '💡  What to do', 10, bold=True,
+                color='#2ECC71').pack(anchor='w', padx=12, pady=(8, 2))
+            lbl(rec_frame, issue['recommendation'], 12, color=TEXT,
+                wraplength=720, justify='left').pack(
+                anchor='w', padx=12, pady=(0, 8))
+
+        if issue.get('driver_feel'):
+            lbl(issue_card, f"🎮  Feel: {issue['driver_feel']}", 11,
+                color=DIM, wraplength=740, justify='left').pack(
+                anchor='w', padx=14, pady=(0, 10))
+
+        # ── AI expansion (streamed detail) ────────────────────────────────────
+        ai_detail_frame = ctk.CTkFrame(sc, fg_color='#111827',
+                                        corner_radius=6)
+        ai_detail_frame.pack(fill='x', padx=14, pady=4)
+        ai_detail_hdr = ctk.CTkFrame(ai_detail_frame, fg_color='transparent')
+        ai_detail_hdr.pack(fill='x', padx=12, pady=(8, 4))
+        lbl(ai_detail_hdr, '🤖  AI Detail', 11, bold=True,
+            color=ACCENT).pack(side='left')
+        ai_expand_btn = ctk.CTkButton(
+            ai_detail_hdr, text='Explain →', width=80, height=24,
+            fg_color=CARD, hover_color=ACCENT, font=ctk.CTkFont(size=11))
+        ai_expand_btn.pack(side='right')
+
+        ai_detail_box = ctk.CTkTextbox(
+            ai_detail_frame, height=100, fg_color='transparent',
+            font=ctk.CTkFont(size=12), wrap='word')
+        ai_detail_box.insert('1.0',
+            "Click 'Explain' for a detailed breakdown of this issue "
+            "and how to practice fixing it.")
+        ai_detail_box.configure(state='disabled')
+        ai_detail_box.pack(fill='x', padx=12, pady=(0, 8))
+
+        def _expand_detail():
+            ai_expand_btn.configure(state='disabled', text='Loading…')
+            ai_detail_box.configure(state='normal')
+            ai_detail_box.delete('1.0', 'end')
+            ai_detail_box.configure(state='disabled')
+
+            car  = self.cur_data.car_name if self.cur_data else ''
+            track = self.cur_data.track_name if self.cur_data else ''
+            prompt = '\n'.join([
+                'You are a professional iRacing race engineer.',
+                'Respond in plain text, 3-4 sentences max.',
+                '',
+                f'Car: {car}  Track: {track}',
+                f'Issue: {issue["title"]}',
+                f'Description: {issue.get("description", "")}',
+                '',
+                'Explain WHY this issue causes lap time loss, and give ONE '
+                'specific thing the driver can practice in their next 5 laps '
+                'to address it. Be direct and technical.',
+            ])
+
+            def _stream():
+                try:
+                    import anthropic
+                    client = anthropic.Anthropic(api_key=api_key, timeout=30.0)
+                    with client.messages.stream(
+                        model='claude-haiku-4-5-20251001',
+                        max_tokens=200,
+                        messages=[{'role': 'user', 'content': prompt}],
+                    ) as stream:
+                        for chunk in stream.text_stream:
+                            def _a(c=chunk):
+                                ai_detail_box.configure(state='normal')
+                                ai_detail_box.insert('end', c)
+                                ai_detail_box.configure(state='disabled')
+                                ai_detail_box.see('end')
+                            sc.after(0, _a)
+                except Exception as ex:
+                    sc.after(0, lambda: (
+                        ai_detail_box.configure(state='normal'),
+                        ai_detail_box.insert('end', f'\n\nError: {ex}'),
+                        ai_detail_box.configure(state='disabled')))
+                sc.after(0, lambda: ai_expand_btn.configure(
+                    state='normal', text='✓ Done'))
+
+            import threading
+            threading.Thread(target=_stream, daemon=True).start()
+
+        ai_expand_btn.configure(command=_expand_detail)
+
+        # ── Navigation buttons ─────────────────────────────────────────────────
+        nav = ctk.CTkFrame(sc, fg_color='transparent')
+        nav.pack(fill='x', padx=14, pady=(8, 14))
+
+        if self._flow_idx > 0:
+            ctk.CTkButton(nav, text='← Previous', width=100, height=34,
+                          fg_color=CARD, hover_color='#1A2A3A',
+                          command=lambda: self._flow_navigate(-1, api_key)
+                          ).pack(side='left')
+
+        lbl(nav, f'{step_n}/{total}  issues', 11, color=DIM).pack(side='left', padx=14)
+
+        done_btn = ctk.CTkButton(nav, text='✓ Got it — Next Issue', width=180, height=34,
+                                  fg_color='#2ECC71', hover_color='#1a8a50',
+                                  text_color='#08080A',
+                                  font=ctk.CTkFont(size=13, weight='bold'),
+                                  command=lambda: self._flow_navigate(+1, api_key))
+        done_btn.pack(side='right')
+
+        if step_n == total:
+            done_btn.configure(text='✓ Complete Flow', fg_color=ACCENT,
+                               hover_color='#C04A10', text_color=TEXT)
+
+    def _flow_navigate(self, direction: int, api_key: str):
+        """Move forward or backward in the coaching flow."""
+        self._flow_idx = max(0, min(
+            len(self._flow_issues) - 1,
+            self._flow_idx + direction))
+        if direction > 0 and self._flow_idx >= len(self._flow_issues):
+            self._end_coaching_flow(completed=True)
+        else:
+            self._render_flow_step(api_key)
+
+    def _end_coaching_flow(self, completed: bool = False):
+        """Exit coaching flow mode and restore normal AI tab state."""
+        self._flow_active = False
+        self._flow_issues = []
+        self._flow_idx = 0
+
+        # Restore buttons
+        if hasattr(self, '_ai_flow_btn'):
+            self._ai_flow_btn.configure(
+                text='🎯 Coaching Flow', command=self._start_coaching_flow,
+                fg_color='#1A2A1A', hover_color='#2ECC71',
+                text_color='#2ECC71', border_color='#2A3A2A')
+        if hasattr(self, '_aib'):
+            self._aib.configure(state='normal')
+
+        self._clear_ai_cards()
+        if completed:
+            # Show completion message
+            sc = self._ai_cards_sc
+            done_frame = ctk.CTkFrame(sc, fg_color=CARD, corner_radius=8)
+            done_frame.pack(fill='x', padx=14, pady=20)
+            lbl(done_frame, '🏁  Coaching Flow Complete', 16, bold=True,
+                color='#2ECC71').pack(pady=(16, 4))
+            lbl(done_frame,
+                'You have worked through all identified issues.\n'
+                'Drive 5+ laps applying the changes, then reload your IBT\n'
+                'for a fresh analysis to track your improvement.',
+                13, color=DIM, justify='center').pack(pady=(0, 16))
+            ctk.CTkButton(done_frame, text='Get New Recommendations',
+                          width=200, height=36,
+                          fg_color=ACCENT, hover_color='#C04A10',
+                          command=self._get_ai).pack(pady=(0, 16))
+        else:
+            # Restore placeholder
+            self._ai_placeholder = lbl(self._ai_cards_sc,
+                "Load a session then click 'Get Recommendations'.\n"
+                "Requires Anthropic API key in Settings (⚙).",
+                13, color=DIM)
+            self._ai_placeholder.pack(expand=True, pady=40)
 
     def _render_ai_cards(self, data: dict):
         """Delegate to the module-level render_recommendations using buffered raw text."""

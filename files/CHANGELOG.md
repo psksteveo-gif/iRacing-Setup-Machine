@@ -271,3 +271,47 @@ Research on Trophi.ai ($12.99/mo), Track Titan ($5M funded), and Grid & Go:
 - Rate-limited: only fires when `_steven_coaching_active` is False
 - Does NOT fire when voice_coaching cfg is False (toggle)
 - Future: upgrade to ElevenLabs/OpenAI TTS for more natural voice quality
+
+---
+
+## [3.10.0] - 2026-04-06 | Guided Coaching Flow (Track Titan parity)
+
+### Added
+- `main.py` — Full guided Coaching Flow mode in AI tab:
+  - `_start_coaching_flow()` — builds ordered issue list from 3 sources:
+    1. AnalysisReport issues (sorted by severity, up to 8)
+    2. SetupDeltaEngine deltas (top 3 by confidence)
+    3. SDK coaching alerts (shift grind if present)
+  - `_render_flow_step()` — renders one issue at a time:
+    - Progress bar + dot indicator (step N of total)
+    - Issue card: severity-colored border, source icon (📊/⚙/🔧), description
+    - Recommendation block (green, "What to do")
+    - Driver feel note (how it will change the car's behavior)
+    - AI Detail expansion: "Explain →" streams 3-4 sentence Haiku response
+      explaining WHY the issue costs lap time + specific 5-lap practice drill
+    - Navigation: ← Previous, ✓ Got it — Next Issue buttons
+    - Last step: "✓ Complete Flow" button
+  - `_flow_navigate()` — moves forward/backward, calls `_end_coaching_flow`
+    when past last issue
+  - `_end_coaching_flow()` — restores normal AI tab state, shows completion
+    screen with "Get New Recommendations" CTA
+  - `_flow_active` state prevents race conditions with normal Get Recommendations
+
+- `main.py` — AI tab header:
+  - "🎯 Coaching Flow" button added (green, left of Get Recommendations)
+  - While flow is active: button becomes "⏹ End Flow" (red)
+  - Get Recommendations disabled during active flow
+
+### Design decisions
+- Flow works through issues even without API key for the navigation/cards
+- "Explain →" expansion is optional — driver can skip to next issue immediately
+- State stored on self (_flow_issues, _flow_idx, _flow_active) not in widget
+- Same Haiku model as voice coaching — fast response, low cost per step
+- Completion screen prompts driver to load new IBT after applying changes
+
+### Competitive context
+This closes the primary gap vs Track Titan's "Coaching Flows" feature.
+Key difference: Track Titan flows are pre-written for common mistakes.
+Optimal Sector flows are generated from YOUR specific session data —
+the issue list is different every time based on what actually happened
+in your IBT file.
