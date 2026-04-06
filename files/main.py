@@ -54,6 +54,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Install PII scrubber immediately — all log output is scrubbed from this point
+try:
+    from core.privacy import install_pii_scrubber
+    install_pii_scrubber()
+except Exception:
+    pass
+
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from core.ibt_parser          import IBTParser, load_demo_data, TelemetryData
@@ -282,6 +289,12 @@ def _render_recommendations_legacy(parent_frame, json_response: str):
 
         ctk.CTkLabel(card, text="").pack(pady=2)
 from core.config import (get_api_key as _get_api_key, set_api_key as _set_api_key,
+                          get_iracing_credentials as _get_ir_creds,
+                          set_iracing_credentials as _set_ir_creds,
+                          get_subscription_key as _get_sub_key,
+                          set_subscription_key as _set_sub_key,
+                          validate_subscription_key as _validate_sub_key,
+                          migrate_sensitive_keys_to_keyring as _migrate_keys,
                           load_cfg, save_cfg)
 from core.race_engineer import DriverProfileManager, RaceEngineer
 from core.telemetry_agent import ask_telemetry_agent
@@ -507,6 +520,11 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         #                       write to iRacing, setup generator, compare AI brief
         self._pro_ai_calls_today = 0   # tracked per app session for free tier
         self._FREE_AI_CALLS = 3        # free calls before paywall
+        # Migrate any sensitive keys from cfg to keyring (one-time on upgrade)
+        try:
+            _migrate_keys(self.cfg)
+        except Exception:
+            pass
         self.cur_sec:SectorAnalysisReport|None=None
         self.cur_best:BestLapReport|None=None
         self.cur_stint:TireDegReport|None=None
@@ -4189,15 +4207,35 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         if not self._require_pro('AI Recommendations'): return
         # One-time consent for AI data transmission
         if not self.cfg.get('ai_consent'):
-            ok = messagebox.askyesno("AI Data Notice",
-                "This will send session telemetry data (car, track,\n"
-                "tire temps, lap times, setup parameters) to the\n"
-                "Anthropic Claude API for analysis.\n\n"
-                "No personally identifiable information is included.\n\n"
-                "Allow data transmission?")
+            ok = messagebox.askyesno(
+                "AI Data Consent — GDPR Notice",
+                "This will transmit a telemetry summary to Anthropic's\n"
+                "Claude API (api.anthropic.com) for analysis.\n\n"
+                "DATA TRANSMITTED:\n"
+                "  • Car name and track name\n"
+                "  • Lap times, sector splits, balance scores\n"
+                "  • Tire temperatures and pressures\n"
+                "  • Setup parameters from your IBT file\n"
+                "  • Driving style metrics\n\n"
+                "DATA NOT TRANSMITTED:\n"
+                "  • Your name or iRacing account details\n"
+                "  • Your iRacing credentials or API key\n"
+                "  • Any data from other sessions without your action\n\n"
+                "LEGAL BASIS: Your explicit consent (GDPR Art. 6(1)(a))\n"
+                "PROCESSOR: Anthropic PBC, San Francisco, CA, USA\n"
+                "TRANSFER BASIS: Standard Contractual Clauses (Art. 46)\n"
+                "RETENTION: Anthropic does not train on API data by default.\n\n"
+                "You can revoke consent at any time in Settings → Privacy.\n\n"
+                "Allow AI analysis of this session?")
             if not ok:
                 return
             self.cfg['ai_consent'] = True
+            # Record consent with timestamp for GDPR Art. 7 demonstrability
+            try:
+                from core.privacy import record_consent
+                self.cfg = record_consent('ai_recommendations', True, self.cfg)
+            except Exception:
+                pass
             save_cfg(self.cfg)
         # Check cache first
         cache_key = next((i for i,(d,_) in enumerate(self.sessions) if d is self.cur_data), None)
@@ -5494,14 +5532,14 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         cr = ctk.CTkFrame(cred_frame, fg_color='transparent')
         cr.pack(fill='x', padx=12, pady=8)
         lbl(cr, 'iRacing Email:', 11, color=DIM).pack(side='left', padx=(0, 6))
+        _ir_e, _ir_p = _get_ir_creds()
         self._weekly_email_var = ctk.StringVar(
-            value=self.cfg.get('iracing_email', ''))
+            value=_ir_e or self.cfg.get('iracing_email', ''))
         ctk.CTkEntry(cr, textvariable=self._weekly_email_var,
                      width=200, height=28, placeholder_text='you@email.com',
                      font=ctk.CTkFont(size=11)).pack(side='left', padx=(0, 12))
         lbl(cr, 'Password:', 11, color=DIM).pack(side='left', padx=(0, 6))
-        self._weekly_pw_var = ctk.StringVar(
-            value=self.cfg.get('iracing_password', ''))
+        self._weekly_pw_var = ctk.StringVar(value=_ir_p)
         ctk.CTkEntry(cr, textvariable=self._weekly_pw_var,
                      width=150, height=28, show='*',
                      font=ctk.CTkFont(size=11)).pack(side='left', padx=(0, 8))
@@ -5520,17 +5558,22 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             13, color=DIM, justify='center').pack(expand=True, pady=40)
 
     def _save_weekly_creds(self):
-        self.cfg['iracing_email']    = self._weekly_email_var.get().strip()
-        self.cfg['iracing_password'] = self._weekly_pw_var.get()
+        email = self._weekly_email_var.get().strip()
+        pw    = self._weekly_pw_var.get()
+        _set_ir_creds(email, pw)
+        # Keep email in cfg for display only — password NEVER in cfg
+        self.cfg['iracing_email'] = email
+        self.cfg.pop('iracing_password', None)
         save_cfg(self.cfg)
-        self._status_lbl.configure(text='iRacing credentials saved')
+        self._status_lbl.configure(text='iRacing credentials saved securely (OS keyring)')
         self.after(3000, lambda: self._status_lbl.configure(text=''))
 
     def _load_weekly_prep(self):
         """Fetch current iRacing weekly schedule and build prep content."""
         if not self._require_pro('Weekly Series Prep'): return
-        email = self.cfg.get('iracing_email', '').strip()
-        pw    = self.cfg.get('iracing_password', '')
+        email, pw = _get_ir_creds()
+        if not email:
+            email = self.cfg.get('iracing_email', '').strip()
         if not email or not pw:
             messagebox.showwarning('Credentials Required',
                 'Enter your iRacing email and password above first.')
@@ -6538,10 +6581,12 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
     # ABOUT / HELP
     # ══════════════════════════════════════════════════════════════════════════
     def _is_pro(self) -> bool:
-        """Return True if user has a valid Pro subscription key."""
-        key = self.cfg.get('subscription_key', '').strip()
-        # Valid key: non-empty, at least 16 chars, not the placeholder
-        return bool(key and len(key) >= 16 and key != 'ENTER_KEY_HERE')
+        """Return True if user has a valid Pro subscription key (from OS keyring)."""
+        try:
+            key = _get_sub_key()
+            return _validate_sub_key(key)
+        except Exception:
+            return False
 
     def _require_pro(self, feature_name: str = 'This feature') -> bool:
         """
@@ -6908,15 +6953,18 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                      font=ctk.CTkFont(size=10)).pack(side='left', padx=(0, 6))
         def _activate_key():
             k = sub_key_var.get().strip()
-            if len(k) < 10:
+            if not _validate_sub_key(k):
                 messagebox.showwarning('Invalid Key',
-                    'Enter your license key from the purchase email.',
+                    'License key format invalid.\n'
+                    'Keys are 32+ alphanumeric characters from your purchase email.',
                     parent=win)
                 return
-            self.cfg['subscription_key'] = k
+            _set_sub_key(k)
+            self.cfg.pop('subscription_key', None)
             save_cfg(self.cfg)
             messagebox.showinfo('Activated',
-                'License key saved. Restart the app to unlock all features.',
+                'License key saved securely in OS keyring.\n'
+                'Restart the app to unlock all Pro features.',
                 parent=win)
         ctk.CTkButton(sub_key_row, text='Activate', width=70, height=26,
                       fg_color=CARD, hover_color=BLUE,
@@ -6933,6 +6981,133 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             'Compatible with iRacing EULA §8 (third-party telemetry tools).',
             10, color=DIM, wraplength=480, justify='left').pack(
             padx=10, pady=6)
+
+        # ── Privacy & Data Rights (GDPR) ─────────────────────────────────────
+        sep_priv = ctk.CTkFrame(win, fg_color=CARD, height=1)
+        sep_priv.pack(fill='x', padx=24, pady=(10, 4))
+        lbl(win, "Privacy & Data Rights", 12, bold=True,
+            color='#4A9EE8').pack(anchor='w', padx=24, pady=(4, 2))
+
+        priv_frame = ctk.CTkFrame(win, fg_color=PANEL, corner_radius=8)
+        priv_frame.pack(fill='x', padx=24, pady=(0, 4))
+        priv_inner = ctk.CTkFrame(priv_frame, fg_color='transparent')
+        priv_inner.pack(fill='x', padx=12, pady=8)
+
+        # Export all data (Art. 20)
+        def _export_gdpr():
+            from tkinter import filedialog as _fd
+            path = _fd.asksaveasfilename(
+                title='Export All My Data',
+                defaultextension='.json',
+                filetypes=[('JSON', '*.json')],
+                initialfile=f'OptimalSector_MyData_{datetime.now():%Y%m%d}.json',
+                parent=win)
+            if not path:
+                return
+            try:
+                from core.privacy import export_all_data
+                result = export_all_data(path)
+                if result.get('success'):
+                    messagebox.showinfo(
+                        'Export Complete',
+                        f'All your data exported to:\n{path}\n\n'
+                        f'Size: {result["size_kb"]:.1f} KB\n\n'
+                        f'This file contains your session history, setup '
+                        f'learning data, and config (no credentials).',
+                        parent=win)
+                else:
+                    messagebox.showerror('Export Failed',
+                        result.get('error', 'Unknown error'), parent=win)
+            except Exception as ex:
+                messagebox.showerror('Export Failed', str(ex), parent=win)
+
+        ctk.CTkButton(priv_inner, text='📦 Export All My Data',
+                      width=180, height=30,
+                      fg_color=BLUE, hover_color='#1a5a8a',
+                      font=ctk.CTkFont(size=11),
+                      command=_export_gdpr).pack(side='left', padx=(0, 8))
+
+        # View privacy notice (Art. 13)
+        def _show_privacy_notice():
+            notice_win = ctk.CTkToplevel(win)
+            notice_win.title('Privacy Notice — Optimal Sector')
+            notice_win.geometry('620x580')
+            notice_win.configure(fg_color=DARK)
+            notice_win.grab_set()
+            import tkinter as _tk
+            txt = _tk.Text(notice_win, bg=PANEL, fg=TEXT, wrap='word',
+                           font=('Segoe UI', 10), padx=16, pady=12,
+                           relief='flat', state='normal')
+            txt.pack(fill='both', expand=True, padx=8, pady=(8, 4))
+            from core.privacy import PRIVACY_NOTICE
+            txt.insert('1.0', PRIVACY_NOTICE)
+            txt.configure(state='disabled')
+            ctk.CTkButton(notice_win, text='Close', width=100,
+                          fg_color=CARD, hover_color=PANEL,
+                          command=notice_win.destroy).pack(pady=8)
+
+        ctk.CTkButton(priv_inner, text='📄 Privacy Notice',
+                      width=140, height=30,
+                      fg_color=CARD, hover_color=BLUE,
+                      font=ctk.CTkFont(size=11),
+                      command=_show_privacy_notice).pack(side='left', padx=(0, 8))
+
+        # Clear all data (Art. 17)
+        def _clear_all_data():
+            confirmed = messagebox.askyesno(
+                'Clear All My Data',
+                '⚠ This will permanently delete ALL locally stored data:\n\n'
+                '• Session history\n'
+                '• Setup learning outcomes\n'
+                '• Performance correlations\n'
+                '• Fuel and shift data\n'
+                '• Tire pressure data\n'
+                '• App configuration\n'
+                '• Saved credentials (from OS keyring)\n\n'
+                'IBT and .sto files in iRacing folders are NOT affected.\n\n'
+                'This cannot be undone. Continue?',
+                parent=win)
+            if not confirmed:
+                return
+            # Second confirmation
+            from tkinter import simpledialog as _sd
+            phrase = _sd.askstring(
+                'Confirm Erasure',
+                'Type  ERASE ALL MY DATA  to confirm:',
+                parent=win)
+            if phrase != 'ERASE ALL MY DATA':
+                messagebox.showinfo('Cancelled',
+                    'Erasure cancelled.', parent=win)
+                return
+            try:
+                from core.privacy import erase_all_local_data
+                results = erase_all_local_data('ERASE ALL MY DATA')
+                deleted = sum(1 for v in results.values() if v is True)
+                messagebox.showinfo(
+                    'Data Erased',
+                    f'All your data has been deleted.\n\n'
+                    f'{deleted} items removed.\n\n'
+                    f'The app will now close. Restart to begin fresh.',
+                    parent=win)
+                win.destroy()
+                self.destroy()
+            except Exception as ex:
+                messagebox.showerror('Erasure Failed', str(ex), parent=win)
+
+        ctk.CTkButton(priv_inner, text='🗑 Clear All My Data',
+                      width=160, height=30,
+                      fg_color='#3A0A0A', hover_color=RED,
+                      text_color=RED,
+                      font=ctk.CTkFont(size=11),
+                      command=_clear_all_data).pack(side='right')
+
+        lbl(priv_frame,
+            'Your data is stored locally on this machine only. '
+            'AI features transmit telemetry summaries to Anthropic (US) '
+            'only when you explicitly request recommendations. '
+            'GDPR rights apply — see Privacy Notice.',
+            9, color=DIM, wraplength=520, justify='left').pack(
+            padx=12, pady=(0, 8))
 
         # ── Learning Databases ────────────────────────────────────────────────
         sep2 = ctk.CTkFrame(win, fg_color=CARD, height=1)

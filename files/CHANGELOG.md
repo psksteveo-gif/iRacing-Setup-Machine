@@ -726,3 +726,80 @@ Runs as a post-processing pass on every setup_generator output.
 
 ### Version bump
 - `version.py`: 3.3.5 → 3.17.0 with full changelog from 3.7.0 → 3.17.0
+
+---
+
+## [3.19.0] - 2026-04-06 | Security Hardening + GDPR Compliance
+
+### Security Fixes
+
+**Credentials — OS Keyring (Art. 32)**
+- `core/config.py` — `save_cfg()` now strips `iracing_password`,
+  `subscription_key`, and `api_key` before writing to disk
+- `core/config.py` — `load_cfg()` strips sensitive keys on read,
+  migrates legacy plaintext values to keyring on first run
+- `main.py` — All iRacing credential reads/writes use `_get_ir_creds()`
+  / `_set_ir_creds()` keyring functions (never cfg dict)
+- `main.py` — Weekly Prep UI loads password from keyring on open
+- `main.py` — Leaderboard fetch uses keyring for auth
+
+**Subscription Key Validation**
+- `core/config.py` — `validate_subscription_key()`: requires 24+ chars,
+  alphanumeric only, must contain both letters AND digits
+  (old check: `len >= 16` — trivially bypassable with any 16-char string)
+- `main.py` — `_is_pro()` reads from keyring via `_get_sub_key()` and
+  calls `_validate_sub_key()` — format-validated, not just length
+- `main.py` — `_activate_key()` validates before storing; rejects invalid
+
+**Config Encryption at Rest (Art. 32)**
+- `core/privacy.py` — `encrypt_config()` / `decrypt_config()` using
+  Fernet (AES-128-CBC + HMAC-SHA256). Key stored in `~/.optimalsector/.enckey`
+  with chmod 600. Config stored as `config.enc`, plaintext `config.json` deleted.
+  Graceful fallback to plaintext if `cryptography` package unavailable.
+
+**PII Scrubbing in Log Files (Art. 32/33)**
+- `core/privacy.py` — `PIIScrubber(logging.Filter)`: scrubs email addresses,
+  Anthropic API keys (`sk-ant-...`), GitHub tokens (`ghp_...`),
+  password fields, iRacing password references from ALL log records
+- `main.py` — `install_pii_scrubber()` called immediately after
+  `logging.basicConfig()` — all log output scrubbed from app start
+
+### New Module: `core/privacy.py` (GDPR Art. 5, 7, 13, 17, 20, 25, 32, 46)
+
+**Art. 7 — Consent**
+- `record_consent(type, granted, cfg)`: timestamps all consent decisions
+  Stored in `cfg['consent_records']` for Art. 7(1) demonstrability
+
+**Art. 13/14 — Transparency**
+- `PRIVACY_NOTICE`: 3,344-char full privacy notice covering:
+  controller identity, data categories, purposes, legal bases,
+  third-party processors (Anthropic + iRacing) with SCC reference,
+  retention periods, security measures, user rights, contact
+
+**Art. 17 — Right to Erasure**
+- `erase_all_local_data('ERASE ALL MY DATA')`: deletes session history,
+  setup learning, performance DB, fuel/shift/pressure DBs, config files,
+  encryption key, all keyring entries. Requires explicit phrase confirmation.
+
+**Art. 20 — Data Portability**
+- `export_all_data(path)`: exports all user data to a single JSON file.
+  Includes: session history, setup outcomes, config (no credentials),
+  GDPR notice embedded, export timestamp + version.
+
+**Art. 25 — Privacy by Design**
+- `encrypt_config()`: AES-128 at rest for config file
+- `sanitize_cfg_for_save()`: strips sensitive keys helper
+- `migrate_sensitive_keys_to_keyring()`: one-time migration on upgrade
+
+### Updated AI Consent Dialog (Art. 6, 46)
+- Now discloses: exact data transmitted, data NOT transmitted,
+  legal basis (Art. 6(1)(a) consent), Anthropic as processor,
+  SCC basis for US transfer (Art. 46), non-training policy,
+  withdrawal rights
+- Consent recorded with timestamp via `record_consent()`
+
+### Settings Privacy Tab
+- **Export All My Data** — Art. 20 portability export
+- **Privacy Notice** — full GDPR notice viewer
+- **Clear All My Data** — Art. 17 erasure (two-step confirmation:
+  yes/no dialog + type "ERASE ALL MY DATA" phrase)

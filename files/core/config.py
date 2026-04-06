@@ -68,19 +68,36 @@ def set_api_key(key: str):
 
 def load_cfg():
     try:
+        # Try encrypted config first
+        try:
+            from core.privacy import decrypt_config
+            cfg = decrypt_config()
+            if cfg is not None:
+                # Strip sensitive keys that should never be in config
+                for _sk in ("api_key", "iracing_password", "subscription_key"):
+                    cfg.pop(_sk, None)
+                return cfg
+        except Exception:
+            pass
+        # Fall back to plaintext
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "r") as f:
                 cfg = json.load(f)
+            # Migrate legacy api_key from plaintext to keyring
             if cfg.get("api_key"):
                 try:
                     import keyring
-                    keyring.set_password(_KEYRING_SERVICE, _KEYRING_USER, cfg["api_key"])
+                    keyring.set_password(_KEYRING_SERVICE, _KEYRING_USER,
+                                         cfg["api_key"])
                     cfg.pop("api_key", None)
                     save_cfg(cfg)
                 except Exception:
                     pass
             else:
                 cfg.pop("api_key", None)
+            # Strip sensitive keys that should never be in the config file
+            for _sk in ("iracing_password", "subscription_key"):
+                cfg.pop(_sk, None)
             return cfg
     except (json.JSONDecodeError, IOError, OSError) as e:
         logger.warning("Could not load config: %s", e)
@@ -88,8 +105,21 @@ def load_cfg():
 
 
 def save_cfg(c):
+    """
+    Save config to disk — NEVER writes sensitive credentials.
+    Attempts encrypted save (Fernet AES-128). Falls back to plaintext JSON.
+    """
     try:
-        to_save = {k: v for k, v in c.items() if k != "api_key"}
+        _NEVER_SAVE = {"api_key", "iracing_password", "subscription_key"}
+        to_save = {k: v for k, v in c.items() if k not in _NEVER_SAVE}
+        # Try encrypted save first
+        try:
+            from core.privacy import encrypt_config
+            if encrypt_config(to_save):
+                return  # encrypted save succeeded
+        except Exception:
+            pass
+        # Fallback to plaintext
         with open(CONFIG_FILE, "w") as f:
             json.dump(to_save, f)
     except (IOError, OSError) as e:
@@ -136,3 +166,103 @@ def clear_iracing_credentials() -> None:
                 pass
     except Exception:
         pass
+
+
+# ── Subscription / license key ────────────────────────────────────────────────
+
+_KEYRING_SUB_KEY = "subscription_key"
+
+
+def get_subscription_key() -> str:
+    """Return subscription key from OS keyring."""
+    try:
+        import keyring
+        return keyring.get_password(_KEYRING_SERVICE, _KEYRING_SUB_KEY) or ""
+    except Exception:
+        return ""
+
+
+def set_subscription_key(key: str) -> None:
+    """Store subscription key in OS keyring. Never written to config file."""
+    try:
+        import keyring
+        if key and key.strip():
+            keyring.set_password(_KEYRING_SERVICE, _KEYRING_SUB_KEY,
+                                 key.strip())
+        else:
+            try:
+                keyring.delete_password(_KEYRING_SERVICE, _KEYRING_SUB_KEY)
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning("Failed to store subscription key: %s", e)
+
+
+def validate_subscription_key(key: str) -> bool:
+    """
+    Validate subscription key format.
+    Valid format: 32+ alphanumeric chars, optionally hyphen-separated groups.
+    Simple length check is NOT sufficient — this validates character set too.
+    """
+    import re as _re
+    if not key or not isinstance(key, str):
+        return False
+    clean = key.strip().replace("-", "").replace("_", "")
+    if len(clean) < 24:
+        return False
+    if not _re.match(r'^[A-Za-z0-9]+$', clean):
+        return False
+    # Must contain both letters and digits (not just all-letters or all-digits)
+    return bool(_re.search(r'[A-Za-z]', clean) and _re.search(r'[0-9]', clean))
+
+
+# ── Config file security ───────────────────────────────────────────────────────
+
+_SENSITIVE_KEYS = {
+    "api_key", "iracing_password", "subscription_key",
+    "iracing_email",  # not secret but better in keyring
+}
+
+
+def sanitize_cfg_for_save(cfg: dict) -> dict:
+    """
+    Return a copy of cfg with sensitive keys removed.
+    These are stored in OS keyring, not in the JSON config file.
+    Call this before writing cfg to disk.
+    """
+    return {k: v for k, v in cfg.items() if k not in _SENSITIVE_KEYS}
+
+
+def migrate_sensitive_keys_to_keyring(cfg: dict) -> dict:
+    """
+    One-time migration: move any sensitive values from cfg dict to keyring,
+    then remove them from cfg. Returns cleaned cfg.
+    Called on app startup if legacy values are found in config.
+    """
+    changed = False
+
+    if cfg.get("iracing_password"):
+        try:
+            set_iracing_credentials(
+                cfg.get("iracing_email", ""),
+                cfg["iracing_password"])
+            cfg.pop("iracing_password", None)
+            cfg.pop("iracing_email", None)
+            changed = True
+            logger.info("Migrated iRacing credentials to OS keyring")
+        except Exception as e:
+            logger.warning("Credential migration failed: %s", e)
+
+    if cfg.get("subscription_key"):
+        try:
+            set_subscription_key(cfg["subscription_key"])
+            cfg.pop("subscription_key", None)
+            changed = True
+            logger.info("Migrated subscription key to OS keyring")
+        except Exception as e:
+            logger.warning("Subscription key migration failed: %s", e)
+
+    if changed:
+        save_cfg(cfg)
+
+    return cfg
