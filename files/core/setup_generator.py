@@ -495,6 +495,24 @@ class IBTSignalExtractor:
         except Exception as e:
             logger.debug("suspension extraction failed: %s", e)
 
+        # Read current ARB dial settings — actual baseline for delta computation
+        # dcAntiRollFront/Rear give the current dial position so "+1 step" is
+        # computed from where the driver actually is, not the class midpoint.
+        try:
+            import numpy as _np_arb
+            _ch = getattr(analysis, '_channels', None) or getattr(analysis, 'channels', None)
+            if _ch:
+                _af = _ch.get('dcAntiRollFront')
+                _ar = _ch.get('dcAntiRollRear')
+                if _af is not None and len(_af) > 0:
+                    bundle.current_setup['arb_front'] = float(
+                        _np_arb.mean(_af[-min(100, len(_af)):]))
+                if _ar is not None and len(_ar) > 0:
+                    bundle.current_setup['arb_rear']  = float(
+                        _np_arb.mean(_ar[-min(100, len(_ar)):]))
+        except Exception:
+            pass
+
     def _extract_slip_angles(self, bundle: SignalBundle, analysis):
         """Extract wheel slip angles for direct OS/US detection."""
         if not analysis:
@@ -673,9 +691,17 @@ class IBTSignalExtractor:
         results = []
         if bundle.body_motion_confidence < 0.5:
             return results
+        # Per-car-class thresholds
+        try:
+            from core.car_profiles import get_class_thresholds
+            _thresholds = get_class_thresholds(car_class.value if hasattr(car_class, 'value') else str(car_class))
+            _roll_thresh  = _thresholds.get('roll_rate_threshold_rads', 0.80)
+            _pitch_thresh = _thresholds.get('pitch_rate_threshold_rads', 1.00)
+        except Exception:
+            _roll_thresh, _pitch_thresh = 0.80, 1.00
         bounds = get_bounds(car_class)
         # High roll rate → ARBs too soft
-        if bundle.roll_rate_cornering > 0.8:
+        if bundle.roll_rate_cornering > _roll_thresh:
             side = 'rear' if (bundle.balance_score or 0) > 0.3 else 'front'
             param = f'arb_{side}'
             b = bounds.get(param)
@@ -687,7 +713,7 @@ class IBTSignalExtractor:
                     garage_tab='CHASSIS',
                     garage_location=PARAM_GARAGE_INFO.get(param, ('CHASSIS',''))[1],
                     current_value=cur, recommended_value=cur, delta=+1, unit='step',
-                    signal_source=f'Roll rate: {bundle.roll_rate_cornering:.2f} rad/s (threshold 0.8)',
+                    signal_source=f'Roll rate: {bundle.roll_rate_cornering:.2f} rad/s (threshold {_roll_thresh:.2f})',
                     confidence=bundle.body_motion_confidence * 0.75,
                     reasoning=(f'Body roll rate {bundle.roll_rate_cornering:.2f} rad/s during '
                                 f'cornering indicates excessive roll. Stiffening {side} ARB '
@@ -696,7 +722,7 @@ class IBTSignalExtractor:
                     priority=1,
                 ))
         # High pitch → front springs too soft
-        if bundle.pitch_rate_braking > 1.0:
+        if bundle.pitch_rate_braking > _pitch_thresh:
             b = bounds.get('spring_lf') or bounds.get('spring_rf')
             if b:
                 cur = self._current(bundle, 'spring_lf', (b.min_val + b.max_val) / 2)
@@ -706,7 +732,7 @@ class IBTSignalExtractor:
                     garage_tab='CHASSIS',
                     garage_location=PARAM_GARAGE_INFO.get('spring_lf', ('CHASSIS',''))[1],
                     current_value=cur, recommended_value=cur, delta=+b.step, unit=b.unit,
-                    signal_source=f'Pitch rate braking: {bundle.pitch_rate_braking:.2f} rad/s (threshold 1.0)',
+                    signal_source=f'Pitch rate braking: {bundle.pitch_rate_braking:.2f} rad/s (threshold {_pitch_thresh:.2f})',
                     confidence=bundle.body_motion_confidence * 0.65,
                     reasoning=(f'Pitch rate {bundle.pitch_rate_braking:.2f} rad/s under braking '
                                 f'indicates nose-dive. Increasing front spring rate by '
@@ -741,6 +767,35 @@ class SetupDeltaEngine:
     - Deltas are expressed in the parameter's native unit and step
     - Never compute the final absolute value here — that's the assembler's job
     """
+
+    def _car_thresholds(self, car_class: CarClass) -> dict:
+        """
+        Per-car-class threshold calibration for rule sensitivity.
+        Prevents generic GT3 thresholds from misfiring on Cup or open-wheel cars.
+        """
+        base = {
+            'os_mild':           BALANCE_OS_MILD,
+            'os_strong':         BALANCE_OS_STRONG,
+            'us_mild':           BALANCE_US_MILD,
+            'us_strong':         BALANCE_US_STRONG,
+            'roll_rate_arb':     0.8,   # rad/s — ARB adjustment trigger
+            'pitch_rate_spring': 1.0,   # rad/s — spring rate trigger
+            'shock_bottom_mm':   5.0,   # mm — bottoming warning
+        }
+        if car_class in (CarClass.PORSCHE_CUP, CarClass.GR86_CUP):
+            # Cup cars: tight aero, more sensitive to small imbalances
+            base.update({'os_mild': 0.12, 'us_mild': -0.12,
+                         'roll_rate_arb': 0.6})
+        elif car_class in (CarClass.DALLARA_F3, CarClass.FORMULA_RENAULT,
+                           CarClass.SKIP_BARBER):
+            # Open-wheel: very direct, small threshold margins
+            base.update({'os_mild': 0.10, 'us_mild': -0.10,
+                         'roll_rate_arb': 0.5, 'pitch_rate_spring': 0.7})
+        elif car_class in (CarClass.GTP, CarClass.LMP2):
+            # High-downforce prototypes: stiffer baseline, tighter bottoming
+            base.update({'os_mild': 0.18, 'us_mild': -0.18,
+                         'roll_rate_arb': 1.0, 'shock_bottom_mm': 3.0})
+        return base
 
     def compute_deltas(self, bundle: SignalBundle,
                        car_class: CarClass = None) -> List[SetupDelta]:
@@ -1309,14 +1364,20 @@ class SetupDeltaEngine:
                                 car_class: CarClass) -> List[SetupDelta]:
         """
         Detect and address throttle-induced exit understeer.
-        Fires when exit_us_pct > 15% — throttle application coincides with
-        declining lateral G in more than 15% of corner exits.
+        Threshold is per-car-class (FWD TCR has higher natural exit push).
         """
         results = []
         if not getattr(bundle, 'has_throttle_data', False):
             return results
         exit_us = getattr(bundle, 'exit_us_pct', 0.0)
-        if exit_us < 15.0:
+        try:
+            from core.car_profiles import get_class_thresholds
+            _t = get_class_thresholds(car_class.value if hasattr(car_class, 'value') else str(car_class))
+            _exit_thresh = _t.get('exit_us_threshold_pct', 15.0)
+            _exit_severe = _exit_thresh * 1.7
+        except Exception:
+            _exit_thresh, _exit_severe = 15.0, 25.0
+        if exit_us < _exit_thresh:
             return results
 
         bounds = get_bounds(car_class)
@@ -1352,7 +1413,7 @@ class SetupDeltaEngine:
 
         # Secondary: check if front toe-out would help
         b_toe = bounds.get('toe_front')
-        if b_toe and exit_us > 25.0:
+        if b_toe and exit_us > _exit_severe:
             cur = self._current(bundle, 'toe_front',
                                  (b_toe.min_val + b_toe.max_val) / 2)
             results.append(SetupDelta(

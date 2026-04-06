@@ -3900,6 +3900,63 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                             f'Wheel slip angles (cornering avg): '
                             f'{", ".join(_slip_notes)}. '
                             f'Higher rear vs front = oversteer; higher front = understeer.')
+
+                    # Tire wear ratios (outer/inner — ground truth for camber)
+                    _wear_notes = []
+                    for _c in ['LF','RF','LR','RR']:
+                        _wL = _ch.get(f'{_c}wearL')
+                        _wR = _ch.get(f'{_c}wearR')
+                        if _wL is not None and _wR is not None:
+                            import numpy as _np3
+                            _wl_v = float(_np3.mean(_wL[-100:])) if len(_wL) > 100 else float(_np3.mean(_wL))
+                            _wr_v = float(_np3.mean(_wR[-100:])) if len(_wR) > 100 else float(_np3.mean(_wR))
+                            if _wl_v > 0.01 or _wr_v > 0.01:
+                                _ratio = _wr_v / max(_wl_v, 0.001)
+                                _wear_notes.append(
+                                    f'{_c}: outer/inner={_ratio:.2f}x '
+                                    f'(L:{_wl_v:.3f} R:{_wr_v:.3f})')
+                    if _wear_notes:
+                        _enrichment_notes.append(
+                            'Tire wear outer/inner ratios (>1.2=need more neg camber, '
+                            '<0.8=too much neg camber): ' + ', '.join(_wear_notes))
+
+                    # Exit understeer from throttle trace
+                    _thr_ch = _ch.get('Throttle')
+                    _lat_ch = _ch.get('LatAccel')
+                    if _thr_ch is not None and _lat_ch is not None:
+                        import numpy as _np4
+                        _G = 9.80665
+                        _lat_g = _lat_ch / _G
+                        _thr_grad = _np4.gradient(_thr_ch)
+                        _in_corner = _np4.abs(_lat_g) > 0.5
+                        _throttle_ramp = _thr_grad > 0.05
+                        _full_pwr = _thr_ch > 0.7
+                        _lat_grad = _np4.gradient(_lat_g)
+                        _exit_us = _in_corner & _throttle_ramp & _full_pwr & \
+                                   (_lat_grad * _np4.sign(_lat_g) < -0.02)
+                        _exit_pct = float(_np4.mean(_exit_us)) * 100
+                        if _exit_pct > 5.0:
+                            _enrichment_notes.append(
+                                f'Exit understeer detected in {_exit_pct:.0f}% of corner exits '
+                                f'(throttle-induced lateral G loss). '
+                                f'{"Severe — " if _exit_pct > 25 else ""}Suggests rear ARB too stiff '
+                                f'or insufficient front traction on exit.')
+
+                    # Actual ride heights
+                    _rh_notes = []
+                    for _c in ['LF','RF','LR','RR']:
+                        _rh = _ch.get(f'{_c}rideHeight')
+                        if _rh is not None:
+                            import numpy as _np5
+                            _valid_rh = _rh[_rh > 0.001]
+                            if len(_valid_rh) > 50:
+                                _mm = float(_np5.mean(_valid_rh)) * 1000
+                                _min_mm = float(_np5.min(_valid_rh[_valid_rh > 0.001])) * 1000
+                                _rh_notes.append(f'{_c}:avg={_mm:.1f}mm min={_min_mm:.1f}mm')
+                    if _rh_notes:
+                        _enrichment_notes.append(
+                            'Actual ride heights: ' + ', '.join(_rh_notes) +
+                            '. Min values occur at suspension compression peaks.')
             # Append setup generator results if available
             _setup_result = getattr(self, 'cur_setup_result', None)
             _setup_brief_prompt = None

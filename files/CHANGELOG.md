@@ -469,3 +469,40 @@ After this build: 54/67 used (81%).
 8. **wear_camber_rules** (new — ground truth)
 9. camber_rules (temp-based fallback)
 10. tire_pressure_rules, diff_rules, damper_rules, aero_rules
+
+---
+
+## [3.14.0] - 2026-04-06 | Setup Accuracy — Per-Car Thresholds + AI Signal Context
+
+### Added — Per-car-class rule calibration
+- `core/car_profiles.py` — `CAR_CLASS_THRESHOLDS` dict + `get_class_thresholds()`:
+  8 car classes (GT3, GT4, GTP/LMDh, LMP2, TCR, PC, Spec, Formula) each with:
+  - `roll_rate_threshold_rads` — when to recommend ARB stiffening
+  - `pitch_rate_threshold_rads` — when to recommend front spring increase
+  - `exit_us_threshold_pct` — exit understeer detection sensitivity
+  - `slip_angle_os/us_threshold` — direct slip angle balance thresholds
+  - `min_flying_laps`, `confidence_min` — minimum data requirements
+
+  Examples of why this matters:
+  - GT3 roll threshold: 0.70 rad/s (stiff chassis, less roll expected)
+  - TCR roll threshold: 1.10 rad/s (FWD touring, more body motion is normal)
+  - Formula roll threshold: 0.35 rad/s (near-zero body roll expected)
+
+- `core/setup_generator.py` — rule methods now use per-class thresholds:
+  - `_body_motion_rules()`: roll and pitch thresholds from `get_class_thresholds()`
+  - `_exit_understeer_rules()`: exit threshold + severe threshold per class
+  - All threshold values shown in `signal_source` field on output delta
+
+### Added — New signals in AI enrichment notes
+- `main.py` — enrichment block now appends to AI prompt:
+  - Tire wear outer/inner ratios (>1.2 = needs more neg camber, <0.8 = too much)
+  - Exit understeer % from throttle trace analysis
+  - Actual ride heights per corner (avg + min, converted to mm)
+  These feed into the Claude AI prompt alongside the existing shock/slip/balance data
+
+### Notes on ARB baseline gap
+The `dcAntiRollFront/Rear` channels (current ARB dial position) are still not
+consistently available in all iRacing IBT files. When absent, setup_generator
+uses a generic midpoint baseline for ARB deltas. This is documented as the
+primary remaining accuracy gap. Will be addressed in a future build when
+we can confirm channel availability across car classes.

@@ -1234,6 +1234,132 @@ def get_car_profile(car_name: str) -> dict:
     return best if best_score >= 2 else {}
 
 
+
+# ── Per-car-class rule thresholds ────────────────────────────────────────────
+# These calibrate setup_generator.py rule thresholds per car class.
+# Derived from vehicle dynamics engineering references + iRacing testing.
+#
+# roll_rate_threshold_rads: body roll rate above which ARB stiffening is needed
+# pitch_rate_threshold_rads: nose dive rate above which front spring increase needed
+# exit_us_threshold_pct: % of exits with understeer before rear ARB soften fires
+# slip_angle_os_threshold: avg front/rear slip ratio above which OS rules fire
+# slip_angle_us_threshold: avg front/rear slip ratio below which US rules fire
+
+CAR_CLASS_THRESHOLDS = {
+    # GT3 cars — stiff chassis, high downforce, narrow balance window
+    'gt3': {
+        'roll_rate_threshold_rads': 0.70,    # GT3s have stiff ARBs baseline
+        'pitch_rate_threshold_rads': 0.90,
+        'exit_us_threshold_pct': 12.0,       # GT3 exit US is a primary concern
+        'slip_angle_os_threshold': 1.10,     # front/rear slip ratio
+        'slip_angle_us_threshold': 0.90,
+        'min_flying_laps': 3,
+        'confidence_min': 0.40,
+    },
+    # GT4 — softer than GT3, wider balance window, less downforce
+    'gt4': {
+        'roll_rate_threshold_rads': 0.85,
+        'pitch_rate_threshold_rads': 1.00,
+        'exit_us_threshold_pct': 15.0,
+        'slip_angle_os_threshold': 1.15,
+        'slip_angle_us_threshold': 0.85,
+        'min_flying_laps': 3,
+        'confidence_min': 0.35,
+    },
+    # GTP/LMDh — very high downforce, stiff, aggressive setup windows
+    'gtp': {
+        'roll_rate_threshold_rads': 0.50,    # High DF = less roll expected
+        'pitch_rate_threshold_rads': 0.70,
+        'exit_us_threshold_pct': 10.0,
+        'slip_angle_os_threshold': 1.08,
+        'slip_angle_us_threshold': 0.92,
+        'min_flying_laps': 4,
+        'confidence_min': 0.50,
+    },
+    # LMP2 — high downforce, less mechanical grip than LMDh
+    'lmp2': {
+        'roll_rate_threshold_rads': 0.55,
+        'pitch_rate_threshold_rads': 0.75,
+        'exit_us_threshold_pct': 12.0,
+        'slip_angle_os_threshold': 1.10,
+        'slip_angle_us_threshold': 0.90,
+        'min_flying_laps': 4,
+        'confidence_min': 0.45,
+    },
+    # TCR — FWD or RWD touring cars, softer, different balance issues
+    'tcr': {
+        'roll_rate_threshold_rads': 1.10,    # TCR rolls more — higher threshold
+        'pitch_rate_threshold_rads': 1.20,
+        'exit_us_threshold_pct': 20.0,       # FWD push on exit is expected
+        'slip_angle_os_threshold': 1.20,
+        'slip_angle_us_threshold': 0.80,
+        'min_flying_laps': 3,
+        'confidence_min': 0.35,
+    },
+    # Prototype Challenge (Dallara P217 etc)
+    'pc': {
+        'roll_rate_threshold_rads': 0.60,
+        'pitch_rate_threshold_rads': 0.80,
+        'exit_us_threshold_pct': 12.0,
+        'slip_angle_os_threshold': 1.10,
+        'slip_angle_us_threshold': 0.90,
+        'min_flying_laps': 3,
+        'confidence_min': 0.40,
+    },
+    # Spec Racer / MX-5 Cup — simpler cars, wider thresholds
+    'spec': {
+        'roll_rate_threshold_rads': 1.20,
+        'pitch_rate_threshold_rads': 1.40,
+        'exit_us_threshold_pct': 18.0,
+        'slip_angle_os_threshold': 1.20,
+        'slip_angle_us_threshold': 0.80,
+        'min_flying_laps': 3,
+        'confidence_min': 0.30,
+    },
+    # Formula cars (Dallara F3, IR-18, etc) — very stiff, minimal roll
+    'formula': {
+        'roll_rate_threshold_rads': 0.35,
+        'pitch_rate_threshold_rads': 0.60,
+        'exit_us_threshold_pct': 10.0,
+        'slip_angle_os_threshold': 1.05,
+        'slip_angle_us_threshold': 0.95,
+        'min_flying_laps': 3,
+        'confidence_min': 0.50,
+    },
+    # Default fallback
+    'default': {
+        'roll_rate_threshold_rads': 0.80,
+        'pitch_rate_threshold_rads': 1.00,
+        'exit_us_threshold_pct': 15.0,
+        'slip_angle_os_threshold': 1.10,
+        'slip_angle_us_threshold': 0.90,
+        'min_flying_laps': 3,
+        'confidence_min': 0.35,
+    },
+}
+
+
+def get_class_thresholds(car_class_str: str) -> dict:
+    """
+    Return rule thresholds for the given car class.
+    Falls back to 'default' if class not in table.
+    """
+    key = (car_class_str or 'default').lower().replace(' ', '_')
+    # Map common variants
+    _map = {
+        'gt3': 'gt3', 'gt4': 'gt4', 'gtp': 'gtp', 'lmdh': 'gtp',
+        'lmp2': 'lmp2', 'lmp3': 'lmp2',
+        'tcr': 'tcr', 'gtc': 'gt4',
+        'dallara_f3': 'formula', 'ir18': 'formula', 'indy': 'formula',
+        'mx5': 'spec', 'mx-5': 'spec', 'mx_5': 'spec',
+        'spec_racer': 'spec', 'global_mx-5': 'spec',
+        'porsche_cup': 'gt4',  # Cup cars are between GT4 and GT3
+    }
+    for pattern, mapped in _map.items():
+        if pattern in key:
+            return CAR_CLASS_THRESHOLDS.get(mapped, CAR_CLASS_THRESHOLDS['default'])
+    return CAR_CLASS_THRESHOLDS.get(key, CAR_CLASS_THRESHOLDS['default'])
+
 def get_target_hot_psi(car_name: str) -> dict:
     """Return {LF, RF, LR, RR} target hot pressure dict for a car."""
     profile = get_car_profile(car_name)
