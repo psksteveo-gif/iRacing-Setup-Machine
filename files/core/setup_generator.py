@@ -120,9 +120,18 @@ class SignalBundle:
     brake_dial_pct: Optional[float] = None
 
     # Body motion (from YawRate / PitchRate / RollRate channels)
-    roll_rate_cornering: float = 0.0    # avg abs roll rate during cornering rad/s
-    pitch_rate_braking: float = 0.0     # avg abs pitch rate during braking rad/s
+    roll_rate_cornering: float = 0.0
+    pitch_rate_braking: float = 0.0
     body_motion_confidence: float = 0.0
+    # Tire wear (from LFwearL/M/R channels — ground truth for camber)
+    tire_wear: dict = field(default_factory=dict)
+    has_wear_data: bool = False
+    # Throttle exit understeer
+    exit_us_pct: float = 0.0
+    has_throttle_data: bool = False
+    # Actual ride heights (from LFrideHeight channels)
+    ride_heights_mm: dict = field(default_factory=dict)
+    has_ride_height_data: bool = False
 
     # Track character
     track_name: str = ""
@@ -302,6 +311,9 @@ class IBTSignalExtractor:
         self._extract_slip_angles(bundle, analysis)
         self._extract_traffic(bundle, analysis)
         self._extract_body_motion(bundle, analysis)
+        self._extract_tire_wear(bundle, analysis)
+        self._extract_throttle_exit(bundle, analysis)
+        self._extract_actual_ride_heights(bundle, analysis)
 
         return bundle
 
@@ -335,6 +347,118 @@ class IBTSignalExtractor:
         tire_pressure = getattr(analysis, 'tire_pressure_hot', None)
         if tire_pressure:
             bundle.tire_pressure_hot = tire_pressure
+
+    def _extract_tire_wear(self, bundle: SignalBundle, analysis):
+        """
+        Extract per-corner, per-zone tire wear from LFwearL/M/R channels.
+        Wear pattern is ground truth for camber: outer zone wearing faster
+        than inner = insufficient negative camber. More reliable than temps
+        because it's cumulative and not affected by ambient temp or driving style.
+        """
+        if not analysis:
+            return
+        channels = getattr(analysis, '_channels', None) or getattr(analysis, 'channels', None)
+        if channels is None:
+            return
+        try:
+            import numpy as np
+            corners = [('LF','LF'), ('RF','RF'), ('LR','LR'), ('RR','RR')]
+            any_data = False
+            for corner, key in corners:
+                wL = channels.get(f'{key}wearL')
+                wM = channels.get(f'{key}wearM')
+                wR = channels.get(f'{key}wearR')
+                if wL is None:
+                    continue
+                any_data = True
+                # Take end-of-session values (last 100 samples, averaged)
+                # wear is cumulative — higher = more worn
+                end = -100
+                wl = float(np.mean(wL[end:])) if len(wL) > 100 else float(np.mean(wL))
+                wm = float(np.mean(wM[end:])) if wM is not None and len(wM) > 100 else 0.0
+                wr = float(np.mean(wR[end:])) if wR is not None and len(wR) > 100 else 0.0
+                if not hasattr(bundle, 'tire_wear'):
+                    bundle.tire_wear = {}
+                bundle.tire_wear[corner] = {'L': wl, 'M': wm, 'R': wr,
+                                             'outer_inner_ratio': wr / max(wl, 0.001)}
+            if any_data:
+                bundle.has_wear_data = True
+        except Exception as e:
+            logger.debug('tire wear extraction failed: %s', e)
+
+    def _extract_throttle_exit(self, bundle: SignalBundle, analysis):
+        """
+        Detect throttle-induced exit understeer.
+        Reads Throttle + LatAccel to find corners where full throttle
+        application coincides with declining lateral G — the signature of
+        understeer loading the front on exit.
+        """
+        if not analysis:
+            return
+        channels = getattr(analysis, '_channels', None) or getattr(analysis, 'channels', None)
+        if channels is None:
+            return
+        try:
+            import numpy as np
+            throttle = channels.get('Throttle')
+            lat      = channels.get('LatAccel')
+            dist     = channels.get('LapDistPct')
+            if throttle is None or lat is None or dist is None:
+                return
+
+            G = 9.80665
+            lat_g = lat / G
+
+            # Exit phase: throttle ramping up (gradient > 0.1/s) while in corner (|lat| > 0.5G)
+            thr_grad   = np.gradient(throttle)
+            in_corner  = np.abs(lat_g) > 0.5
+            throttle_ramp = thr_grad > 0.05          # throttle increasing
+            full_power    = throttle > 0.7            # at least 70% throttle
+
+            # Exit understeer: lat_g is DECREASING while throttle is increasing
+            lat_grad = np.gradient(lat_g)
+            exit_us_signal = (
+                in_corner & throttle_ramp & full_power &
+                (lat_grad * np.sign(lat_g) < -0.02)   # lat G dropping = understeer
+            )
+
+            bundle.exit_us_pct = float(np.mean(exit_us_signal)) * 100
+            bundle.has_throttle_data = True
+            logger.debug('Exit understeer signal: %.1f%% of laps', bundle.exit_us_pct)
+        except Exception as e:
+            logger.debug('throttle exit extraction failed: %s', e)
+
+    def _extract_actual_ride_heights(self, bundle: SignalBundle, analysis):
+        """
+        Read actual ride height channels (LFrideHeight etc) as ground truth.
+        More reliable than estimating from shock deflection.
+        Already partially done in suspension rules but we track the actual
+        values separately for use in camber and spring rules.
+        """
+        if not analysis:
+            return
+        channels = getattr(analysis, '_channels', None) or getattr(analysis, 'channels', None)
+        if channels is None:
+            return
+        try:
+            import numpy as np
+            corners = [('LF','LF'), ('RF','RF'), ('LR','LR'), ('RR','RR')]
+            if not hasattr(bundle, 'ride_heights_mm'):
+                bundle.ride_heights_mm = {}
+            any_data = False
+            for corner, key in corners:
+                rh = channels.get(f'{key}rideHeight')
+                if rh is None:
+                    continue
+                valid = rh[rh > 0.001]
+                if len(valid) < 50:
+                    continue
+                any_data = True
+                bundle.ride_heights_mm[corner] = float(np.mean(valid)) * 1000  # m→mm
+            if any_data:
+                bundle.has_ride_height_data = True
+        except Exception as e:
+            logger.debug('ride height extraction failed: %s', e)
 
     def _extract_suspension(self, bundle: SignalBundle, analysis):
         """Extract suspension travel and damper velocity signals."""
@@ -635,8 +759,10 @@ class SetupDeltaEngine:
         deltas += self._slip_angle_rules(bundle, effective_class)   # Tier 1: direct OS/US
         deltas += self._suspension_rules(bundle, effective_class)    # Tier 1: shock travel
         deltas += self._body_motion_rules(bundle, effective_class)   # body roll/pitch rates
+        deltas += self._exit_understeer_rules(bundle, effective_class)  # throttle-induced US
         deltas += self._spring_rules(bundle, effective_class)
-        deltas += self._camber_rules(bundle, effective_class)
+        deltas += self._wear_camber_rules(bundle, effective_class)  # ground truth camber
+        deltas += self._camber_rules(bundle, effective_class)       # temp-based camber fallback
         deltas += self._tire_pressure_rules(bundle, effective_class)
         deltas += self._diff_rules(bundle, effective_class)
         deltas += self._damper_rules(bundle, effective_class)
@@ -1077,6 +1203,179 @@ class SetupDeltaEngine:
         return results
 
     # ── CAMBER ──────────────────────────────────────────────────────────────
+
+    def _wear_camber_rules(self, bundle: SignalBundle,
+                            car_class: CarClass) -> List[SetupDelta]:
+        """
+        Camber recommendations from tire wear pattern — ground truth signal.
+        Outer zone wearing faster than inner = need more negative camber.
+        More reliable than temperature spread because wear is cumulative
+        and unaffected by ambient temp or driving technique variations.
+        Requires has_wear_data flag from _extract_tire_wear().
+        """
+        results = []
+        if not getattr(bundle, 'has_wear_data', False):
+            return results
+
+        bounds = get_bounds(car_class)
+
+        for corner in ['LF', 'RF', 'LR', 'RR']:
+            wear = getattr(bundle, 'tire_wear', {}).get(corner)
+            if not wear:
+                continue
+            outer_inner = wear.get('outer_inner_ratio', 1.0)
+            wL = wear.get('L', 0)
+            wR = wear.get('R', 0)  # R = outer edge
+
+            # Outer wearing >20% faster than inner = too little negative camber
+            if outer_inner > 1.20 and wR > 0.05:
+                camber_param = {
+                    'LF': 'camber_lf', 'RF': 'camber_rf',
+                    'LR': 'camber_lr', 'RR': 'camber_rr'
+                }.get(corner)
+                if not camber_param:
+                    continue
+                b = bounds.get(camber_param)
+                if not b:
+                    continue
+                cur = self._current(bundle, camber_param,
+                                     (b.min_val + b.max_val) / 2)
+                adj = min(b.step * 2, (outer_inner - 1.0) * 0.5)
+                results.append(SetupDelta(
+                    param=camber_param,
+                    display_name=f'{corner} Camber',
+                    garage_tab='TIRES',
+                    garage_location=PARAM_GARAGE_INFO.get(
+                        camber_param, ('TIRES',''))[1],
+                    current_value=cur,
+                    recommended_value=cur,
+                    delta=-adj,  # more negative camber
+                    unit='°',
+                    signal_source=(f'{corner} wear ratio outer/inner: '
+                                   f'{outer_inner:.2f}x (threshold 1.20x)'),
+                    confidence=min(0.9, bundle.tire_confidence * 1.1),
+                    reasoning=(
+                        f'{corner} outer tread wearing {outer_inner:.1f}x faster '
+                        f'than inner (L:{wL:.3f} vs R:{wR:.3f}). '
+                        f'This is the direct indicator of insufficient negative camber — '
+                        f'the tire is rolling onto its outside edge under cornering load. '
+                        f'Adding {adj:.2f}° negative camber distributes load across the '
+                        f'full tread width.'),
+                    driver_feel='Slightly more initial grip on turn-in. '
+                                'Marginal increase in tire temps at first.',
+                    priority=0,
+                ))
+
+            # Inner wearing >20% faster = too MUCH negative camber
+            elif outer_inner < 0.80 and wL > 0.05:
+                camber_param = {
+                    'LF': 'camber_lf', 'RF': 'camber_rf',
+                    'LR': 'camber_lr', 'RR': 'camber_rr'
+                }.get(corner)
+                if not camber_param:
+                    continue
+                b = bounds.get(camber_param)
+                if not b:
+                    continue
+                cur = self._current(bundle, camber_param,
+                                     (b.min_val + b.max_val) / 2)
+                adj = min(b.step * 2, (1.0 - outer_inner) * 0.5)
+                results.append(SetupDelta(
+                    param=camber_param,
+                    display_name=f'{corner} Camber',
+                    garage_tab='TIRES',
+                    garage_location=PARAM_GARAGE_INFO.get(
+                        camber_param, ('TIRES',''))[1],
+                    current_value=cur,
+                    recommended_value=cur,
+                    delta=+adj,  # less negative camber
+                    unit='°',
+                    signal_source=(f'{corner} wear ratio outer/inner: '
+                                   f'{outer_inner:.2f}x (threshold 0.80x)'),
+                    confidence=min(0.9, bundle.tire_confidence * 1.1),
+                    reasoning=(
+                        f'{corner} inner tread wearing {1/outer_inner:.1f}x faster '
+                        f'than outer (L:{wL:.3f} vs R:{wR:.3f}). '
+                        f'Indicates excessive negative camber — tire loading heavily '
+                        f'on the inner shoulder. Reducing camber by {adj:.2f}° '
+                        f'spreads load more evenly.'),
+                    driver_feel='Slightly less turn-in sharpness. '
+                                'Better straight-line stability and tire longevity.',
+                    priority=0,
+                ))
+        return results
+
+    def _exit_understeer_rules(self, bundle: SignalBundle,
+                                car_class: CarClass) -> List[SetupDelta]:
+        """
+        Detect and address throttle-induced exit understeer.
+        Fires when exit_us_pct > 15% — throttle application coincides with
+        declining lateral G in more than 15% of corner exits.
+        """
+        results = []
+        if not getattr(bundle, 'has_throttle_data', False):
+            return results
+        exit_us = getattr(bundle, 'exit_us_pct', 0.0)
+        if exit_us < 15.0:
+            return results
+
+        bounds = get_bounds(car_class)
+
+        # Primary fix: soften rear ARB — allows rear to rotate on exit
+        b = bounds.get('arb_rear')
+        if b:
+            cur = self._current(bundle, 'arb_rear',
+                                 (b.min_val + b.max_val) / 2)
+            results.append(SetupDelta(
+                param='arb_rear',
+                display_name='Rear ARB',
+                garage_tab='CHASSIS',
+                garage_location=PARAM_GARAGE_INFO.get('arb_rear',('CHASSIS',''))[1],
+                current_value=cur,
+                recommended_value=cur,
+                delta=-1,
+                unit='step',
+                signal_source=(f'Exit understeer in {exit_us:.0f}% of corner exits '
+                               f'— throttle ramp with declining lateral G'),
+                confidence=min(0.8, bundle.balance_confidence * 0.9),
+                reasoning=(
+                    f'Detected exit understeer in {exit_us:.0f}% of measured corner '
+                    f'exits — throttle application causes lateral G to drop rather '
+                    f'than hold. This indicates the rear ARB is too stiff, preventing '
+                    f'the rear from rotating and loading the front on exit. '
+                    f'Softening rear ARB by 1 step allows the rear to settle on '
+                    f'power, restoring front grip on exit.'),
+                driver_feel='Car rotates more willingly on exit. '
+                            'Throttle feels more connected to rear traction.',
+                priority=0,
+            ))
+
+        # Secondary: check if front toe-out would help
+        b_toe = bounds.get('toe_front')
+        if b_toe and exit_us > 25.0:
+            cur = self._current(bundle, 'toe_front',
+                                 (b_toe.min_val + b_toe.max_val) / 2)
+            results.append(SetupDelta(
+                param='toe_front',
+                display_name='Front Toe',
+                garage_tab='CHASSIS',
+                garage_location=PARAM_GARAGE_INFO.get('toe_front',('CHASSIS',''))[1],
+                current_value=cur,
+                recommended_value=cur,
+                delta=-b_toe.step,
+                unit=b_toe.unit,
+                signal_source=f'Severe exit understeer: {exit_us:.0f}% of exits',
+                confidence=min(0.7, bundle.balance_confidence * 0.8),
+                reasoning=(
+                    f'Severe exit understeer ({exit_us:.0f}%) — secondary fix. '
+                    f'Increasing front toe-out by {b_toe.step:.3g}{b_toe.unit} '
+                    f'improves initial front response on corner exit, helping the '
+                    f'front find grip as the rear settles under power.'),
+                driver_feel='Sharper front response. May feel slightly nervous '
+                            'on initial turn-in.',
+                priority=1,
+            ))
+        return results
 
     def _camber_rules(self, bundle: SignalBundle,
                        car_class: CarClass) -> List[SetupDelta]:

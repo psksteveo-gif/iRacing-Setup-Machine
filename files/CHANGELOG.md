@@ -409,3 +409,63 @@ every time you return to a track you've driven before.
 - IBT parse cache still active — parsed sessions cached to disk, parse only runs once
 - Prompt caching requires `anthropic>=0.28.0` for beta.messages.stream support
 - All fixes are backward-compatible with zero behavior changes
+
+---
+
+## [3.13.0] - 2026-04-06 | Setup Accuracy: Wear-Based Camber + Exit Understeer
+
+### Background
+Full audit of setup generator signal coverage: 241 iRacing SDK channels total.
+174 are non-setup-relevant (GPS, camera, pit controls, session flags).
+67 are setup-relevant. Before this build: 37/67 used (55%).
+After this build: 54/67 used (81%).
+
+### Added — Tire Wear Camber Rules (ground truth signal)
+- `core/setup_generator.py` — `_extract_tire_wear()`:
+  Reads LFwearL/M/R through RRwearL/M/R (12 channels).
+  Computes outer/inner wear ratio per corner.
+  More reliable than temp spread — cumulative, unaffected by ambient temp.
+- `core/setup_generator.py` — `_wear_camber_rules()`:
+  outer/inner ratio > 1.20 → add negative camber (outer edge overloaded)
+  outer/inner ratio < 0.80 → reduce negative camber (inner edge overloaded)
+  Confidence: min(0.9, tire_confidence × 1.1) — higher than temp-based
+  Runs BEFORE _camber_rules() in compute_deltas — wear wins over temps
+  when both signals present
+
+### Added — Exit Understeer Detection
+- `core/setup_generator.py` — `_extract_throttle_exit()`:
+  Reads Throttle + LatAccel. Detects throttle ramp (gradient > 0.05/s)
+  while in corner (|lat| > 0.5G) with declining lateral G (< -0.02/s).
+  Stores exit_us_pct = % of corner exits with understeer signature.
+- `core/setup_generator.py` — `_exit_understeer_rules()`:
+  exit_us_pct > 15% → soften rear ARB by 1 step
+  exit_us_pct > 25% → also increase front toe-out (secondary fix)
+  This closes a major gap: entry and mid-corner balance were detected,
+  but throttle-induced exit understeer was completely undetected before.
+
+### Added — Actual Ride Height Extraction
+- `core/setup_generator.py` — `_extract_actual_ride_heights()`:
+  Reads LFrideHeight/RFrideHeight/LRrideHeight/RRrideHeight (4 channels).
+  Converts m → mm, stores in bundle.ride_heights_mm dict.
+  Previously ride height was estimated from shock deflection — now measured.
+  Stored for use in suspension_rules as override when available.
+
+### Added — New SignalBundle fields
+- `tire_wear: dict` — per-corner {L, M, R, outer_inner_ratio}
+- `has_wear_data: bool`
+- `exit_us_pct: float` — % of exits with understeer signature
+- `has_throttle_data: bool`
+- `ride_heights_mm: dict` — per-corner actual mm
+- `has_ride_height_data: bool`
+
+### compute_deltas() order now:
+1. brake_bias_rules
+2. arb_rules
+3. slip_angle_rules (Tier 1 direct OS/US)
+4. suspension_rules (shock travel)
+5. body_motion_rules (roll/pitch rates)
+6. **exit_understeer_rules** (new — throttle-induced)
+7. spring_rules
+8. **wear_camber_rules** (new — ground truth)
+9. camber_rules (temp-based fallback)
+10. tire_pressure_rules, diff_rules, damper_rules, aero_rules

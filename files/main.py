@@ -1070,19 +1070,21 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             font=ctk.CTkFont(size=10), text_color=DIM, fg_color="transparent", anchor='w')
         self._ai_desc_lbl.pack(fill='x', padx=8, pady=(0, 4))
         _AI_DESCS = {
-            "Advisor":   "Get AI setup and driving recommendations based on your telemetry data.",
-            "Agent":     "Deep AI analysis — the agent reads your telemetry channels directly and gives detailed engineering insights.",
-            "Debrief":   "Full post-session debrief — AI identifies your 3 biggest time losses and what to fix first.",
-            "Qualifier": "Qualifying optimizer — one-lap pace focused recommendations to extract every tenth.",
+            "Advisor":     "Get AI setup and driving recommendations based on your telemetry data.",
+            "Agent":       "Deep AI analysis — the agent reads your telemetry channels directly and gives detailed engineering insights.",
+            "Debrief":     "Full post-session debrief — AI identifies your 3 biggest time losses and what to fix first.",
+            "Qualifier":   "Qualifying optimizer — one-lap pace focused recommendations to extract every tenth.",
+            "Weekly Prep": "iRacing Weekly Series Prep — current week schedule, your history at the track, setup recommendations, and AI briefing.",
         }
         inner.configure(command=lambda: self._ai_desc_lbl.configure(text=_AI_DESCS.get(inner.get(), "")))
         self._ai_inner = inner
-        for sub in ["Advisor", "Agent", "Debrief", "Qualifier"]:
+        for sub in ["Advisor", "Agent", "Debrief", "Qualifier", "Weekly Prep"]:
             inner.add(sub)
         self._t_ai(parent=inner.tab("Advisor"))
         self._t_agent(parent=inner.tab("Agent"))
         self._t_debrief_tab(parent=inner.tab("Debrief"))
         self._t_qualifier_tab(parent=inner.tab("Qualifier"))
+        self._t_weekly_prep(parent=inner.tab("Weekly Prep"))
         inner.set("Advisor")
 
     def _t_history_hub(self):
@@ -6083,7 +6085,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
     # SETTINGS / PDF
     # ══════════════════════════════════════════════════════════════════════════
     def _settings(self):
-        win=ctk.CTkToplevel(self); win.title("Settings"); win.geometry("560x660")
+        win=ctk.CTkToplevel(self); win.title("Settings"); win.geometry("580x820")
         win.configure(fg_color=DARK); win.grab_set()
         lbl(win,"Settings",16,bold=True).pack(pady=14)
         # API Key
@@ -6189,6 +6191,72 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         auto_notes_var = ctk.BooleanVar(value=bool(self.cfg.get('auto_notes', True)))
         ctk.CTkCheckBox(trow, text="Auto-generate session notes after load (requires API key)",
             variable=auto_notes_var, fg_color=ACCENT, hover_color=BLUE).pack(side='left')
+        # ── Subscription ─────────────────────────────────────────────────────
+        sep_sub = ctk.CTkFrame(win, fg_color=CARD, height=1)
+        sep_sub.pack(fill='x', padx=24, pady=(10, 4))
+        lbl(win, "Subscription", 12, bold=True, color=ACCENT).pack(
+            anchor='w', padx=24, pady=(4, 2))
+
+        sub_frame = ctk.CTkFrame(win, fg_color=PANEL, corner_radius=8)
+        sub_frame.pack(fill='x', padx=24, pady=(0, 4))
+        sub_inner = ctk.CTkFrame(sub_frame, fg_color='transparent')
+        sub_inner.pack(fill='x', padx=12, pady=10)
+
+        _sub_key = self.cfg.get('subscription_key', '').strip()
+        _sub_active = bool(_sub_key and len(_sub_key) > 10)
+
+        if _sub_active:
+            lbl(sub_inner, '✅  Optimal Sector Pro  —  Active',
+                12, bold=True, color=GREEN).pack(side='left')
+            lbl(sub_inner, 'Manage at optimalsector.com/account',
+                10, color=DIM).pack(side='right')
+        else:
+            lbl(sub_inner, '🔒  Free tier  —  Upgrade for full access',
+                12, color=YELLOW).pack(side='left')
+            ctk.CTkButton(sub_inner, text='✨ Upgrade — $12.99/mo',
+                          width=170, height=28,
+                          fg_color=ACCENT, hover_color='#C04A10',
+                          font=ctk.CTkFont(size=11, weight='bold'),
+                          command=lambda: __import__('webbrowser').open(
+                              'https://optimalsector.com/upgrade')
+                          ).pack(side='right')
+
+        sub_key_row = ctk.CTkFrame(sub_frame, fg_color='transparent')
+        sub_key_row.pack(fill='x', padx=12, pady=(0, 8))
+        lbl(sub_key_row, 'License key:', 10, color=DIM).pack(side='left', padx=(0, 6))
+        sub_key_var = ctk.StringVar(value=_sub_key)
+        ctk.CTkEntry(sub_key_row, textvariable=sub_key_var,
+                     width=260, height=26, show='•' if _sub_active else '',
+                     placeholder_text='Enter license key after purchase',
+                     font=ctk.CTkFont(size=10)).pack(side='left', padx=(0, 6))
+        def _activate_key():
+            k = sub_key_var.get().strip()
+            if len(k) < 10:
+                messagebox.showwarning('Invalid Key',
+                    'Enter your license key from the purchase email.',
+                    parent=win)
+                return
+            self.cfg['subscription_key'] = k
+            save_cfg(self.cfg)
+            messagebox.showinfo('Activated',
+                'License key saved. Restart the app to unlock all features.',
+                parent=win)
+        ctk.CTkButton(sub_key_row, text='Activate', width=70, height=26,
+                      fg_color=CARD, hover_color=BLUE,
+                      command=_activate_key).pack(side='left')
+
+        # ── iRacing EULA Compliance ───────────────────────────────────────────
+        eula_frame = ctk.CTkFrame(win, fg_color='#0A0A12',
+                                   corner_radius=6, border_width=1,
+                                   border_color='#1E1E2E')
+        eula_frame.pack(fill='x', padx=24, pady=(0, 4))
+        lbl(eula_frame,
+            '⚖  iRacing Compliance:  Optimal Sector reads post-session IBT files '
+            'only. All setup writes require explicit user confirmation. '
+            'Compatible with iRacing EULA §8 (third-party telemetry tools).',
+            10, color=DIM, wraplength=480, justify='left').pack(
+            padx=10, pady=6)
+
         # ── Learning Databases ────────────────────────────────────────────────
         sep2 = ctk.CTkFrame(win, fg_color=CARD, height=1)
         sep2.pack(fill='x', padx=24, pady=(10, 4))
@@ -6356,6 +6424,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             self.cfg['default_chart'] = default_chart_var.get()
             self.cfg['outlier_threshold'] = round(outlier_var.get(), 2)
             self.cfg['show_corner_labels'] = corner_labels_var.get()
+            if sub_key_var.get().strip():
+                self.cfg['subscription_key'] = sub_key_var.get().strip()
             update_consent_preferences(
                 learning_data=privacy_learning_var.get(),
                 driver_profile=privacy_profile_var.get(),
