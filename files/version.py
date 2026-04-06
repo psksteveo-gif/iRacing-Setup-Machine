@@ -1,63 +1,65 @@
 """Single source of truth for Optimal Sector version information."""
 
-VERSION = "3.3.5"
+VERSION = "3.17.0"
 APP_NAME = "Optimal Sector"
 APP_AUTHOR = "SpicySteveO Gaming LLC"
-APP_URL = "https://github.com/psksteveo-gif/iRacing-Setup-Machine"
+APP_URL = "https://optimalsector.com"
 COPYRIGHT = "Copyright © 2024-2026 SpicySteveO Gaming LLC. All rights reserved."
 
 # Ordered newest-first — each entry: (version_str, [(emoji, headline), ...])
 CHANGELOG: list[tuple[str, list[tuple[str, str]]]] = [
-    ("3.3.5", [
-        ("🪟", "Splash screen on launch — app name and version shown while UI loads"),
-        ("⬆",  "Auto-update check on launch — green banner appears if a new version is available"),
-        ("📂", "iRacing path detection now queries Windows registry first (handles D: drives, OneDrive, custom installs)"),
-        ("🔒", "Write-permission probe before setup file export — clear error if folder is read-only"),
-        ("⚡", "IBT size check uses os.path.getsize() directly — no unnecessary object creation"),
-        ("🌡",  "Speed and temperature units applied from saved config at startup — no first-session mismatch"),
+    ("3.17.0", [
+        ("🌧", "Weather & Track Condition Engine — every setup delta now adjusted for temperature, humidity, track state, time of day, and wind"),
+        ("🌡", "Tire pressure corrections: ±0.11 psi per 10°F air temp change + track temp delta"),
+        ("💨", "Air density → aero: ISA formula, hot/high-altitude tracks get automatic wing step additions"),
+        ("🏁", "Track condition classification: Dry Rubbered/Green/Cold/Hot, Damp, Wet, Very Wet"),
+        ("⏱", "Time-of-day awareness: Dawn/Morning/Midday/Afternoon/Evening/Night — grip and rubber notes"),
+        ("🎛", "Dashboard weather chip: condition, grip%, pressure correction, time-of-day note"),
+        ("🔧", "Recommend dialog: full weather adjustment panel before setup changes"),
     ]),
-    ("3.3.4", [
-        ("🛡",  "Atomic setup file writes — no data loss if write fails mid-operation"),
-        ("💬", "User-friendly error messages — no raw Python errors shown to users"),
-        ("🔒", "Setup file read/write errors now caught and explained clearly"),
-        ("🪵", "Silent exception swallowing replaced with debug logging throughout"),
-        ("📂", "Log folder button handles missing file explorer gracefully"),
+    ("3.16.0", [
+        ("🔒", "Feature gating: 3 free AI calls/session, Pro subscription unlocks unlimited"),
+        ("📈", "Setup Learning DB: records outcome of applied changes, scales future magnitudes"),
+        ("🧠", "Knowledge base extended with bump stop, exit understeer, wear camber, hydraulic physics"),
     ]),
-    ("3.3.3", [
-        ("🪟", "Window title shows loaded car & track — always know what session is active"),
-        ("🛡",  "Window off-screen recovery — restored position clamped to visible screen area"),
-        ("📂", "Config & logs moved to %APPDATA%\\OptimalSector\\ (legacy location auto-migrated)"),
-        ("🔁", "API retry logic — transient Claude API errors retried with exponential backoff"),
-        ("🩺", "IBT channel sanity checks — out-of-range telemetry values clamped automatically"),
-        ("⚡", "Zero-length & corrupt IBT files rejected early with clear error messages"),
-        ("📏", "File size warning for IBT files over 200 MB; hard reject over 500 MB"),
+    ("3.15.0", [
+        ("📡", "Complete signal coverage: 68/67 setup-relevant iRacing SDK channels (101%)"),
+        ("🛞", "Brake hydraulic discrepancy detection — flags hardware issues vs setup issues"),
+        ("💥", "Bump stop detection from spring vs shock deflection ratio"),
+        ("🌀", "Steering torque + yaw rate as confirmation signals for US/OS diagnosis"),
+        ("🏎", "Speed sector aero rules — differentiates high-DF vs low-DF tracks"),
     ]),
-    ("3.3.2", [
-        ("🔔", "What's New dialog — see release notes on every update"),
-        ("🤝", "Partnership Features panel — tracks iRacing integration roadmap"),
-        ("📡", "Auto-Load on Session End — detects new IBT files while iRacing is open"),
+    ("3.14.0", [
+        ("⚙", "Per-car-class rule thresholds: GT3/GT4/GTP/LMP2/TCR/Formula calibrated separately"),
+        ("🔬", "Exit understeer, tire wear ratios, ride heights fed into AI prompt"),
     ]),
-    ("3.3.1", [
-        ("📊", "History: session type badge + color-coded lap delta vs previous session"),
-        ("🏁", "Session mode (Race/Qualifying/Endurance) selector on Optimizer & AI tabs"),
-        ("⚙",  "Optimizer fitness function tuned per stint mode (tire wear, complexity)"),
-        ("🤖", "AI prompt now includes qualifying/race/endurance-specific setup guidance"),
-        ("🔍", "Detected car class shown in Optimizer and AI tabs; warning when unknown"),
+    ("3.13.0", [
+        ("🛞", "Tire wear camber rules — outer/inner wear ratio as ground truth for camber"),
+        ("🚗", "Exit understeer detection from throttle + lateral G trace"),
+        ("📐", "Actual ride height extraction from LFrideHeight channels"),
     ]),
-    ("3.3.0", [
-        ("🏎",  "Renamed to Optimal Sector"),
-        ("🏁", "Oval & dirt setup parameters — stagger, wedge, track bar, bite bar, etc."),
-        ("🌍", "Corner database expanded: 27 → 48 tracks including ovals and dirt ovals"),
-        ("🧬", "Class-aware GA optimizer — separate parameter sets per car class"),
+    ("3.12.0", [
+        ("⚡", "IBT parse 40-60% faster — zero-copy channel extraction"),
+        ("🤖", "AI latency 60-80% lower — Anthropic prompt caching for 18K-char knowledge base"),
+        ("📺", "OBS overlay 66% fewer canvas ops — sparkline throttled to 3Hz"),
+        ("🎮", "Live dashboard 66% fewer widget reconfigs — UI throttled to 4Hz"),
     ]),
-    ("3.2.0", [
-        ("📡", "Full IBT channel expansion — all iRacing SDK channels available"),
-        ("🗂",  "YAML data mining — extracts CarSetup blocks from IBT session info"),
-        ("🎨", "UI scaling and layout fixes across all tabs"),
+    ("3.11.0", [
+        ("🎙", "Pre-session briefing — AI generates 2-sentence brief when iRacing session detected"),
     ]),
-    ("3.1.0", [
-        ("🗺",  "Track maps on Issues tab with corner markers"),
-        ("🚗", "Car/track coverage fixes — more cars auto-classified correctly"),
-        ("⚖",  "Setup recommendation engine with detailed garage notes"),
+    ("3.10.0", [
+        ("🎯", "Guided Coaching Flow — works through issues one at a time with AI expansion"),
+    ]),
+    ("3.9.0", [
+        ("🎧", "Voice coaching — post-lap AI tips spoken aloud via pyttsx3"),
+        ("📊", "Compare tab: per-corner speed table, AI comparison brief, 24 channels"),
+    ]),
+    ("3.8.0", [
+        ("🔄", "Weekly Series Prep tab — fetches current iRacing schedule via Data API"),
+        ("📋", "Settings: subscription section, iRacing EULA compliance note"),
+    ]),
+    ("3.7.0", [
+        ("📡", "SDK Tiers 1-3: shock defl/vel, slip angles, brake hydraulics, body motion"),
+        ("📊", "Dashboard confidence chip — analysis quality shown on every session load"),
     ]),
 ]

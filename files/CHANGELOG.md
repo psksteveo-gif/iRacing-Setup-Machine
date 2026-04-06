@@ -691,3 +691,38 @@ Runs as a post-processing pass on every setup_generator output.
 ### Also in 3.17: Pending items from 3.16
 - `core/setup_generator.py`: `weather_report` field on SetupResult
 - `DEVNOTES.md`: Architecture docs updated through 3.17
+
+---
+
+## [3.18.0] - 2026-04-06 | Session Condition Delta + Debrief Upgrade + Weekly Prep Leaderboard
+
+### Added — Session Condition Comparison
+- `main.py` — `_check_condition_delta(data)`: fires 500ms after IBT load
+  Compares current session conditions vs previous session at same car+track
+  using WeatherConditions. Detects changes ≥5°C in track or air temp,
+  and track condition state changes (e.g. dry → wet).
+  Shows status bar notification with pressure implications.
+  Examples: "Track 8°C cooler | Adjust cold pressures +0.28 psi"
+            "Dry Rubbered → Damp | Soften ARBs 1 step, brake bias +1.5% fwd"
+
+### Added — Debrief Upgrades
+- `main.py` — `_run_debrief()` worker now includes in AI context:
+  - Worst sector explicitly called out (S1/S2/S3 losing most time)
+  - Corner time-loss breakdown from `cur_corner_rpt` (top 5 worst corners)
+  - Weather context: track condition, grip factor, time-of-day note
+  These give the AI model precise location ("Turn 5, losing 0.312s")
+  and condition context so the debrief is track- and weather-specific
+
+### Added — Weekly Prep Leaderboard
+- `main.py` — `_render_weekly_card()` upgraded:
+  - **Leaderboard section**: "Load" button fetches top 5 series finishers
+    from iRacing Data API season_results endpoint. Shows P1-P3 with
+    best lap times and gap to your own best at that track.
+  - **Weather section**: shows last-visit track/air temp, condition name,
+    grip factor, and pressure correction vs standard
+  - **Improvement trend**: history row now shows total progression
+    (e.g. "+0.843s progression" across all sessions at that track)
+  - AI Race Prep prompt includes weather context from last visit
+
+### Version bump
+- `version.py`: 3.3.5 → 3.17.0 with full changelog from 3.7.0 → 3.17.0

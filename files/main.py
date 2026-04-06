@@ -799,6 +799,90 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                       command=_skip).pack(side='left')
         win.bind('<Escape>', lambda e: _skip())
 
+    def _check_condition_delta(self, data):
+        """
+        Compare current session conditions to the previous session at this
+        car+track combo. If conditions have changed significantly, show a
+        toast banner listing what changed and key setup implications.
+        Fires 500ms after IBT load — non-blocking.
+        """
+        if not data or not data.session_info:
+            return
+        try:
+            from core.weather_engine import WeatherConditions, WeatherEngine
+            from core.advanced_analysis import HistoryTracker
+
+            si_curr = data.session_info or {}
+            curr = WeatherConditions.from_session_info(si_curr)
+
+            # Find previous session at same car+track
+            hist = HistoryTracker().get_history(
+                car=data.car_name, track=data.track_name)
+            if len(hist) < 1:
+                return  # No prior session — nothing to compare
+
+            # Reconstruct previous conditions from stored session_info
+            prev_entry = hist[0]
+            prev_setup = prev_entry.setup_snapshot or {}
+            prev_at = float(prev_setup.get('air_temp_c', 0) or 0)
+            prev_tt = float(prev_setup.get('track_temp_c', 0) or 0)
+
+            if prev_at == 0 and prev_tt == 0:
+                return  # No temp data in history
+
+            prev_si = {'air_temp_c': prev_at, 'track_temp_c': prev_tt,
+                       'wind_speed_ms': float(prev_setup.get('wind_speed_ms', 0) or 0),
+                       'skies': prev_setup.get('skies', 'Clear'),
+                       'weather_type': prev_setup.get('weather_type', 'Dry'),
+                       'track_wetness': int(prev_setup.get('track_wetness', 0) or 0)}
+            prev = WeatherConditions.from_session_info(prev_si)
+
+            # Compute deltas
+            track_delta = curr.track_temp_c - prev_tt
+            air_delta   = curr.air_temp_c - prev_at
+
+            changes = []
+            implications = []
+
+            if abs(track_delta) >= 5:
+                direction = 'warmer' if track_delta > 0 else 'cooler'
+                changes.append(f'Track {abs(track_delta):.0f}°C {direction}')
+                if abs(track_delta) >= 8:
+                    psi_est = track_delta * -0.025
+                    implications.append(f'Adjust cold pressures {psi_est:+.1f} psi')
+
+            if abs(air_delta) >= 5:
+                direction = 'warmer' if air_delta > 0 else 'cooler'
+                changes.append(f'Air {abs(air_delta):.0f}°C {direction}')
+                psi_est = -(air_delta * 9 / 5) * 0.11
+                implications.append(f'Pressure correction {psi_est:+.1f} psi')
+
+            if curr.track_condition != prev.track_condition:
+                changes.append(f'{prev.track_condition.value.replace("_"," ").title()} → '
+                               f'{curr.track_condition.value.replace("_"," ").title()}')
+                if curr.is_wet and not prev.is_wet:
+                    implications.append('Soften ARBs 1 step, move brake bias +1.5% forward')
+                elif not curr.is_wet and prev.is_wet:
+                    implications.append('Restore dry ARBs and brake bias')
+
+            if not changes:
+                return  # No significant change
+
+            # Build toast message
+            msg = '🌡  Conditions changed vs last session: ' + ' | '.join(changes)
+            if implications:
+                msg += '\n   → ' + ' | '.join(implications)
+
+            # Show as status bar update + brief banner
+            self._status_lbl.configure(text=msg)
+            self.after(12000, lambda: self._status_lbl.configure(text=''))
+
+            # If significant change, also show on dashboard
+            logger.info('Condition delta: %s', ' | '.join(changes))
+
+        except Exception as e:
+            logger.debug('_check_condition_delta failed: %s', e)
+
     def _safe_geometry(self, geo: str) -> str:
         """Validate geometry string against screen bounds; center if position is off-screen."""
         try:
@@ -5217,6 +5301,23 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                             ctx.append(f"S{i+1}: best={s.best_time:.3f}s avg={s.avg_time:.3f}s loss={s.avg_time-s.best_time:.3f}s")
                     if self.cur_sec.theoretical_best > 0:
                         ctx.append(f"Time on table vs theoretical best: +{self.cur_rpt.best_lap - self.cur_sec.theoretical_best:.3f}s")
+                    # Worst sector detail
+                    ws = self.cur_sec.worst_sector
+                    if ws is not None and ws < len(self.cur_sec.sectors):
+                        ws_obj = self.cur_sec.sectors[ws]
+                        ctx.append(f"Worst sector: S{ws+1} losing avg +{ws_obj.avg_time - ws_obj.best_time:.3f}s — focus here first")
+
+                # Corner analysis for sector loss location
+                if self.cur_corner_rpt and hasattr(self.cur_corner_rpt, 'corners'):
+                    corner_losses = []
+                    for c in self.cur_corner_rpt.corners:
+                        if hasattr(c, 'time_loss_s') and c.time_loss_s > 0.05:
+                            corner_losses.append(
+                                f"Turn {c.name or c.number}: −{c.time_loss_s:.3f}s "
+                                f"(min speed {getattr(c,'min_speed_kph',0):.0f} km/h)")
+                    if corner_losses:
+                        ctx.append("Corner time losses (worst first): " +
+                                   " | ".join(corner_losses[:5]))
                 if self.cur_style:
                     ctx.append(f"Driver scores — Overall:{self.cur_style.overall_score:.0f} Braking:{self.cur_style.brake_consistency:.0f} "
                                f"Throttle:{self.cur_style.throttle_smoothness:.0f} Steering:{self.cur_style.steering_smoothness:.0f} "
@@ -5226,6 +5327,22 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 if self.cur_eng_report:
                     from core.engineer_report import findings_as_text
                     ctx.append(findings_as_text(self.cur_eng_report))
+
+                # Weather conditions context
+                try:
+                    from core.weather_engine import WeatherConditions, WeatherEngine
+                    _wc = WeatherConditions.from_session_info(
+                        self.cur_data.session_info or {})
+                    _wr = WeatherEngine(_wc).condition_report()
+                    ctx.append(
+                        f"Track conditions: {_wr['condition'].replace('_',' ')} "
+                        f"grip={_wr['grip_factor']:.0%} "
+                        f"track={_wc.track_temp_c:.0f}°C air={_wc.air_temp_c:.0f}°C "
+                        f"time={_wr['time_of_day'].replace('_',' ')}")
+                    for note in _wr.get('tod_notes', [])[:1]:
+                        ctx.append(f"Condition note: {note}")
+                except Exception:
+                    pass
                 system = (
                     "You are Steven, an elite racing engineer. Deliver a post-session debrief. "
                     "Be direct, precise, and actionable. No generic advice.\n\n"
@@ -5528,102 +5645,225 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             self._render_weekly_card(item)
 
     def _render_weekly_card(self, item: dict):
-        """Render one series card with history and AI prep button."""
-        series    = item.get('series_name', 'Unknown Series')
-        car_cls   = item.get('car_class_name', '')
-        track     = item.get('track_name', '')
-        config    = item.get('config_name', '')
-        full_trk  = f'{track} — {config}' if config and config != track else track
+        """Render series card: history, weather, leaderboard, AI prep."""
+        series   = item.get("series_name", "Unknown Series")
+        car_cls  = item.get("car_class_name", "")
+        track    = item.get("track_name", "")
+        config   = item.get("config_name", "")
+        full_trk = f"{track} — {config}" if config and config != track else track
+        series_id = item.get("series_id", 0)
 
         card = ctk.CTkFrame(self._weekly_sc, fg_color=CARD,
                              corner_radius=8, border_width=1,
-                             border_color='#1E1E26')
-        card.pack(fill='x', pady=4)
+                             border_color="#1E1E26")
+        card.pack(fill="x", pady=4)
 
-        ch = ctk.CTkFrame(card, fg_color='transparent')
-        ch.pack(fill='x', padx=12, pady=(10, 2))
-        lbl(ch, series, 12, bold=True).pack(side='left')
-        lbl(ch, car_cls, 10, color=DIM).pack(side='left', padx=8)
-        lbl(card, f'📍  {full_trk}', 11, color=BLUE,
-            anchor='w').pack(anchor='w', padx=12, pady=(0, 4))
+        ch = ctk.CTkFrame(card, fg_color="transparent")
+        ch.pack(fill="x", padx=12, pady=(10, 2))
+        lbl(ch, series, 12, bold=True).pack(side="left")
+        lbl(ch, car_cls, 10, color=DIM).pack(side="left", padx=8)
+        lbl(card, f"📍  {full_trk}", 11, color=BLUE,
+            anchor="w").pack(anchor="w", padx=12, pady=(0, 4))
 
+        # History
         hist = self.history.get_history(track=track)
-        hist_row = ctk.CTkFrame(card, fg_color='#0A1A0A', corner_radius=4)
-        hist_row.pack(fill='x', padx=12, pady=(0, 4))
+        hist_row = ctk.CTkFrame(card, fg_color="#0A1A0A", corner_radius=4)
+        hist_row.pack(fill="x", padx=12, pady=(0, 4))
         if hist:
             best = min(hist, key=lambda e: e.best_lap)
             sessions = len(hist)
+            trend_str = ""
+            if sessions >= 2:
+                times = sorted([e.best_lap for e in hist if e.best_lap > 0])
+                if len(times) >= 2 and abs(times[0] - times[-1]) > 0.1:
+                    trend_str = f"  ({times[0] - times[-1]:+.3f}s progression)"
             lbl(hist_row,
-                f'Your best: {format_laptime(best.best_lap)}  '
-                f'({sessions} session{"s" if sessions > 1 else ""})',
-                11, color='#2ECC71').pack(side='left', padx=10, pady=5)
+                f"Your best: {format_laptime(best.best_lap)}{trend_str}"
+                f"  ({sessions} session{'s' if sessions > 1 else ''})"
+                , 11, color="#2ECC71").pack(side="left", padx=10, pady=5)
         else:
-            lbl(hist_row, 'No history here yet', 10, color=DIM).pack(
-                side='left', padx=10, pady=4)
+            lbl(hist_row, "No history at this track yet",
+                10, color=DIM).pack(side="left", padx=10, pady=4)
 
-        btn_row = ctk.CTkFrame(card, fg_color='transparent')
-        btn_row.pack(fill='x', padx=12, pady=(0, 10))
-        ai_lbl = lbl(btn_row, '', 11, color=TEXT, wraplength=600, justify='left')
+        # Weather context from last visit
+        if hist:
+            snap = min(hist, key=lambda e: e.best_lap).setup_snapshot or {}
+            prev_tt = snap.get("track_temp_c", 0) or 0
+            prev_at = snap.get("air_temp_c", 0) or 0
+            if prev_tt or prev_at:
+                try:
+                    from core.weather_engine import WeatherConditions, WeatherEngine
+                    _wc = WeatherConditions.from_session_info({
+                        "air_temp_c": prev_at, "track_temp_c": prev_tt,
+                        "skies": snap.get("skies", "Clear"),
+                    })
+                    _wr = WeatherEngine(_wc).condition_report()
+                    wx_row = ctk.CTkFrame(card, fg_color="#080E18", corner_radius=4)
+                    wx_row.pack(fill="x", padx=12, pady=(0, 4))
+                    _cond = _wr["condition"].replace("_", " ").title()
+                    _grip = int(_wr["grip_factor"] * 100)
+                    _gcol = GREEN if _grip >= 95 else YELLOW if _grip >= 80 else RED
+                    lbl(wx_row,
+                        f"🌡  Last visit: {_cond}  "
+                        f"Track {prev_tt:.0f}°C / Air {prev_at:.0f}°C  "
+                        f"Grip {_grip}%", 10, color=_gcol
+                    ).pack(side="left", padx=10, pady=4)
+                    psi = _wr.get("pressure_correction_avg_psi", 0)
+                    if abs(psi) > 0.1:
+                        lbl(wx_row, f"Pressure Δ {psi:+.2f} psi",
+                            10, color=BLUE).pack(side="right", padx=10)
+                except Exception:
+                    pass
+
+        # Leaderboard (lazy load)
+        if series_id and hist:
+            your_best = min(hist, key=lambda e: e.best_lap).best_lap
+            lb_frame = ctk.CTkFrame(card, fg_color="#0D0D18", corner_radius=4)
+            lb_frame.pack(fill="x", padx=12, pady=(0, 4))
+            lb_hdr = ctk.CTkFrame(lb_frame, fg_color="transparent")
+            lb_hdr.pack(fill="x", padx=10, pady=(4, 0))
+            lbl(lb_hdr, "📊  Leaderboard", 10, bold=True,
+                color=DIM).pack(side="left")
+            lb_status = lbl(lb_hdr, "", 9, color=DIM)
+            lb_status.pack(side="left", padx=6)
+            lb_data_lbl = lbl(lb_frame, "", 10, color=TEXT, wraplength=640)
+
+            def _fetch_lb(sid=series_id, bl=your_best,
+                          sl=lb_status, dl=lb_data_lbl):
+                sl.configure(text="⏳ Loading…")
+                email = self.cfg.get("iracing_email", "").strip()
+                pw    = self.cfg.get("iracing_password", "")
+                if not email or not pw:
+                    sl.configure(text="Add iRacing credentials above")
+                    return
+                def _worker():
+                    try:
+                        import requests, hashlib, base64
+                        pw_h = base64.b64encode(
+                            hashlib.sha256(
+                                (pw + email.lower()).encode()).digest()
+                        ).decode()
+                        sess = requests.Session()
+                        sess.headers["Content-Type"] = "application/json"
+                        auth = sess.post(
+                            "https://members-ng.iracing.com/auth",
+                            json={"email": email, "password": pw_h},
+                            timeout=10)
+                        if auth.status_code != 200:
+                            raise ConnectionError("Auth failed")
+                        lb_resp = sess.get(
+                            "https://members-ng.iracing.com/data/results/season_results",
+                            params={"season_id": sid}, timeout=10)
+                        if lb_resp.status_code == 200:
+                            lb_json = lb_resp.json()
+                            if "link" in lb_json:
+                                lb_json = sess.get(lb_json["link"], timeout=10).json()
+                            results = lb_json if isinstance(lb_json, list) \
+                                else lb_json.get("results", [])
+                            lines = []
+                            for i, r in enumerate(results[:5]):
+                                name = (r.get("driver_name") or
+                                        r.get("display_name") or
+                                        f"P{i+1}")[:20]
+                                raw = r.get("best_lap_time", 0)
+                                if raw > 0:
+                                    lap = format_laptime(raw / 10000)
+                                    gap = ""
+                                    if bl > 0:
+                                        diff = bl - raw / 10000
+                                        gap = f" ({diff:+.3f}s vs you)"
+                                    lines.append(f"P{i+1} {name}: {lap}{gap}")
+                            if lines:
+                                txt = "  |  ".join(lines[:3])
+                                def _show(t=txt):
+                                    dl.configure(text=t)
+                                    dl.pack(anchor="w", padx=10, pady=(0, 6))
+                                    sl.configure(text="✅")
+                                self.after(0, _show)
+                                return
+                        self.after(0, lambda: sl.configure(text="No data"))
+                    except Exception as ex:
+                        self.after(0, lambda e=ex:
+                            sl.configure(text=f"⚠ {str(e)[:35]}"))
+                threading.Thread(target=_worker, daemon=True).start()
+
+            ctk.CTkButton(lb_hdr, text="Load", width=50, height=20,
+                          fg_color=CARD, hover_color=BLUE,
+                          font=ctk.CTkFont(size=10),
+                          command=_fetch_lb).pack(side="right")
+
+        # AI Race Prep
+        btn_row = ctk.CTkFrame(card, fg_color="transparent")
+        btn_row.pack(fill="x", padx=12, pady=(0, 10))
+        ai_lbl = lbl(btn_row, "", 11, color=TEXT, wraplength=600, justify="left")
 
         def _get_prep(s=series, t=track, c=car_cls, al=ai_lbl, br=btn_row):
             pb = br.winfo_children()[0] if br.winfo_children() else None
-            if pb:
-                pb.configure(state='disabled', text='Generating…')
+            if pb: pb.configure(state="disabled", text="Generating…")
             k = _get_api_key().strip()
             if not k:
-                al.configure(text='Set API key in Settings first.')
-                if pb:
-                    pb.configure(state='normal', text='✨ AI Race Prep')
+                al.configure(text="Set API key in Settings first.")
+                if pb: pb.configure(state="normal", text="✨ AI Race Prep")
                 return
             h_entries = self.history.get_history(track=t)
             h_ctx = []
             if h_entries:
                 best = min(h_entries, key=lambda e: e.best_lap)
-                h_ctx.append(f'Best: {format_laptime(best.best_lap)}')
-                if best.notes:
-                    h_ctx.append(f'Notes: {best.notes[:100]}')
-            prompt = '\n'.join([
-                'You are a professional iRacing race engineer.',
-                'Give a 2-3 sentence pre-race briefing. Plain text only.',
-                '',
-                f'Series: {s}   Car class: {c}   Track: {t}',
-                'Driver history: ' + (', '.join(h_ctx) if h_ctx
-                                       else 'No previous sessions here.'),
-                '',
-                'Focus: what to expect, key corners, setup priorities.',
+                h_ctx.append(f"Best: {format_laptime(best.best_lap)}")
+                if best.notes: h_ctx.append(f"Notes: {best.notes[:100]}")
+            wx_ctx = ""
+            try:
+                from core.weather_engine import WeatherConditions, WeatherEngine
+                _snap = (min(h_entries, key=lambda e: e.best_lap)
+                         .setup_snapshot or {}) if h_entries else {}
+                _wc = WeatherConditions.from_session_info({
+                    "air_temp_c": _snap.get("air_temp_c", 20),
+                    "track_temp_c": _snap.get("track_temp_c", 30),
+                })
+                _wr = WeatherEngine(_wc).condition_report()
+                wx_ctx = (f"Conditions: {_wr["condition"].replace("_"," ")} "
+                          f"grip {_wr["grip_factor"]:.0%} "
+                          f"track ~{_snap.get("track_temp_c",30):.0f}°C")
+            except Exception:
+                pass
+            prompt = "\n".join([
+                "You are a professional iRacing race engineer.",
+                "Give a 2-3 sentence pre-race briefing. Plain text only.",
+                "",
+                f"Series: {s}   Car class: {c}   Track: {t}",
+                "Driver history: " + (", ".join(h_ctx) if h_ctx
+                                       else "No previous sessions here."),
+                wx_ctx,
+                "",
+                "Focus: what to expect, key corners, setup priorities.",
             ])
-
             def _stream():
                 try:
                     import anthropic
                     parts = []
                     client = anthropic.Anthropic(api_key=k, timeout=30.0)
                     with client.messages.stream(
-                        model='claude-haiku-4-5-20251001',
+                        model="claude-haiku-4-5-20251001",
                         max_tokens=150,
-                        messages=[{'role': 'user', 'content': prompt}],
+                        messages=[{"role": "user", "content": prompt}],
                     ) as stream:
                         for chunk in stream.text_stream:
                             parts.append(chunk)
-                            txt = ''.join(parts)
-                            self.after(0, lambda t=txt: al.configure(text=t))
-                    if self.cfg.get('voice_coaching', True):
-                        self._speak_text(''.join(parts), rate=150)
+                            self.after(0, lambda t="".join(parts): al.configure(text=t))
+                    if self.cfg.get("voice_coaching", True):
+                        self._speak_text("".join(parts), rate=150)
                 except Exception as ex:
-                    self.after(0, lambda e=ex:
-                        al.configure(text=f'Error: {e}'))
-                if pb:
-                    self.after(0, lambda:
-                        pb.configure(state='normal', text='✨ AI Race Prep'))
-
+                    self.after(0, lambda e=ex: al.configure(text=f"Error: {e}"))
+                if pb: self.after(0, lambda:
+                    pb.configure(state="normal", text="✨ AI Race Prep"))
             threading.Thread(target=_stream, daemon=True).start()
 
         prep_btn = ctk.CTkButton(
-            btn_row, text='✨ AI Race Prep', width=130, height=28,
-            fg_color=ACCENT, hover_color='#C04A10',
+            btn_row, text="✨ AI Race Prep", width=130, height=28,
+            fg_color=ACCENT, hover_color="#C04A10",
             font=ctk.CTkFont(size=11), command=_get_prep)
-        prep_btn.pack(side='left', pady=4)
-        ai_lbl.pack(side='left', padx=10, fill='x', expand=True)
+        prep_btn.pack(side="left", pady=4)
+        ai_lbl.pack(side="left", padx=10, fill="x", expand=True)
 
     def _t_setup_perf_tab(self, parent=None):
         tab = parent if parent is not None else ctk.CTkFrame(self, fg_color=DARK)
@@ -9996,6 +10236,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
 
         # Check for pending setup outcomes from a previous Write to iRacing
         self.after(2000, lambda: self._check_pending_outcomes(data))
+        self.after(500,  lambda: self._check_condition_delta(data))
 
         # Auto-populate session mode from IBT session type
         _sess_type_raw = (data.session_info.get('session_type') or
