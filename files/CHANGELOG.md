@@ -232,3 +232,42 @@ All notable changes documented here. Format: `[version] - date | what changed | 
 ### Notes
 - Corner detection uses 1000-point interpolated grid, 5% window deduplication
 - AI brief uses Haiku (fastest/cheapest) — not Sonnet — appropriate for short analysis
+
+---
+
+## [3.9.0] - 2026-04-06 | Voice Coaching + Compare Tab + Competitive Parity
+
+### Competitive Context
+Research on Trophi.ai ($12.99/mo), Track Titan ($5M funded), and Grid & Go:
+- Trophi.ai lead: real-time voice coaching ("Mansell AI") — now matched
+- Track Titan lead: "Coaching Flows" guided analysis, 100M+ lap database
+- Grid & Go lead: human pro-created setups per car/track (static, not personalized)
+- Optimal Sector exclusive: setup generator from YOUR data, physics-based rules
+  (shock travel, slip angles, body motion), write-to-iRacing, tech inspection guarantee
+
+### Added — Voice Coaching (matches Trophi.ai's #1 differentiator)
+- `main.py` — `_speak_text()` upgraded:
+  - Now accepts `rate` and `volume` params (default 160 wpm, 1.0 volume)
+  - Reads `cfg['tts_rate']` for user-configured speed
+  - Strips emoji and non-ASCII chars before speaking (clean output)
+  - Selects first English voice from pyttsx3 voice list
+  - Caps at 600 chars (~30s speech max)
+- `main.py` — `_run_steven_live_tip()`: after generating post-lap AI tip,
+  now calls `_speak_text(tip, rate=150)` when `cfg['voice_coaching']` is True
+- `main.py` — Live dashboard Voice Coaching panel:
+  - Label changed from "Steven" to "🎧 Voice Coaching"
+  - On/off toggle switch added (right side of header)
+  - Toggle saves to cfg['voice_coaching'] immediately via save_cfg()
+  - Default: on. Driver can silence mid-session without closing window.
+
+### Added — Compare Tab (3.8.0 items now confirmed)
+- `main.py` — `_draw_ab_corner_speeds()`: per-corner min speed table
+- `main.py` — `_draw_ab_ai_brief()`: AI comparison streaming panel
+- `main.py` — channel selector expanded to 24 channels (added SDK physics channels)
+
+### Notes on Voice Coaching Architecture
+- Uses pyttsx3 (offline, no API cost, works without internet)
+- Each tip is 1 sentence, ~10-15 words — fires after lap completion
+- Rate-limited: only fires when `_steven_coaching_active` is False
+- Does NOT fire when voice_coaching cfg is False (toggle)
+- Future: upgrade to ElevenLabs/OpenAI TTS for more natural voice quality

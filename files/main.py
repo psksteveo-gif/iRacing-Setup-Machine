@@ -6221,16 +6221,38 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 ))
         threading.Thread(target=worker, daemon=True).start()
 
-    def _speak_text(self, text: str):
-        """Read text aloud using pyttsx3 (offline TTS). Runs in a daemon thread."""
+    def _speak_text(self, text: str, rate: int = 160, volume: float = 1.0):
+        """
+        Read text aloud using pyttsx3 (offline TTS). Runs in a daemon thread.
+        Strips emoji and special chars that TTS engines can't pronounce cleanly.
+        Rate and volume configurable; uses cfg 'tts_rate' if set.
+        """
         if not text or text.startswith(('⏳', 'Load', 'Run ')):
             return
+        import re as _re_tts
+        # Strip non-ASCII emoji, keep standard punctuation
+        clean = _re_tts.sub(r'[^\x00-\x7F]', ' ', text)
+        clean = _re_tts.sub(r'[*#_~`|]', '', clean)
+        clean = _re_tts.sub(r'\s+', ' ', clean).strip()[:600]
+        if not clean:
+            return
+        _tts_rate = self.cfg.get('tts_rate', rate)
+
         def _speak():
             try:
                 import pyttsx3
                 engine = pyttsx3.init()
-                engine.setProperty('rate', 155)
-                engine.say(text[:1500])
+                engine.setProperty('rate', _tts_rate)
+                engine.setProperty('volume', volume)
+                voices = engine.getProperty('voices')
+                if voices:
+                    eng = next(
+                        (v for v in voices
+                         if 'en' in str(getattr(v, 'languages', ['en'])[0] if
+                                        getattr(v, 'languages', None) else 'en').lower()),
+                        voices[0])
+                    engine.setProperty('voice', eng.id)
+                engine.say(clean)
                 engine.runAndWait()
             except ImportError:
                 self.after(0, lambda: messagebox.showinfo(
@@ -7933,10 +7955,20 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         sc.pack(fill='x', padx=10, pady=4)
         steven_hdr = ctk.CTkFrame(sc, fg_color="transparent")
         steven_hdr.pack(fill='x', padx=10, pady=(6, 2))
-        lbl(steven_hdr, "Steven", 11, bold=True, color=ACCENT).pack(side='left')
+        lbl(steven_hdr, "\U0001F3A7  Voice Coaching", 11, bold=True, color=ACCENT).pack(side='left')
         win._steven_status = lbl(steven_hdr, "— waiting for lap completion…", 10, color=DIM)
         win._steven_status.pack(side='left', padx=6)
-        win._steven_tip = lbl(sc, "", 11, color=TEXT, justify='left', wraplength=460)
+        # Voice on/off toggle
+        _voice_var = ctk.BooleanVar(value=self.cfg.get('voice_coaching', True))
+        def _toggle_voice():
+            self.cfg['voice_coaching'] = _voice_var.get()
+            save_cfg(self.cfg)
+        lbl(steven_hdr, "Voice", 9, color=DIM).pack(side='right', padx=(0, 4))
+        ctk.CTkSwitch(steven_hdr, text="", variable=_voice_var,
+                      width=40, height=20,
+                      fg_color=CARD, progress_color=ACCENT,
+                      command=_toggle_voice).pack(side='right')
+        win._steven_tip = lbl(sc, "", 11, color=TEXT, justify='left', wraplength=480)
         win._steven_tip.pack(fill='x', padx=10, pady=(0, 8))
 
         # Tire temps grid
@@ -8159,6 +8191,9 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                     self._live_win._steven_tip.configure(text=tip)
                     self._live_win._steven_status.configure(
                         text=f"— after lap {lap_num}", text_color=DIM)
+                # Speak the tip aloud if voice coaching is enabled
+                if self.cfg.get('voice_coaching', True) and tip:
+                    self._speak_text(tip, rate=150)
             self.after(0, _update)
         except Exception as exc:
             logger.debug("Steven live tip failed: %s", exc)
