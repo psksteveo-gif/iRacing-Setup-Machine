@@ -147,6 +147,7 @@ class SignalBundle:
     spring_defl_avg: dict = field(default_factory=dict)
     bump_stop_engaged: dict = field(default_factory=dict)
     has_spring_defl: bool = False
+    fuel_correction_applied: float = 0.0  # OS bias added for fuel load
     # Speed sector analysis (aero rules)
     top_speed_kph: float = 0.0
     slow_corner_pct: float = 0.0
@@ -219,8 +220,21 @@ class SetupResult:
 MIN_LAPS_FOR_CHANGE = 3
 
 # Balance score thresholds
-BALANCE_OS_STRONG   =  0.40   # strong oversteer — act on it
-BALANCE_OS_MILD     =  0.15   # mild oversteer — note it, small change
+# Balance score scale: output of analysis_engine._analyze_balance()
+# Range: -1.0 (maximum understeer) to +1.0 (maximum oversteer)
+# Derived from: lateral-G / steering-angle ratio, normalised against class bounds
+# Calibration basis: lat-G/steer ratio maps ~linearly in iRacing physics.
+# 0.15 = ratio 15% beyond the neutral window → detectable, marginal action
+# 0.40 = ratio 40% beyond neutral → clear imbalance, confident recommendation
+# 0.70 = ratio 70% beyond → severe, high priority
+# These values are consistent with iRacing telemetry observations but have
+# not been back-tested against a lap time improvement dataset. The Setup
+# Learning DB will refine them as outcome data accumulates.
+BALANCE_OS_STRONG   =  0.40   # clear oversteer — act with full delta
+BALANCE_OS_MILD     =  0.15   # marginal oversteer — small delta, flag for monitoring
+BALANCE_US_MILD     = -0.15   # marginal understeer
+BALANCE_US_STRONG   = -0.40   # clear understeer
+BALANCE_SEVERE      =  0.70   # severe imbalance — flag as critical issue
 BALANCE_US_MILD     = -0.15   # mild understeer
 BALANCE_US_STRONG   = -0.40   # strong understeer — act on it
 
@@ -355,6 +369,32 @@ class IBTSignalExtractor:
         bundle.balance_entry   = getattr(analysis, 'balance_entry', 0.0) or 0.0
         bundle.balance_mid     = getattr(analysis, 'balance_mid',   0.0) or 0.0
         bundle.balance_exit    = getattr(analysis, 'balance_exit',  0.0) or 0.0
+
+        # ── Fuel load correction ──────────────────────────────────────────────
+        # High fuel weight biases CoG rearward, making the car look more
+        # understeery than the setup actually is at race weight.
+        # Correction: add small OS bias proportional to early-session fuel level.
+        # Formula: each 10L above 5L adds ~0.02 balance units toward OS.
+        # Max: +0.08 at full tank (~40L GT3). Calibrated from CoG shift estimation.
+        try:
+            channels = (getattr(analysis, '_channels', None) or
+                        getattr(analysis, 'channels', None))
+            if channels is not None:
+                import numpy as _np_fuel
+                fuel_ch = channels.get('FuelLevel')
+                if fuel_ch is not None and len(fuel_ch) > 100:
+                    early_n = max(1, len(fuel_ch) // 10)
+                    avg_fuel_l = float(_np_fuel.mean(fuel_ch[:early_n]))
+                    if avg_fuel_l > 5.0:
+                        corr = min(0.08, (avg_fuel_l - 5.0) * 0.002)
+                        bundle.balance_entry   += corr
+                        bundle.balance_mid     += corr * 0.7
+                        bundle.balance_exit    += corr * 0.5
+                        bundle.balance_overall += corr * 0.6
+                        bundle.fuel_correction_applied = corr
+                        logger.debug('Fuel correction: +%.3f OS bias (%.0fL)', corr, avg_fuel_l)
+        except Exception:
+            pass
 
     def _extract_tire(self, bundle: SignalBundle, analysis):
         if not analysis:
@@ -1484,12 +1524,24 @@ class SetupDeltaEngine:
                                    (b_rear.min_val + b_rear.max_val) / 2
                                    if b_rear else 4)
 
+        # Per-class sensitivity: scale delta so mechanical effect is consistent.
+        # Formula needs 1 step where GT4 needs 2 for the same balance change.
+        try:
+            from core.tech_inspector import get_arb_sensitivity
+            _fs = get_arb_sensitivity(car_class, 'front')
+            _rs = get_arb_sensitivity(car_class, 'rear')
+            # Convert sensitivity to step multiplier: high sensitivity = fewer steps
+            _front_mult = round(max(0.5, 1.0 / _fs))
+            _rear_mult  = round(max(0.5, 1.0 / _rs))
+        except Exception:
+            _front_mult = _rear_mult = 1
+
         mid_os  = bundle.balance_mid
         exit_os = bundle.balance_exit
 
         # Mid-corner oversteer: soften rear ARB
         if mid_os > BALANCE_OS_MILD and b_rear:
-            strength = 1 if mid_os < BALANCE_OS_STRONG else 2
+            strength = _rear_mult if mid_os < BALANCE_OS_STRONG else _rear_mult * 2
             results.append(SetupDelta(
                 param='arb_rear',
                 display_name='Rear ARB',
@@ -1753,6 +1805,16 @@ class SetupDeltaEngine:
             return results
 
         bounds = get_bounds(car_class)
+        # Per-class spring sensitivity: Formula needs smaller deltas than GT4
+        try:
+            from core.tech_inspector import get_spring_sensitivity
+            _sf = get_spring_sensitivity(car_class, 'front')
+            _sr = get_spring_sensitivity(car_class, 'rear')
+            _spr_front_mult = max(0.25, 1.0 / _sf)
+            _spr_rear_mult  = max(0.25, 1.0 / _sr)
+        except Exception:
+            _spr_front_mult = _spr_rear_mult = 1.0
+
         mid_os = bundle.balance_mid
 
         # Persistent mid-corner understeer after ARB at minimum →

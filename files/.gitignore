@@ -1,32 +1,60 @@
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
+*.pyo
+*.pyd
+*.so
+*.egg
 *.egg-info/
 dist/
 build/
+.eggs/
 *.spec.bak
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+
+# Credentials and secrets — NEVER commit these
+.enckey
+*.enc
+config.json
+*.pem
+*.key
+*.p12
+*.pfx
+.env
+.env.*
+secrets.py
+secrets.json
+
+# iRacing data (user's own files — never commit)
+*.ibt
+*.sto
+*.htm
+*.tga
+
+# App data directories
+.optimalsector/
+*.log
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-
-# OS
-Thumbs.db
 .DS_Store
-desktop.ini
+Thumbs.db
 
-# App config (may contain secrets)
-*.json
-!pyrightconfig.json
+# PyInstaller output
+dist/
+build/
+*.spec.bak
 
-# PyInstaller
-*.manifest
-*.log
-
-# Virtual environments
-venv/
-.venv/
-env/
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+*.tmp

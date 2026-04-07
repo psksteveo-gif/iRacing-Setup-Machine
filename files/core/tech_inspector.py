@@ -351,6 +351,77 @@ def _resolve_car_class(car_class) -> CarClass:
     return CarClass.DEFAULT
 
 
+# ── ARB step sensitivity per class ───────────────────────────────────────────
+# How much does 1 ARB step change the torsional stiffness?
+# Used by setup_generator to scale delta magnitude to actual mechanical effect.
+#
+# 'normalized_effect': effect of 1 step relative to GT3 baseline (1.0).
+# > 1.0 = more sensitive (smaller delta needed for same feel change).
+# < 1.0 = less sensitive (larger delta may be needed).
+#
+# Basis: iRacing garage ARB ranges + published engineering estimates.
+# GT3:     7-step range, medium stiffness → baseline 1.0
+# GT4:     5-step range, slightly softer → 0.85 (less mechanical ARB effect)
+# GTP:     continuous adjustment, highly sensitive → 1.40
+# Formula: 5-step, but car is very sensitive to ARB → 1.60
+# TCR:     FWD — front ARB is critical, rear less so
+# LMP2:    7-step, stiff platform → 1.20
+#
+# front/rear differ because weight distribution varies.
+ARB_STEP_SENSITIVITY: Dict[CarClass, Dict[str, float]] = {
+    CarClass.GT3:          {'front': 1.00, 'rear': 1.00},
+    CarClass.GT4:          {'front': 0.85, 'rear': 0.85},
+    CarClass.GTP:          {'front': 1.40, 'rear': 1.30},
+    CarClass.GTE:          {'front': 1.10, 'rear': 1.10},
+    CarClass.LMP2:         {'front': 1.20, 'rear': 1.15},
+    CarClass.PROTOTYPE:    {'front': 1.20, 'rear': 1.15},
+    CarClass.FORMULA:      {'front': 1.60, 'rear': 1.50},
+    CarClass.SUPER_FORMULA:{'front': 1.60, 'rear': 1.50},
+    CarClass.PORSCHE_CUP:  {'front': 0.90, 'rear': 0.90},
+    CarClass.TCR:          {'front': 1.30, 'rear': 0.70},  # FWD — rear ARB less critical
+    CarClass.V8_SUPERCAR:  {'front': 0.80, 'rear': 0.80},
+    CarClass.STOCK:        {'front': 0.75, 'rear': 0.75},
+    CarClass.ROAD_ROOKIE:  {'front': 0.80, 'rear': 0.80},
+    CarClass.SPORTS_CAR:   {'front': 0.90, 'rear': 0.90},
+    CarClass.DEFAULT:      {'front': 1.00, 'rear': 1.00},
+}
+
+# ── Spring rate sensitivity per class ────────────────────────────────────────
+# How much does 1 step (N/mm) change the effective ride stiffness?
+# Higher = car more sensitive to spring changes.
+SPRING_STEP_SENSITIVITY: Dict[CarClass, Dict[str, float]] = {
+    CarClass.GT3:          {'front': 1.00, 'rear': 1.00},
+    CarClass.GT4:          {'front': 0.90, 'rear': 0.90},
+    CarClass.GTP:          {'front': 1.50, 'rear': 1.40},
+    CarClass.GTE:          {'front': 1.10, 'rear': 1.10},
+    CarClass.LMP2:         {'front': 1.30, 'rear': 1.25},
+    CarClass.PROTOTYPE:    {'front': 1.30, 'rear': 1.25},
+    CarClass.FORMULA:      {'front': 1.80, 'rear': 1.70},
+    CarClass.SUPER_FORMULA:{'front': 1.80, 'rear': 1.70},
+    CarClass.PORSCHE_CUP:  {'front': 0.85, 'rear': 0.85},
+    CarClass.TCR:          {'front': 1.10, 'rear': 0.90},
+    CarClass.DEFAULT:      {'front': 1.00, 'rear': 1.00},
+}
+
+
+def get_arb_sensitivity(car_class, axle: str = 'front') -> float:
+    """
+    Return the ARB step sensitivity multiplier for a car class and axle.
+    Use this to scale delta magnitude: if sensitivity > 1.0, use fewer steps.
+    delta_adjusted = delta_raw / sensitivity
+    """
+    cls = _resolve_car_class(car_class)
+    sens = ARB_STEP_SENSITIVITY.get(cls, {'front': 1.0, 'rear': 1.0})
+    return sens.get(axle, 1.0)
+
+
+def get_spring_sensitivity(car_class, axle: str = 'front') -> float:
+    """Return spring rate step sensitivity for a car class and axle."""
+    cls = _resolve_car_class(car_class)
+    sens = SPRING_STEP_SENSITIVITY.get(cls, {'front': 1.0, 'rear': 1.0})
+    return sens.get(axle, 1.0)
+
+
 def get_bounds(car_class) -> Dict[str, ParamBounds]:
     """Return the parameter bounds dict for a car class."""
     return BOUNDS.get(_resolve_car_class(car_class), _GT3)

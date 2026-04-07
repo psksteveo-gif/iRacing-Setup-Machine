@@ -839,3 +839,61 @@ The Fernet encryption on `config.enc` is retained for two reasons:
 2. `iracing_email` is personal data under GDPR Art. 4
 The cryptography package dependency is justified. The OS keyring remains
 the primary security layer for all credentials — Fernet is defence in depth.
+
+---
+
+## [3.20.0] - 2026-04-06 | Accuracy Improvements + Infrastructure
+
+### Accuracy Fixes
+
+**Balance Threshold Calibration (core/setup_generator.py)**
+- Added `BALANCE_US_MILD = -0.15`, `BALANCE_US_STRONG = -0.40`,
+  `BALANCE_SEVERE = 0.70` constants alongside existing OS thresholds
+- Full inline documentation of the lat-G/steering-angle ratio scale:
+  what 0.15, 0.40, 0.70 mean in physical terms and calibration basis
+- Thresholds are consistent with iRacing physics observations;
+  Setup Learning DB will refine them as outcome data accumulates
+
+**Fuel Load Correction (core/setup_generator.py)**
+- `_extract_balance()` now reads early-session `FuelLevel` channel
+- Applies OS bias proportional to fuel weight: max +0.08 at ~40L full tank
+  Formula: `corr = min(0.08, (avg_fuel_l - 5.0) * 0.002)`
+  Entry: +corr, Mid: +corr×0.7, Exit: +corr×0.5 (fuel affects entry most)
+- Fixes: high-fuel sessions appearing more understeery than setup actually is
+- `fuel_correction_applied` field added to SignalBundle for transparency
+
+**Recency-Weighted Balance (core/analysis_engine.py)**
+- `phase_balance()` now uses `np.average()` with linear recency weights
+  Weight ramp: 0.5× (first sample) → 1.5× (last sample)
+- Later laps on rubbered track weighted 3× more than cold early laps
+- Fixes: cold-tire first laps pulling balance scores toward understeer
+- No change to return value scale — just more representative weighting
+
+**Per-Car ARB & Spring Step Sensitivity (core/tech_inspector.py)**
+- `ARB_STEP_SENSITIVITY`: 15 car classes with front/rear multipliers
+  GT3: 1.0/1.0 (baseline), Formula: 1.6/1.5, GTP: 1.4/1.3,
+  TCR: 1.3 front / 0.7 rear (FWD asymmetry), GT4: 0.85/0.85
+- `SPRING_STEP_SENSITIVITY`: same class coverage
+  Formula: 1.8/1.7, GTP: 1.5/1.4, GT3: 1.0 baseline
+- `get_arb_sensitivity(car_class, axle)` → float helper
+- `get_spring_sensitivity(car_class, axle)` → float helper
+- Wired into `_arb_rules()`: `strength` scaled by `1.0 / sensitivity`
+  Formula at 1.6× sensitivity uses ~0.6 steps where GT4 uses 1.2 steps
+- Wired into `_spring_rules()`: delta multiplied by sensitivity reciprocal
+- Fixes: same delta magnitude recommended regardless of how sensitive the
+  car actually is to that parameter
+
+### Infrastructure
+
+**requirements.txt** — updated and reorganised:
+- Added `cryptography>=41.0.0` (GDPR Fernet encryption, was missing)
+- Added `scipy>=1.10.0` as optional (faster IBT signal processing)
+- Grouped into: Core required / UI+viz / Optional features
+- All version pins current as of April 2026
+
+**.gitignore** — created (was missing):
+- Covers: `__pycache__/`, `*.pyc`, `dist/`, `build/`
+- Credentials: `.enckey`, `*.enc`, `config.json`, `.env`, `secrets.*`
+- iRacing user data: `*.ibt`, `*.sto`, `*.htm`, `*.tga`
+- App data: `.optimalsector/`, `*.log`
+- IDE: `.vscode/`, `.idea/`, `.DS_Store`

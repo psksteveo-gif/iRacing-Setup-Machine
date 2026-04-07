@@ -1,11 +1,33 @@
+# Optimal Sector — Python dependencies
+# Install: pip install -r requirements.txt
+#
+# Core (required for all features)
 customtkinter>=5.2.0,<6.0
-matplotlib>=3.7.0,<4.0
 numpy>=1.24.0,<3.0
-anthropic>=0.28.0,<2.0   # >=0.28 required for prompt caching beta support
-reportlab>=4.0.0,<5.0
-keyring>=25.0.0
+anthropic>=0.28.0,<2.0     # >=0.28 required for prompt caching beta support
+keyring>=25.0.0             # OS keyring for secure credential storage
+requests>=2.31.0            # iRacing Data API (Weekly Prep), leaderboard
+cryptography>=41.0.0        # Fernet AES config encryption (GDPR Art. 32)
+
+# UI / visualisation
+matplotlib>=3.7.0,<4.0
+
+# Setup file handling
+reportlab>=4.0.0,<5.0      # PDF export (if enabled)
+PyYAML>=5.3                 # IBT session_info parsing, required by pyirsdk
+
+# Optional — voice coaching
+# pip install pyttsx3
+pyttsx3>=2.90
+
+# Optional — live telemetry dashboard (iRacing SDK)
+# pip install pyirsdk
+pyirsdk>=1.3.0
+
+# Optional — drag-and-drop IBT file loading
+# pip install tkinterdnd2
 tkinterdnd2>=0.4.0
-requests>=2.31.0          # required for iRacing Data API (Weekly Prep tab)
-pyttsx3>=2.90             # optional: required for voice coaching (pip install pyttsx3)
-pyirsdk>=1.3.0            # optional: required for Live Telemetry dashboard (pip install pyirsdk)
-PyYAML>=5.3               # required by pyirsdk
+
+# Optional — faster IBT parsing
+# pip install scipy
+scipy>=1.10.0

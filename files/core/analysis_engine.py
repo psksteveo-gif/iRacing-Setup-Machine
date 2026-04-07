@@ -459,14 +459,25 @@ class AnalysisEngine:
             return
 
         def phase_balance(mask):
-            """Compute balance score for a corner phase. Negative = understeer."""
+            """
+            Compute balance score for a corner phase. Negative = understeer.
+
+            Uses recency weighting: later samples (later in session) are
+            weighted more heavily as they represent a rubbered track and
+            more representative race-condition balance.
+            Weight ramps linearly from 0.5 (first sample) to 1.5 (last sample).
+            """
             combined = corner_mask & mask
-            if np.sum(combined) < 50:
+            n = int(np.sum(combined))
+            if n < 50:
                 return 0.0
-            s = float(np.mean(np.abs(steering[combined])))
-            l = float(np.mean(np.abs(lat[combined])))
+            indices = np.where(combined)[0]
+            total = max(len(steering), 1)
+            # Recency weight: 0.5 at start → 1.5 at end (linear ramp)
+            weights = 0.5 + (indices / total)
+            s = float(np.average(np.abs(steering[combined]), weights=weights))
+            l = float(np.average(np.abs(lat[combined]), weights=weights))
             r = l / max(s, 0.01)
-            # Map ratio to score: low ratio → understeer (-), high → oversteer (+)
             if r < BALANCE_UNDERSTEER_RATIO:
                 return max(-1.0, -(BALANCE_UNDERSTEER_RATIO - r) / BALANCE_UNDERSTEER_RATIO)
             elif r > BALANCE_OVERSTEER_RATIO:
