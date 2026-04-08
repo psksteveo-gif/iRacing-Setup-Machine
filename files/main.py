@@ -3636,6 +3636,16 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             except Exception:
                 pass
 
+        # Determine if wet overlay should be offered
+        _is_wet_session = (
+            _wx_report and
+            _wx_report.get('condition', '') in
+            ('wet', 'very_wet', 'damp'))
+        _wetness_level = 0
+        if self.cur_data and self.cur_data.session_info:
+            _wetness_level = int(
+                self.cur_data.session_info.get('track_wetness', 0) or 0)
+
         if _wx_report:
             wx_frame = ctk.CTkFrame(win, fg_color='#080E1A', corner_radius=8,
                                      border_width=1, border_color='#1E2E4E')
@@ -3700,6 +3710,76 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             if wind_ctx:
                 lbl(wx_frame, f"  💨  {wind_ctx}",
                     9, color=DIM, wraplength=680).pack(anchor='w', padx=12, pady=(0, 6))
+
+        # ── Wet Setup Overlay Panel ────────────────────────────────────────────
+        if _is_wet_session or _wetness_level >= 1:
+            wet_frame = ctk.CTkFrame(win, fg_color='#0A1020', corner_radius=8,
+                                      border_width=1, border_color='#2244AA')
+            wet_frame.pack(fill='x', padx=12, pady=(0, 4))
+            wet_hdr = ctk.CTkFrame(wet_frame, fg_color='transparent')
+            wet_hdr.pack(fill='x', padx=12, pady=(8, 4))
+
+            _cond_label = {0: 'Damp', 1: 'Damp', 2: 'Wet', 3: 'Very Wet'}.get(
+                _wetness_level, 'Wet')
+            lbl(wet_hdr,
+                f'🌊  {_cond_label} Condition Setup Overlay',
+                12, bold=True, color='#6699FF').pack(side='left')
+
+            wet_scroll = ctk.CTkScrollableFrame(
+                wet_frame, fg_color='transparent', height=120)
+            wet_scroll.pack(fill='x', padx=8, pady=(0, 4))
+            wet_status = lbl(wet_frame, 'Click Generate to see wet setup changes',
+                             10, color=DIM)
+            wet_status.pack(anchor='w', padx=12, pady=(0, 6))
+
+            def _gen_wet_overlay():
+                wet_status.configure(text='⏳ Computing…')
+                for w in wet_scroll.winfo_children():
+                    w.destroy()
+                try:
+                    from core.setup_generator import generate_wet_setup_overlay
+                    _car_class = getattr(self, '_last_car_class_str', 'GT3')
+                    _base = {}
+                    if self.cur_setup:
+                        _base = getattr(self.cur_setup, 'flat', {}) or {}
+                    overlay = generate_wet_setup_overlay(
+                        car_class=_car_class,
+                        baseline_setup=_base,
+                        track_wetness=max(1, _wetness_level))
+
+                    if not overlay:
+                        wet_status.configure(
+                            text='No overlay changes — load a base setup first')
+                        return
+
+                    for param, info in sorted(overlay.items()):
+                        row = ctk.CTkFrame(wet_scroll, fg_color='#0D1530',
+                                           corner_radius=4)
+                        row.pack(fill='x', pady=2)
+                        sign = '+' if info['delta'] >= 0 else ''
+                        lbl(row,
+                            f"  {info.get('condition','Wet')}  {param.replace('_',' ').title()}: "
+                            f"{info['current']:.2g} → {info['recommended']:.2g}  "
+                            f"({sign}{info['delta']:.2g})",
+                            10, bold=True, color='#6699FF').pack(
+                            side='left', padx=6, pady=3)
+                        lbl(row, info['reason'], 9, color=DIM,
+                            wraplength=480).pack(
+                            side='left', padx=4)
+
+                    wet_status.configure(
+                        text=f'✅ {len(overlay)} wet overlay changes — '
+                             f'apply these ON TOP of your dry base setup')
+                except Exception as ex:
+                    logger.warning('Wet overlay failed: %s', ex)
+                    wet_status.configure(
+                        text='Wet overlay unavailable — load a base setup first')
+
+            ctk.CTkButton(wet_hdr, text='🌊 Generate Wet Overlay',
+                          width=170, height=28,
+                          fg_color='#1A3080', hover_color='#2244AA',
+                          font=ctk.CTkFont(size=11),
+                          command=_gen_wet_overlay).pack(side='right')
 
         # ── Setup Generator Results Panel ─────────────────────────────────────
         _gen_result = getattr(self, 'cur_setup_result', None)
@@ -5388,6 +5468,36 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 if self.cur_eng_report:
                     from core.engineer_report import findings_as_text
                     ctx.append(findings_as_text(self.cur_eng_report))
+
+                # Lap time progression — linear regression to detect trend
+                try:
+                    import numpy as _np_dbf
+                    laps = self.cur_rpt.lap_times
+                    valid_mask = getattr(self.cur_rpt, 'valid_lap_mask', None)
+                    if valid_mask and len(valid_mask) == len(laps):
+                        laps = [t for t, v in zip(laps, valid_mask) if v]
+                    if len(laps) >= 4:
+                        x = _np_dbf.arange(len(laps), dtype=float)
+                        coeffs = _np_dbf.polyfit(x, laps, 1)
+                        trend_per_lap = coeffs[0]  # seconds per lap
+                        total_trend = trend_per_lap * (len(laps) - 1)
+                        first3 = _np_dbf.mean(laps[:3])
+                        last3  = _np_dbf.mean(laps[-3:])
+                        pace_delta = last3 - first3
+                        if abs(trend_per_lap) > 0.005:
+                            direction = 'improving' if trend_per_lap < 0 else 'degrading'
+                            ctx.append(
+                                f"Lap time progression: {direction} at "
+                                f"{abs(trend_per_lap):.3f}s/lap "
+                                f"(total {total_trend:+.3f}s over {len(laps)} laps). "
+                                f"First 3 avg: {first3:.3f}s, Last 3 avg: {last3:.3f}s "
+                                f"(delta {pace_delta:+.3f}s).")
+                        else:
+                            ctx.append(
+                                f"Lap time progression: consistent "
+                                f"({trend_per_lap:+.4f}s/lap, effectively flat).")
+                except Exception:
+                    pass
 
                 # Weather conditions context
                 try:

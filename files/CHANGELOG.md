@@ -897,3 +897,40 @@ the primary security layer for all credentials — Fernet is defence in depth.
 - iRacing user data: `*.ibt`, `*.sto`, `*.htm`, `*.tga`
 - App data: `.optimalsector/`, `*.log`
 - IDE: `.vscode/`, `.idea/`, `.DS_Store`
+
+---
+
+## [3.21.0] - 2026-04-08 | Wet Setup Overlay + Lap Progression Analysis
+
+### Added — Wet Setup Overlay
+
+**`core/setup_generator.py` — `generate_wet_setup_overlay()`**
+Full wet/damp condition setup overlay generator. Unlike incremental deltas from
+`generate_setup()`, this applies the complete wet setup philosophy in one pass:
+- ARBs: −1.5 to −2 steps front/rear (compliance beats stiffness in wet)
+- Brake bias: +1.5% forward (rear locks easily on standing water)
+- Tire pressures: −0.75 psi all corners (wet tires run cooler)
+- Camber: +0.10° (reduce magnitude — wider contact patch > heat generation)
+- Ride height: +2mm (wetness ≥2 only — aquaplaning margin)
+All changes scale by `wet_factor`: 0.5× damp, 1.0× wet, 1.35× very wet.
+Returns `dict[param → {current, recommended, delta, reason, condition}]`.
+
+**`main.py` — Wet Overlay Panel in Recommend Dialog**
+- Auto-detects wet/damp session from `weather_report` or `track_wetness`
+- Shows "🌊 Damp/Wet/Very Wet Condition Setup Overlay" panel
+- "Generate Wet Overlay" button runs `generate_wet_setup_overlay()` on demand
+- Each change shown with: param, current→recommended, delta, engineering reason
+- Status label explains these are to be applied ON TOP of a dry base setup
+
+### Added — Lap Time Progression Analysis
+
+**`main.py` — `_run_debrief()` worker**
+- `np.polyfit(lap_indices, lap_times, 1)` on valid laps (outliers excluded)
+- Reports: trend direction, rate (s/lap), total drift over session
+  "Improving at 0.023s/lap (total −0.276s over 12 laps)"
+  "Degrading at 0.031s/lap (total +0.372s over 12 laps)"
+  "Consistent (+0.003s/lap, effectively flat)"
+- First-3 vs last-3 lap average comparison included
+- Full context string fed into AI debrief prompt — AI can now say
+  "You found 0.3s over the session — the car is working into a good window"
+  or flag degradation as a tire/setup issue

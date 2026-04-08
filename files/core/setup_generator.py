@@ -52,6 +52,140 @@ from core.car_classifier import CarClass
 logger = logging.getLogger(__name__)
 
 
+def generate_wet_setup_overlay(
+    car_class,
+    baseline_setup: dict = None,
+    track_wetness: int = 2,
+) -> dict:
+    """
+    Generate a wet/damp condition setup overlay on top of a baseline.
+
+    Unlike the main generate_setup() which makes incremental deltas,
+    this produces a full overlay of all parameters that should change
+    for wet conditions — independent of session balance data.
+
+    Philosophy: wet setup is NOT just "soften everything".
+    Key changes per motorsport engineering practice:
+      - ARBs: soften significantly (compliance > stiffness in wet)
+      - Springs: soften front more than rear (weight transfer balance)
+      - Ride height: raise slightly (aquaplaning margin)
+      - Brake bias: forward (rear locks easily in wet)
+      - Tire pressure: lower cold start (less heat buildup)
+      - Camber: reduce (wider contact patch in wet > heat generation)
+      - Downforce: increase if available (wet needs more mechanical load)
+      - Dampers: slower rebound (let tire find grip on recovery)
+
+    Parameters
+    ----------
+    car_class : CarClass or str
+    baseline_setup : dict — current dry setup values
+    track_wetness : int — 1=damp, 2=wet, 3=very wet
+
+    Returns
+    -------
+    dict of param → recommended value with 'delta' and 'reason' sub-keys
+    """
+    from core.tech_inspector import get_bounds, _resolve_car_class
+
+    if not isinstance(car_class, CarClass):
+        from core.tech_inspector import _resolve_car_class
+        car_class = _resolve_car_class(car_class)
+
+    bounds  = get_bounds(car_class)
+    base    = baseline_setup or {}
+    overlay = {}
+
+    def _current(param, fallback):
+        v = base.get(param)
+        if v is not None:
+            try: return float(v)
+            except: pass
+        b = bounds.get(param)
+        return (b.min_val + b.max_val) / 2 if b else fallback
+
+    def _clamp(param, value):
+        b = bounds.get(param)
+        if b:
+            return max(b.min_val, min(b.max_val, round(value / b.step) * b.step))
+        return value
+
+    # Intensity scales with wetness level
+    wet_factor = {1: 0.5, 2: 1.0, 3: 1.35}.get(track_wetness, 1.0)
+    condition  = {1: 'Damp', 2: 'Wet', 3: 'Very Wet'}.get(track_wetness, 'Wet')
+
+    # ── ARBs — soften significantly ─────────────────────────────────────────
+    for param, baseline_soft, reason in [
+        ('arb_front', -2, 'Soft front ARB allows front tires to find grip on wet surface'),
+        ('arb_rear',  -2, 'Soft rear ARB prevents snap oversteer on power application in wet'),
+    ]:
+        cur = _current(param, 4)
+        delta = round(-1 * wet_factor * (2 if 'rear' in param else 1.5))
+        rec   = _clamp(param, cur + delta)
+        if rec != cur:
+            overlay[param] = {'current': cur, 'recommended': rec,
+                              'delta': rec - cur, 'reason': reason,
+                              'condition': condition}
+
+    # ── Brake bias — more forward ────────────────────────────────────────────
+    cur_bb = _current('brake_bias', 57.0)
+    bb_delta = round(1.5 * wet_factor, 1)
+    rec_bb   = _clamp('brake_bias', cur_bb + bb_delta)
+    if abs(rec_bb - cur_bb) > 0.2:
+        overlay['brake_bias'] = {
+            'current': cur_bb, 'recommended': rec_bb,
+            'delta': round(rec_bb - cur_bb, 1),
+            'reason': 'Rear brakes lock easily in wet — move bias forward to prevent rear lock',
+            'condition': condition}
+
+    # ── Tire pressure — lower cold start ────────────────────────────────────
+    psi_reduction = round(0.75 * wet_factor, 1)
+    for corner in ['lf', 'rf', 'lr', 'rr']:
+        param = f'pressure_{corner}'
+        cur_p = _current(param, 27.5)
+        rec_p = _clamp(param, cur_p - psi_reduction)
+        if abs(rec_p - cur_p) > 0.05:
+            overlay[param] = {
+                'current': cur_p, 'recommended': rec_p,
+                'delta': round(rec_p - cur_p, 1),
+                'reason': f'Wet tires run cooler — lower cold start pressure '
+                          f'to hit target hot pressure range',
+                'condition': condition}
+
+    # ── Camber — reduce slightly ─────────────────────────────────────────────
+    cam_reduction = round(0.1 * wet_factor, 2)
+    for corner, cam_sign in [('camber_lf', -1), ('camber_rf', -1),
+                              ('camber_lr', -1), ('camber_rr', -1)]:
+        cur_c = _current(corner, -2.5)
+        # Reduce magnitude (less negative = wider contact patch)
+        rec_c = _clamp(corner, cur_c + cam_reduction)
+        if abs(rec_c - cur_c) > 0.05:
+            overlay[corner] = {
+                'current': cur_c, 'recommended': rec_c,
+                'delta': round(rec_c - cur_c, 2),
+                'reason': 'Reduce camber in wet — wider contact patch '
+                          'more valuable than heat generation',
+                'condition': condition}
+
+    # ── Ride height — raise if available ─────────────────────────────────────
+    if track_wetness >= 2:
+        rh_increase = round(2.0 * wet_factor)
+        for rh_param in ['rh_lf', 'rh_rf', 'rh_lr', 'rh_rr']:
+            cur_rh = _current(rh_param, 65.0)
+            rec_rh = _clamp(rh_param, cur_rh + rh_increase)
+            if abs(rec_rh - cur_rh) > 0.5:
+                overlay[rh_param] = {
+                    'current': cur_rh, 'recommended': rec_rh,
+                    'delta': round(rec_rh - cur_rh, 1),
+                    'reason': 'Raise ride height in wet — aquaplaning margin '
+                              'and allow suspension more travel for compliance',
+                    'condition': condition}
+
+    logger.info(
+        'Wet overlay generated: %d changes for %s (wetness=%d factor=%.2f)',
+        len(overlay), car_class, track_wetness, wet_factor)
+    return overlay
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # DATA STRUCTURES
 # ─────────────────────────────────────────────────────────────────────────────
