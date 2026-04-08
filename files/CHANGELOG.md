@@ -973,3 +973,53 @@ e.g. Hot conditions move a 30-lap cliff to ~22 laps.
 - 3.19: Weather in GDPR consent + privacy (not a feature but compliance)
 - 3.21: Wet setup overlay (complete philosophy-driven changes)
 - 3.22: Weather-aware tire strategy (deg rate × condition modifier)
+
+---
+
+## [3.23.0] - 2026-04-08 | iRacing Data API — Replace Manual Auth
+
+### Replaced: Manual iRacing auth with `iracingdataapi` package
+
+**Old approach (removed):**
+- Two separate places in `main.py` each manually computed SHA256+base64
+  password hash, created a `requests.Session`, POST'd to
+  `members-ng.iracing.com/auth`, then made raw GET calls to API endpoints
+- Duplicated auth logic, raw endpoint strings, no rate limit handling,
+  no automatic re-auth on session expiry
+- Credentials read directly from `cfg` dict (security gap)
+
+**New approach:**
+
+`core/iracing_client.py` — new module (313 lines):
+- `_IRacingClient`: thread-safe singleton wrapping `iracingdataapi.irDataClient`
+  - Lazy auth: authenticates on first use, re-auths on 401 automatically
+  - Credentials from OS keyring via `get_iracing_credentials()`
+  - `invalidate()`: force re-auth after credential change
+- `current_seasons_schedule()`: replaces `_fetch_iracing_schedule()`
+  Maps `series_seasons(include_series=True)` → `{series_id, season_id,
+  series_name, car_class_name, track_name, config_name, race_week_num}`
+- `season_driver_standings(season_id, car_class_id)`: replaces manual
+  `results/season_results` endpoint. Returns positions with best lap times.
+- `season_qual_results(season_id, car_class_id)`: pure pace leaderboard
+  via `stats_season_qualify_results()` — better lap time data for display
+- `member_recent_races()`: bonus — member's recent race history
+- `get_ir_client()` / `invalidate_ir_client()`: module-level accessors
+- `IRacingClientError`: typed exception for all API failures
+
+`main.py`:
+- `_fetch_iracing_schedule()`: 40 lines → 6 lines (delegates to client)
+- `_fetch_lb._worker()`: 35 lines → 15 lines (delegates to client)
+- `_fetch_lb`: no longer reads `cfg['iracing_password']` — keyring only
+- `_save_weekly_creds()`: calls `invalidate_ir_client()` after save
+  so next Weekly Prep request re-authenticates with new credentials
+
+`requirements.txt`:
+- Added `iracingdataapi>=1.4.2` and `pydantic>=2.0.0`
+
+**What iracingdataapi gives us that we were missing:**
+- Automatic re-authentication on 401 (session expiry handled silently)
+- Rate limit tracking via `client.rate_limit` property
+- OAuth2 token support (iRacing's future auth direction post-password-deprecation)
+- 71 API methods — many we haven't used yet (member bests, world records,
+  series stats, league data) available for future features
+- Maintained package (v1.4.2 released Jan 2026) — we ride their maintenance

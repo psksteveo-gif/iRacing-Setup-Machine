@@ -5698,6 +5698,12 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self.cfg['iracing_email'] = email
         self.cfg.pop('iracing_password', None)
         save_cfg(self.cfg)
+        # Invalidate cached client so next request re-authenticates
+        try:
+            from core.iracing_client import invalidate_ir_client
+            invalidate_ir_client()
+        except Exception:
+            pass
         self._status_lbl.configure(text='iRacing credentials saved securely (OS keyring)')
         self.after(3000, lambda: self._status_lbl.configure(text=''))
 
@@ -5729,63 +5735,17 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         threading.Thread(target=_worker, daemon=True).start()
 
     def _fetch_iracing_schedule(self, email: str, password: str) -> list:
-        """Authenticate with iRacing Data API and fetch current season schedule."""
-        import requests
-        import hashlib
-        import base64
-
-        pw_hash = base64.b64encode(
-            hashlib.sha256(
-                (password + email.lower()).encode('utf-8')
-            ).digest()
-        ).decode('utf-8')
-
-        session = requests.Session()
-        session.headers.update({
-            'User-Agent': 'OptimalSector/3.11',
-            'Content-Type': 'application/json',
-        })
-
-        auth_resp = session.post(
-            'https://members-ng.iracing.com/auth',
-            json={'email': email, 'password': pw_hash},
-            timeout=15)
-        if auth_resp.status_code != 200:
-            raise ConnectionError(
-                f'iRacing auth failed ({auth_resp.status_code}). '
-                f'Check email and password.')
-        auth_data = auth_resp.json()
-        if not auth_data.get('authcode'):
-            raise ConnectionError(
-                'iRacing auth failed: ' +
-                auth_data.get('message', 'unknown error'))
-
-        sched_resp = session.get(
-            'https://members-ng.iracing.com/data/series/seasons',
-            timeout=15)
-        if sched_resp.status_code != 200:
-            raise ConnectionError(
-                f'Schedule fetch failed ({sched_resp.status_code})')
-
-        sched_data = sched_resp.json()
-        if 'link' in sched_data:
-            sched_data = session.get(sched_data['link'], timeout=15).json()
-
-        results = []
-        for series in (sched_data if isinstance(sched_data, list) else []):
-            try:
-                for week in series.get('schedules', []):
-                    track_info = week.get('track', {})
-                    results.append({
-                        'series_name':   series.get('series_name', ''),
-                        'car_class_name': series.get('car_class_name', ''),
-                        'track_name':    track_info.get('track_name', ''),
-                        'config_name':   track_info.get('config_name', ''),
-                        'race_week_num': week.get('race_week_num', 0),
-                    })
-            except Exception:
-                continue
-        return results
+        """
+        Fetch current season schedule via iracingdataapi.
+        email/password kept as params for interface compat — credentials
+        are read from OS keyring by iracing_client internally.
+        """
+        from core.iracing_client import get_ir_client, IRacingClientError
+        try:
+            client = get_ir_client()
+            return client.current_seasons_schedule()
+        except IRacingClientError as e:
+            raise ConnectionError(str(e))
 
     def _render_weekly_prep(self, schedule: list, error: str):
         """Render weekly prep cards."""
@@ -5907,57 +5867,46 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             def _fetch_lb(sid=series_id, bl=your_best,
                           sl=lb_status, dl=lb_data_lbl):
                 sl.configure(text="⏳ Loading…")
-                email = self.cfg.get("iracing_email", "").strip()
-                pw    = self.cfg.get("iracing_password", "")
-                if not email or not pw:
+                # Credentials come from OS keyring via iracing_client
+                from core.config import get_iracing_credentials
+                _e, _p = get_iracing_credentials()
+                if not _e or not _p:
                     sl.configure(text="Add iRacing credentials above")
                     return
                 def _worker():
                     try:
-                        import requests, hashlib, base64
-                        pw_h = base64.b64encode(
-                            hashlib.sha256(
-                                (pw + email.lower()).encode()).digest()
-                        ).decode()
-                        sess = requests.Session()
-                        sess.headers["Content-Type"] = "application/json"
-                        auth = sess.post(
-                            "https://members-ng.iracing.com/auth",
-                            json={"email": email, "password": pw_h},
-                            timeout=10)
-                        if auth.status_code != 200:
-                            raise ConnectionError("Auth failed")
-                        lb_resp = sess.get(
-                            "https://members-ng.iracing.com/data/results/season_results",
-                            params={"season_id": sid}, timeout=10)
-                        if lb_resp.status_code == 200:
-                            lb_json = lb_resp.json()
-                            if "link" in lb_json:
-                                lb_json = sess.get(lb_json["link"], timeout=10).json()
-                            results = lb_json if isinstance(lb_json, list) \
-                                else lb_json.get("results", [])
-                            lines = []
-                            for i, r in enumerate(results[:5]):
-                                name = (r.get("driver_name") or
-                                        r.get("display_name") or
-                                        f"P{i+1}")[:20]
-                                raw = r.get("best_lap_time", 0)
-                                if raw > 0:
-                                    lap = format_laptime(raw / 10000)
-                                    gap = ""
-                                    if bl > 0:
-                                        diff = bl - raw / 10000
-                                        gap = f" ({diff:+.3f}s vs you)"
-                                    lines.append(f"P{i+1} {name}: {lap}{gap}")
-                            if lines:
-                                txt = "  |  ".join(lines[:3])
-                                def _show(t=txt):
-                                    dl.configure(text=t)
-                                    dl.pack(anchor="w", padx=10, pady=(0, 6))
-                                    sl.configure(text="✅")
-                                self.after(0, _show)
-                                return
-                        self.after(0, lambda: sl.configure(text="No data"))
+                        from core.iracing_client import get_ir_client, IRacingClientError
+                        ir = get_ir_client()
+                        # Try qual results first (best lap times), fall back to standings
+                        try:
+                            entries = ir.season_qual_results(season_id=sid)
+                        except Exception:
+                            entries = ir.season_driver_standings(season_id=sid)
+
+                        if not entries:
+                            self.after(0, lambda: sl.configure(text="No data"))
+                            return
+
+                        lines = []
+                        for entry in entries[:5]:
+                            name  = str(entry.get('display_name', 'Unknown'))[:20]
+                            raw   = entry.get('best_lap_time', 0)
+                            if raw > 0:
+                                lap = format_laptime(raw / 10000)
+                                gap = ""
+                                if bl > 0:
+                                    diff = bl - raw / 10000
+                                    gap = f" ({diff:+.3f}s vs you)"
+                                lines.append(f"P{entry.get('position','-')} {name}: {lap}{gap}")
+                        if lines:
+                            txt = "  |  ".join(lines[:3])
+                            def _show(t=txt):
+                                dl.configure(text=t)
+                                dl.pack(anchor="w", padx=10, pady=(0, 6))
+                                sl.configure(text="✅")
+                            self.after(0, _show)
+                        else:
+                            self.after(0, lambda: sl.configure(text="No lap data"))
                     except Exception as ex:
                         logger.warning('Leaderboard fetch error: %s', ex)
                         self.after(0, lambda:

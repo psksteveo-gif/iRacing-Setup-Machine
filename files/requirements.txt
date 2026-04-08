@@ -8,6 +8,8 @@ anthropic>=0.28.0,<2.0     # >=0.28 required for prompt caching beta support
 keyring>=25.0.0             # OS keyring for secure credential storage
 requests>=2.31.0            # iRacing Data API (Weekly Prep), leaderboard
 cryptography>=41.0.0        # Fernet AES config encryption (GDPR Art. 32)
+iracingdataapi>=1.4.2       # iRacing Data API wrapper (replaces manual auth)
+pydantic>=2.0.0             # required by iracingdataapi
 
 # UI / visualisation
 matplotlib>=3.7.0,<4.0
