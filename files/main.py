@@ -7730,6 +7730,16 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         lbl(ctrl, "Fuel ±%:", color=DIM).pack(side='left', padx=(6, 4))
         self._strat_fvar = ctk.CTkEntry(ctrl, width=44, fg_color=CARD); self._strat_fvar.pack(side='left', padx=4)
         self._strat_fvar.insert(0, "10")
+        lbl(ctrl, "Weather:", color=DIM).pack(side='left', padx=(8, 4))
+        self._strat_weather_var = ctk.StringVar(value='Current')
+        ctk.CTkOptionMenu(ctrl, variable=self._strat_weather_var,
+                          values=['Current', 'Dry Optimal', 'Cold (<15°C)',
+                                  'Hot (>42°C)', 'Damp', 'Wet'],
+                          width=100, height=26,
+                          fg_color=CARD, button_color=CARD,
+                          button_hover_color=BLUE,
+                          font=ctk.CTkFont(size=11)
+                          ).pack(side='left', padx=(0, 6))
         ctk.CTkButton(ctrl, text="Calculate", width=100, fg_color=ACCENT,
                        hover_color="#C04A10", command=self._calc_strategy).pack(side='left', padx=8)
         ctk.CTkButton(ctrl, text="📚 From DB", width=90, fg_color=CARD,
@@ -7781,8 +7791,56 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         if self.cur_stint and self.cur_stint.deg_rate > 0:
             deg = self.cur_stint.deg_rate
             cliff = self.cur_stint.cliff_lap
+
+        # Weather-aware deg rate adjustment
+        weather_choice = getattr(self, '_strat_weather_var', None)
+        weather_label  = weather_choice.get() if weather_choice else 'Current'
+        weather_note   = ''
+        try:
+            from core.weather_engine import WeatherConditions, WeatherEngine
+            # Map dropdown to synthetic WeatherConditions
+            _cond_map = {
+                'Current':    self.cur_data.session_info if self.cur_data else {},
+                'Dry Optimal':{'air_temp_c': 20, 'track_temp_c': 30},
+                'Cold (<15°C)':{'air_temp_c': 8,  'track_temp_c': 12},
+                'Hot (>42°C)': {'air_temp_c': 38, 'track_temp_c': 48},
+                'Damp':        {'air_temp_c': 18, 'track_temp_c': 18,
+                               'track_wetness': 1, 'weather_type': 'Damp'},
+                'Wet':         {'air_temp_c': 16, 'track_temp_c': 16,
+                               'track_wetness': 2, 'weather_type': 'Wet'},
+            }
+            _si = _cond_map.get(weather_label, {})
+            _wc = WeatherConditions.from_session_info(_si)
+            _wr = WeatherEngine(_wc)
+            grip = _wr.mechanical_grip_factor()
+            # Deg rate scales inversely with grip: less grip = harder on tires
+            # Cold: harder to warm tires = higher initial deg, then less
+            # Hot: rubber degrades faster = higher deg rate overall
+            # Wet: deg rate irrelevant (no tire life concern in rain)
+            if _wc.is_wet:
+                deg_modifier = 0.3   # wet tires effectively don't degrade same way
+                weather_note = f'Wet — tire deg largely irrelevant (run to end)'
+            elif _wc.track_condition.value == 'dry_hot':
+                deg_modifier = 1.35  # 35% worse deg in heat
+                weather_note = f'Hot track ({_wc.track_temp_c:.0f}°C) — deg +35%'
+            elif _wc.track_condition.value == 'dry_cold':
+                deg_modifier = 0.85  # slightly lower absolute deg (tires run cooler)
+                weather_note = f'Cold track ({_wc.track_temp_c:.0f}°C) — deg −15%'
+            elif _wc.track_condition.value == 'damp':
+                deg_modifier = 0.5
+                weather_note = 'Damp — deg −50% (less heat in tires)'
+            else:
+                deg_modifier = 1.0
+                weather_note = f'{weather_label} conditions'
+            deg   = deg * deg_modifier
+            cliff = int(cliff / max(0.5, deg_modifier))  # cliff moves with deg rate
+        except Exception:
+            pass
+
         report = calculate_strategy(race_laps, fpl, tank, base, deg, cliff)
-        self._render_strategy(report, sc_pct=sc_pct, fvar_pct=fvar_pct, race_laps=race_laps, base=base, fpl=fpl)
+        self._render_strategy(report, sc_pct=sc_pct, fvar_pct=fvar_pct,
+                              race_laps=race_laps, base=base, fpl=fpl,
+                              weather_note=weather_note)
         # Update DB info label with what was used
         self._update_strat_db_label(fpl)
 
@@ -7841,11 +7899,25 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             "safety car contingency, and 2-3 key decision laps. Be specific and quantitative. "
             "Max 220 words."
         )
+        # Add weather context to AI strategy
+        _wx_ctx = ''
+        try:
+            from core.weather_engine import WeatherConditions, WeatherEngine
+            _si = self.cur_data.session_info if self.cur_data else {}
+            _wc = WeatherConditions.from_session_info(_si)
+            _wr = WeatherEngine(_wc).condition_report()
+            _wx_ctx = (f"Track condition: {_wr['condition'].replace('_',' ')} | "
+                       f"Grip: {_wr['grip_factor']:.0%} | "
+                       f"Track {_wc.track_temp_c:.0f}°C | "
+                       f"Time of day: {_wr['time_of_day'].replace('_',' ')}")
+        except Exception:
+            pass
         prompt = (
             f"Car: {car}  |  Track: {trk}\n"
             f"Race: {race_laps} laps  |  Base lap: {base:.2f}s  |  Fuel/lap: {fpl:.3f}L  |  Tank: {tank:.0f}L\n"
-            f"Tire deg: {deg:.3f}s/lap  |  Cliff lap: {cliff}  |  SC probability: {sc_pct:.0f}%\n\n"
-            "Give me the optimal race strategy."
+            f"Tire deg: {deg:.3f}s/lap  |  Cliff lap: {cliff}  |  SC probability: {sc_pct:.0f}%\n"
+            + (f"Weather: {_wx_ctx}\n" if _wx_ctx else "") +
+            "\nGive me the optimal race strategy."
         )
         # Show AI text box (created lazily)
         if not hasattr(self, '_strat_ai_txt'):
@@ -7949,9 +8021,19 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
 
     def _render_strategy(self, report: StrategyReport, sc_pct: float = 0.0,
                          fvar_pct: float = 10.0, race_laps: int = 0,
-                         base: float = 0.0, fpl: float = 0.0):
+                         base: float = 0.0, fpl: float = 0.0,
+                         weather_note: str = ''):
         try: self._ph_strat.pack_forget()
         except Exception as e: logger.debug("pack_forget ph_strat: %s", e)
+
+        # Weather condition banner if active
+        if weather_note:
+            if not hasattr(self, '_strat_wx_lbl'):
+                self._strat_wx_lbl = lbl(self._strat_sc,
+                    '', 10, color=BLUE)
+                self._strat_wx_lbl.pack(anchor='w', pady=(0, 2))
+            self._strat_wx_lbl.configure(
+                text=f'🌡  Weather scenario: {weather_note}')
         # Chart: lap time prediction across stints
         c = self._strat_chart; c.clear()
         title = "Predicted Lap Times by Stint"

@@ -934,3 +934,42 @@ Returns `dict[param → {current, recommended, delta, reason, condition}]`.
 - Full context string fed into AI debrief prompt — AI can now say
   "You found 0.3s over the session — the car is working into a good window"
   or flag degradation as a tire/setup issue
+
+---
+
+## [3.22.0] - 2026-04-08 | Weather-Aware Tire Strategy Predictor
+
+### Strategy Tab — Weather Condition Scenarios
+
+**Weather dropdown added to strategy controls:**
+- Options: Current (from loaded IBT), Dry Optimal, Cold (<15°C), Hot (>42°C),
+  Damp, Wet
+- "Current" reads `session_info` from the loaded IBT via WeatherEngine
+- Other options use synthetic WeatherConditions with representative temps
+
+**Deg rate modifiers per condition:**
+| Condition | Deg modifier | Cliff adjustment | Rationale |
+|---|---|---|---|
+| Dry Optimal (20°C) | ×1.0 | baseline | Calibration baseline |
+| Cold (<15°C) | ×0.85 | longer | Tires run cooler, less thermal deg |
+| Hot (>42°C) | ×1.35 | shorter | Rubber degrades faster in heat |
+| Damp | ×0.5 | longer | Less heat in tires, deg less relevant |
+| Wet | ×0.3 | n/a | Wet tire physics — deg largely irrelevant |
+
+Cliff lap recalculated: `cliff = int(base_cliff / max(0.5, deg_modifier))`
+e.g. Hot conditions move a 30-lap cliff to ~22 laps.
+
+**Weather scenario banner:**
+- Strategy results now show "🌡 Weather scenario: Hot track (48°C) — deg +35%"
+- Appears above the lap time chart when non-default scenario selected
+
+**AI Strategy prompt now includes weather context:**
+- Condition name, grip factor, track temp, time of day
+- AI can now say "Given hot conditions, pit 5 laps earlier than normal"
+
+### All weather features summary (3.17 → 3.22):
+- 3.17: WeatherEngine physics core + setup delta adjustments
+- 3.18: Session condition delta comparison + debrief weather context
+- 3.19: Weather in GDPR consent + privacy (not a feature but compliance)
+- 3.21: Wet setup overlay (complete philosophy-driven changes)
+- 3.22: Weather-aware tire strategy (deg rate × condition modifier)
