@@ -373,16 +373,28 @@ def _get_version() -> str:
 
 # ── Art. 7 — Consent record ───────────────────────────────────────────────────
 
-def record_consent(consent_type: str, granted: bool, cfg: dict) -> dict:
+def has_consent() -> bool:
+    """Return True if the user has already accepted the privacy consent dialog."""
+    from core.config import load_cfg
+    cfg = load_cfg()
+    records = cfg.get('consent_records', [])
+    return any(r.get('type') == 'gdpr' and r.get('granted') for r in records)
+
+
+def record_consent(learning_data: bool = False, driver_profile: bool = False) -> None:
     """
     Record a consent decision with timestamp (Art. 7(1) — demonstrability).
-    Stores in cfg['consent_records'] list.
+    Saves a 'gdpr' record to the config.
     """
+    from core.config import load_cfg, save_cfg
+    cfg = load_cfg()
     record = {
-        'type':      consent_type,
-        'granted':   granted,
-        'timestamp': datetime.now().isoformat(),
-        'version':   _get_version(),
+        'type':          'gdpr',
+        'granted':       True,
+        'learning_data': learning_data,
+        'driver_profile': driver_profile,
+        'timestamp':     datetime.now().isoformat(),
+        'version':       _get_version(),
     }
     if 'consent_records' not in cfg:
         cfg['consent_records'] = []
@@ -390,4 +402,4 @@ def record_consent(consent_type: str, granted: bool, cfg: dict) -> dict:
     # Cap at 100 records
     if len(cfg['consent_records']) > 100:
         cfg['consent_records'] = cfg['consent_records'][-100:]
-    return cfg
+    save_cfg(cfg)

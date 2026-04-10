@@ -1,6 +1,8 @@
 """Configuration management: API key storage, config file I/O."""
 
+from __future__ import annotations
 import json, logging, os
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +68,7 @@ def set_api_key(key: str):
         logger.warning("Failed to store API key in keyring: %s", e)
 
 
-def load_cfg():
+def load_cfg() -> dict[str, Any]:
     try:
         # Try encrypted config first
         try:
@@ -104,7 +106,7 @@ def load_cfg():
     return {"last_dir": ""}
 
 
-def save_cfg(c):
+def save_cfg(c: dict[str, Any]) -> None:
     """
     Save config to disk — NEVER writes sensitive credentials.
     Attempts encrypted save (Fernet AES-128). Falls back to plaintext JSON.

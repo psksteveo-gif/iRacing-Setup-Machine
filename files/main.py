@@ -12,6 +12,7 @@ import customtkinter as ctk
 from tkinter import filedialog, messagebox
 import threading, os, json, logging, logging.handlers, csv, traceback, time, re
 from datetime import datetime
+from typing import Any
 import numpy as np
 from version import VERSION, APP_NAME, COPYRIGHT, CHANGELOG
 from core.config import APP_DATA_DIR
@@ -499,7 +500,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         # Enable drag-and-drop if tkinterdnd2 is available
         if _HAS_DND:
             try:
-                TkinterDnD._require(self)
+                TkinterDnD._require(self)  # type: ignore[possibly-unbound]
             except Exception:
                 pass
         self.cfg=cfg
@@ -628,7 +629,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                           "Lap Times": "Dashboard", "Brake Trace": "Telemetry",
                           "Qualify": "Dashboard", "iRacing": "Dashboard"}
             saved_tab = _tab_remap.get(saved_tab, saved_tab)
-            try: self.tv.set(saved_tab)
+            try: self.tv.set(saved_tab or '')
             except Exception as e: logger.debug("Could not restore saved tab: %s", e)
         saved_chart = self.cfg.get('last_chart')
         if saved_chart and saved_chart in self.CDEFS:
@@ -704,7 +705,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         whether the changes helped — feeds the Setup Learning DB.
         """
         # Load pending outcomes from sidecar file (not config)
-        pending = []
+        pending: list[dict[str, Any]] = []
         try:
             import json as _json
             from pathlib import Path as _Path
@@ -956,7 +957,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         if self._live_monitor and self._live_monitor.is_running:
             self._live_monitor.stop()
         try:
-            self.cfg['geometry'] = self.geometry()
+            self.cfg['geometry'] = self.geometry() or ''
             self.cfg['last_tab'] = self.tv.get()
             self.cfg['last_chart'] = self._tv.get()
             save_cfg(self.cfg)
@@ -1098,8 +1099,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         # Register drag-and-drop on the entire window
         if _HAS_DND:
             try:
-                self.drop_target_register(DND_FILES)
-                self.dnd_bind('<<Drop>>', self._on_drop)
+                self.drop_target_register(DND_FILES)  # type: ignore[attr-defined, possibly-unbound]
+                self.dnd_bind('<<Drop>>', self._on_drop)  # type: ignore[attr-defined]
             except Exception:
                 pass
 
@@ -1216,7 +1217,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
     def _add_sess_card(self,data,rpt):
         self._no_sess.pack_forget()
         f=ctk.CTkFrame(self._sf,fg_color=CARD,corner_radius=7,cursor="hand2"); f.pack(fill='x',pady=3)
-        f._session_data = data
+        f._session_data = data  # type: ignore[attr-defined]
         lbl(f,data.car_name.replace('_',' ').title(),12,bold=True).pack(anchor='w',padx=8,pady=(6,0))
         lbl(f,data.track_name,12,color=DIM).pack(anchor='w',padx=8)
         lbl(f,f"Best: {format_laptime(rpt.best_lap)}",11,color=GREEN).pack(anchor='w',padx=8,pady=(2,0))
@@ -1243,7 +1244,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         """Highlight the sidebar card for the active session."""
         for w in self._sf.winfo_children():
             if isinstance(w, ctk.CTkFrame) and hasattr(w, '_session_data'):
-                w.configure(fg_color="#0A1020" if w._session_data is active_data else CARD)
+                w.configure(fg_color="#0A1020" if w._session_data is active_data else CARD)  # type: ignore[attr-defined]
 
     def _tabs(self,parent):
         self.tv=ctk.CTkTabview(parent,fg_color=DARK,
@@ -1465,9 +1466,10 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             lbl(col, nm, 13, bold=True, color=color).pack(pady=(8, 2))
             lbl(col, data.car_name, 11).pack()
             lbl(col, data.track_name, 10, color=DIM).pack()
-            lbl(col, f"Best: {format_laptime(rpt.best_lap)}", 14, bold=True, color=GREEN).pack(pady=4)
-            lbl(col, f"Avg: {format_laptime(rpt.avg_lap)}", 10, color=DIM).pack()
-            lbl(col, f"Issues: 🔴{rpt.critical_count}  🟡{rpt.warning_count}  🔵{rpt.info_count}", 10).pack(pady=(2, 8))
+            if rpt is not None:
+                lbl(col, f"Best: {format_laptime(rpt.best_lap)}", 14, bold=True, color=GREEN).pack(pady=4)
+                lbl(col, f"Avg: {format_laptime(rpt.avg_lap)}", 10, color=DIM).pack()
+                lbl(col, f"Issues: 🔴{rpt.critical_count}  🟡{rpt.warning_count}  🔵{rpt.info_count}", 10).pack(pady=(2, 8))
             si = data.session_info or {}
             if si.get('track_temp_c'):
                 lbl(col, f"Track {units.fmt_temp(si['track_temp_c'], 0)}  |  Air {units.fmt_temp(si.get('air_temp_c', 0), 0)}",
@@ -1542,7 +1544,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
 
             dist_a, spd_a = _best_speed_dist(da)
             dist_b, spd_b = _best_speed_dist(db)
-            if dist_a is None or dist_b is None:
+            if dist_a is None or dist_b is None or spd_a is None or spd_b is None:
                 return
             # Resample both onto uniform 500-point grid
             grid = np.linspace(0, 1, 500)
@@ -1564,8 +1566,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             ch = EmbedChart(parent, figsize=(10, 2.4)); ch.pack(fill='x', pady=(4, 2))
             ax = ch.std_ax("⏱ Time Delta Map (A vs B — green = A gaining, red = A losing)", xlabel="Track Position (%)")
             ax.axhline(0, color=DIM, lw=0.8, linestyle='--')
-            ax.fill_between(track_pct, cum_delta, 0, where=(cum_delta < 0), color=GREEN, alpha=0.45, label="A faster")
-            ax.fill_between(track_pct, cum_delta, 0, where=(cum_delta >= 0), color=RED,   alpha=0.45, label="B faster")
+            ax.fill_between(track_pct, cum_delta, 0, where=(cum_delta < 0).tolist(), color=GREEN, alpha=0.45, label="A faster")
+            ax.fill_between(track_pct, cum_delta, 0, where=(cum_delta >= 0).tolist(), color=RED,   alpha=0.45, label="B faster")
             ax.plot(track_pct, cum_delta, color='white', lw=1.0, alpha=0.6)
             final = cum_delta[-1]
             sign = "+" if final > 0 else ""
@@ -1967,7 +1969,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             return
         self._dash_ph.pack_forget(); self._dash_sc.pack(fill='both',expand=True)
         if getattr(self, '_onboarding_banner', None):
-            self._onboarding_banner.pack_forget()
+            self._onboarding_banner.pack_forget()  # type: ignore[union-attr]
             self._onboarding_banner = None
         for w in self._di.winfo_children(): w.destroy()
         car_class = classify_car(d.car_name)
@@ -2781,14 +2783,14 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             lbl(body, f"💡 {alert['recommendation']}", 11, color=BLUE,
                 wraplength=620, justify='left', anchor='w').pack(
                 fill='x', padx=8, pady=(0,6))
-            body._visible = False
+            body._visible = False  # type: ignore[attr-defined]
             def _toggle(b=body, h=hrow):
-                if b._visible:
+                if b._visible:  # type: ignore[attr-defined]
                     b.pack_forget()
-                    b._visible = False
+                    b._visible = False  # type: ignore[attr-defined]
                 else:
                     b.pack(fill='x')
-                    b._visible = True
+                    b._visible = True  # type: ignore[attr-defined]
             for w in [hrow] + list(hrow.winfo_children()):
                 w.bind('<Button-1>', lambda e, t=_toggle: t())
 
@@ -2807,8 +2809,11 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         """Show gear map overlay on the sector track map."""
         if not self.cur_data:
             return
+        _sec_map = getattr(self, '_sec_map', None)
+        if _sec_map is None:
+            return
         try:
-            self._sec_map.gear_overlay(
+            _sec_map.gear_overlay(
                 self.cur_data, lap_idx=0,
                 title="Gear Map — colour by gear at each track position")
         except Exception as e:
@@ -2818,9 +2823,12 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         """Start or stop the lap replay animation on the sector track map."""
         if not self.cur_data:
             return
+        _sec_map = getattr(self, '_sec_map', None)
+        if _sec_map is None:
+            return
         if getattr(self, '_sec_replay_running', False):
             try:
-                self._sec_map.stop_replay()
+                _sec_map.stop_replay()
             except Exception:
                 pass
             self._sec_replay_running = False
@@ -2829,7 +2837,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             self._sec_replay_running = True
             self._sec_replay_btn.configure(text="⏹ Stop", fg_color=RED)
             try:
-                self._sec_map.animate_replay(self.cur_data, lap_idx=0, speed_mult=10.0)
+                _sec_map.animate_replay(self.cur_data, lap_idx=0, speed_mult=10.0)
             except Exception as e:
                 logger.debug("Replay error: %s", e)
                 self._sec_replay_running = False
@@ -4136,7 +4144,9 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
 
         # ── Visual diff chart for numeric parameters ──────────────────────────
         def _to_num(s):
-            try: return float(_re.search(r'[-+]?\d*\.?\d+', str(s)).group())
+            try:
+                m = _re.search(r'[-+]?\d*\.?\d+', str(s))
+                return float(m.group()) if m else None
             except Exception: return None
 
         numeric = [(c['param'], _to_num(c['before']), _to_num(c['after']))
@@ -4162,9 +4172,9 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             b_vals = [t[2] for t in numeric]
             # Horizontal lollipop: line A→B + marker on each end
             for i, (av, bv) in enumerate(zip(a_vals, b_vals)):
-                ax.plot([av, bv], [i, i], color='#4a5a7a', lw=1.5, zorder=2)
-            ax.scatter(a_vals, y, color=RED,   s=40, zorder=3, label='A (before)')
-            ax.scatter(b_vals, y, color=GREEN, s=40, zorder=3, label='B (after)')
+                ax.plot([av, bv], [i, i], color='#4a5a7a', lw=1.5, zorder=2)  # type: ignore[arg-type]
+            ax.scatter(a_vals, y, color=RED,   s=40, zorder=3, label='A (before)')  # type: ignore[arg-type]
+            ax.scatter(b_vals, y, color=GREEN, s=40, zorder=3, label='B (after)')  # type: ignore[arg-type]
             ax.set_yticks(y); ax.set_yticklabels(labels, fontsize=7)
             ax.set_xlabel("Value", color=DIM, fontsize=8)
             ax.set_title("Numeric Changes (A → B)", color=TEXT, fontsize=10, pad=4)
@@ -4336,7 +4346,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             # Record consent with timestamp for GDPR Art. 7 demonstrability
             try:
                 from core.privacy import record_consent
-                self.cfg = record_consent('ai_recommendations', True, self.cfg)
+                record_consent(learning_data=True)
             except Exception:
                 pass
             save_cfg(self.cfg)
@@ -4500,7 +4510,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                     else get_ai_recommendations_stream
                 )
                 for chunk in stream_fn(
-                        self.cur_rpt, self.cur_data.car_name, self.cur_data.track_name, key,
+                        self.cur_rpt, self.cur_data.car_name, self.cur_data.track_name, key,  # type: ignore[arg-type]
                         setup_data=setup_flat,
                         sector_report=self.cur_sec,
                         style_report=self.cur_style,
@@ -4508,8 +4518,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                         session_info=self.cur_data.session_info,
                         best_report=self.cur_best,
                         corner_report=getattr(self, 'cur_corner_report', None),
-                        car_class_str=_ai_car_class,
-                        enrichment_notes=_enrichment_notes):
+                        car_class_str=_ai_car_class,  # type: ignore[call-arg]
+                        enrichment_notes=_enrichment_notes):  # type: ignore[call-arg]
                     if cancel.is_set():
                         return
                     self.after(0, lambda c=chunk: self._on_ai_chunk(c))
@@ -5049,9 +5059,13 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
 
         def worker():
             try:
-                for chunk in self._race_engineer.generate_evolution_summary(
-                        self.cur_data.car_name or "",
-                        self.cur_data.track_name or "",
+                _data = self.cur_data
+                _eng = self._race_engineer
+                if _data is None or _eng is None:
+                    return
+                for chunk in _eng.generate_evolution_summary(
+                        _data.car_name or "",
+                        _data.track_name or "",
                         key):
                     if cancel.is_set(): return
                     self.after(0, lambda c=chunk: self._on_ai_chunk(c))
@@ -5095,28 +5109,30 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self._ai_q_cancel = cancel
 
         def worker():
+            _data = self.cur_data
+            _rpt = self.cur_rpt
             setup_flat = self.cur_setup.flat if self.cur_setup else None
             try:
                 if self._race_engineer is not None:
                     stream_iter = self._race_engineer.ask_question_stream(
                         question,
-                        self.cur_rpt,
-                        self.cur_data.car_name if self.cur_data else "",
-                        self.cur_data.track_name if self.cur_data else "",
+                        _rpt,
+                        _data.car_name if _data else "",
+                        _data.track_name if _data else "",
                         key,
                         setup_data=setup_flat,
                         sector_report=self.cur_sec,
-                        session_info=self.cur_data.session_info if self.cur_data else None)
+                        session_info=_data.session_info if _data else None)
                 else:
                     stream_iter = ask_setup_question_stream(
                         question,
-                        self.cur_rpt,
-                        self.cur_data.car_name if self.cur_data else "",
-                        self.cur_data.track_name if self.cur_data else "",
+                        _rpt,  # type: ignore[arg-type]
+                        _data.car_name if _data else "",
+                        _data.track_name if _data else "",
                         key,
                         setup_data=setup_flat,
                         sector_report=self.cur_sec,
-                        session_info=self.cur_data.session_info if self.cur_data else None)
+                        session_info=_data.session_info if _data else None)
                 for chunk in stream_iter:
                     if cancel.is_set():
                         return
@@ -5242,11 +5258,15 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
 
         def worker():
             nonlocal response_acc
+            _data = self.cur_data
+            _rpt = self.cur_rpt
+            if _data is None or _rpt is None:
+                return
             try:
                 for chunk in ask_telemetry_agent(
-                        question, self.cur_data, self.cur_rpt, key,
-                        car_name=self.cur_data.car_name or "",
-                        track_name=self.cur_data.track_name or ""):
+                        question, _data, _rpt, key,
+                        car_name=_data.car_name or "",
+                        track_name=_data.track_name or ""):
                     if cancel.is_set():
                         return
                     response_acc += chunk
@@ -5422,18 +5442,22 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
 
         def worker():
             try:
+                _data = self.cur_data
+                _rpt = self.cur_rpt
+                if _data is None or _rpt is None:
+                    return
                 import anthropic as _ant
                 client = _ant.Anthropic(api_key=key)
                 ctx = [
-                    f"Car: {self.cur_data.car_name or 'Unknown'}",
-                    f"Track: {self.cur_data.track_name or 'Unknown'}",
-                    f"Best lap: {format_laptime(self.cur_rpt.best_lap)}",
-                    f"Avg lap: {format_laptime(self.cur_rpt.avg_lap)}",
-                    f"Lap time stddev: {float(np.std(self.cur_rpt.lap_times)):.3f}s",
+                    f"Car: {_data.car_name or 'Unknown'}",
+                    f"Track: {_data.track_name or 'Unknown'}",
+                    f"Best lap: {format_laptime(_rpt.best_lap)}",
+                    f"Avg lap: {format_laptime(_rpt.avg_lap)}",
+                    f"Lap time stddev: {float(np.std(_rpt.lap_times)):.3f}s",
                 ]
-                if self.cur_rpt.issues:
-                    crits = [i for i in self.cur_rpt.issues if i.severity.name == 'CRITICAL']
-                    warns = [i for i in self.cur_rpt.issues if i.severity.name == 'WARNING']
+                if _rpt.issues:
+                    crits = [i for i in _rpt.issues if i.severity.name == 'CRITICAL']
+                    warns = [i for i in _rpt.issues if i.severity.name == 'WARNING']
                     for iss in (crits + warns)[:6]:
                         ctx.append(f"Issue [{iss.severity.name}] {iss.title}: {iss.description[:120]}")
                 if self.cur_sec and self.cur_sec.sectors:
@@ -5441,7 +5465,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                         if s.best_time > 0 and s.avg_time > 0:
                             ctx.append(f"S{i+1}: best={s.best_time:.3f}s avg={s.avg_time:.3f}s loss={s.avg_time-s.best_time:.3f}s")
                     if self.cur_sec.theoretical_best > 0:
-                        ctx.append(f"Time on table vs theoretical best: +{self.cur_rpt.best_lap - self.cur_sec.theoretical_best:.3f}s")
+                        ctx.append(f"Time on table vs theoretical best: +{_rpt.best_lap - self.cur_sec.theoretical_best:.3f}s")
                     # Worst sector detail
                     ws = self.cur_sec.worst_sector
                     if ws is not None and ws < len(self.cur_sec.sectors):
@@ -5449,9 +5473,10 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                         ctx.append(f"Worst sector: S{ws+1} losing avg +{ws_obj.avg_time - ws_obj.best_time:.3f}s — focus here first")
 
                 # Corner analysis for sector loss location
-                if self.cur_corner_rpt and hasattr(self.cur_corner_rpt, 'corners'):
+                _corner_rpt = getattr(self, 'cur_corner_rpt', None)
+                if _corner_rpt and hasattr(_corner_rpt, 'corners'):
                     corner_losses = []
-                    for c in self.cur_corner_rpt.corners:
+                    for c in _corner_rpt.corners:
                         if hasattr(c, 'time_loss_s') and c.time_loss_s > 0.05:
                             corner_losses.append(
                                 f"Turn {c.name or c.number}: −{c.time_loss_s:.3f}s "
@@ -5472,8 +5497,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 # Lap time progression — linear regression to detect trend
                 try:
                     import numpy as _np_dbf
-                    laps = self.cur_rpt.lap_times
-                    valid_mask = getattr(self.cur_rpt, 'valid_lap_mask', None)
+                    laps = _rpt.lap_times
+                    valid_mask = getattr(_rpt, 'valid_lap_mask', None)
                     if valid_mask and len(valid_mask) == len(laps):
                         laps = [t for t, v in zip(laps, valid_mask) if v]
                     if len(laps) >= 4:
@@ -5503,7 +5528,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 try:
                     from core.weather_engine import WeatherConditions, WeatherEngine
                     _wc = WeatherConditions.from_session_info(
-                        self.cur_data.session_info or {})
+                        _data.session_info or {})
                     _wr = WeatherEngine(_wc).condition_report()
                     ctx.append(
                         f"Track conditions: {_wr['condition'].replace('_',' ')} "
@@ -5585,17 +5610,21 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
 
         def worker():
             try:
+                _data = self.cur_data
+                _rpt = self.cur_rpt
+                if _data is None or _rpt is None:
+                    return
                 import anthropic as _ant
                 client = _ant.Anthropic(api_key=key)
                 ctx = [
-                    f"Car: {self.cur_data.car_name or 'Unknown'}",
-                    f"Track: {self.cur_data.track_name or 'Unknown'}",
-                    f"Best lap: {format_laptime(self.cur_rpt.best_lap)}",
+                    f"Car: {_data.car_name or 'Unknown'}",
+                    f"Track: {_data.track_name or 'Unknown'}",
+                    f"Best lap: {format_laptime(_rpt.best_lap)}",
                 ]
                 if self.cur_sec:
                     if self.cur_sec.theoretical_best > 0:
                         ctx.append(f"Theoretical best: {format_laptime(self.cur_sec.theoretical_best)}")
-                        ctx.append(f"Time on table: +{self.cur_rpt.best_lap - self.cur_sec.theoretical_best:.3f}s")
+                        ctx.append(f"Time on table: +{_rpt.best_lap - self.cur_sec.theoretical_best:.3f}s")
                     for i, s in enumerate(self.cur_sec.sectors):
                         if s.best_time > 0:
                             ctx.append(f"S{i+1}: best={s.best_time:.3f}s avg={s.avg_time:.3f}s")
@@ -5603,7 +5632,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                     ctx.append(f"Trail braking score: {self.cur_style.trail_braking_score:.0f}/100")
                     ctx.append(f"Oversteer management: {self.cur_style.oversteer_management:.0f}/100")
                     ctx.append(f"Brake consistency: {self.cur_style.brake_consistency:.0f}/100")
-                si = self.cur_data.session_info or {}
+                si = _data.session_info or {}
                 if si.get('track_temp_c'):
                     ctx.append(f"Track temp: {units.fmt_temp(si['track_temp_c'], 0)}")
                 system = (
@@ -5730,7 +5759,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             except Exception as ex:
                 schedule = None
                 err = str(ex)
-            self.after(0, lambda: self._render_weekly_prep(schedule, err))
+            self.after(0, lambda: self._render_weekly_prep(schedule, err))  # type: ignore[arg-type]
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -5983,7 +6012,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                     self.after(0, lambda: al.configure(
                         text="AI request failed — check API key in Settings"))
                 if pb: self.after(0, lambda:
-                    pb.configure(state="normal", text="✨ AI Race Prep"))
+                    pb.configure(state="normal", text="✨ AI Race Prep"))  # type: ignore[union-attr]
             threading.Thread(target=_stream, daemon=True).start()
 
         prep_btn = ctk.CTkButton(
@@ -7267,9 +7296,12 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         ctk.CTkFrame(win, fg_color=CARD, height=1).pack(fill='x', padx=24, pady=(10, 4))
         lbl(win, "Privacy", 12, bold=True, color=BLUE).pack(anchor='w', padx=24, pady=(4, 2))
 
-        from core.privacy import (learning_enabled, profile_enabled,
-                                   update_consent_preferences,
-                                   export_user_data, delete_all_user_data)
+        from core import privacy as _priv  # type: ignore[attr-defined]
+        learning_enabled = _priv.learning_enabled  # type: ignore[attr-defined]
+        profile_enabled = _priv.profile_enabled  # type: ignore[attr-defined]
+        update_consent_preferences = _priv.update_consent_preferences  # type: ignore[attr-defined]
+        export_user_data = _priv.export_user_data  # type: ignore[attr-defined]
+        delete_all_user_data = _priv.delete_all_user_data  # type: ignore[attr-defined]
 
         pv_row1 = ctk.CTkFrame(win, fg_color="transparent")
         pv_row1.pack(fill='x', padx=24, pady=2)
@@ -7452,7 +7484,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                     except Exception:
                         pass
                 generate_pdf_report(
-                    output_path=path, data=self.cur_data, report=self.cur_rpt,
+                    output_path=path, data=self.cur_data, report=self.cur_rpt,  # type: ignore[arg-type]
                     sector_report=self.cur_sec, best_report=self.cur_best,
                     tire_deg=self.cur_stint, driver_report=self.cur_style,
                     ai_text=self._ai_last_text,
@@ -7927,7 +7959,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
 
         def _speak():
             try:
-                import pyttsx3
+                import pyttsx3  # type: ignore[import-unresolved]
                 engine = pyttsx3.init()
                 engine.setProperty('rate', _tts_rate)
                 engine.setProperty('volume', volume)
@@ -8346,7 +8378,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             fig_ax.set_title("Tire Temp & Fuel Consumption Trend", color=TEXT, fontsize=10, pad=3)
             lines1, lbls1 = fig_ax.get_legend_handles_labels()
             if has_fuel:
-                lines2, lbls2 = ax_f.get_legend_handles_labels()
+                lines2, lbls2 = ax_f.get_legend_handles_labels()  # type: ignore[possibly-unbound]
                 lines1 += lines2; lbls1 += lbls2
             fig_ax.legend(lines1, lbls1, fontsize=8, facecolor='#14141A',
                           edgecolor='#1A1A22', labelcolor=TEXT)
@@ -8550,12 +8582,12 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         #   5 Confidence   : green = high
 
         _CMAPS = [
-            plt.cm.RdYlGn_r,   # Lap Time: red=high cost
-            plt.cm.RdYlGn,     # Corner Speed: green=good
-            plt.cm.RdYlGn,     # Straight Speed
-            plt.cm.RdYlBu_r,   # Balance: orange=OS, blue=US
-            plt.cm.RdYlGn_r,   # Tire Wear: red=more wear
-            plt.cm.RdYlGn,     # Confidence: green=high
+            plt.colormaps['RdYlGn_r'],   # Lap Time: red=high cost
+            plt.colormaps['RdYlGn'],     # Corner Speed: green=good
+            plt.colormaps['RdYlGn'],     # Straight Speed
+            plt.colormaps['RdYlBu_r'],   # Balance: orange=OS, blue=US
+            plt.colormaps['RdYlGn_r'],   # Tire Wear: red=more wear
+            plt.colormaps['RdYlGn'],     # Confidence: green=high
         ]
 
         _BAL_LABELS = {1.0: 'OS', -1.0: 'US', 0.0: '—'}
@@ -8567,7 +8599,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 v = norm[i, j]  # -1 to 1
                 raw = matrix[i, j]
                 rgba = cmap((v + 1.0) / 2.0)
-                rect = plt.Rectangle([j - 0.5, i - 0.5], 1, 1, color=rgba, zorder=1)
+                rect = matplotlib.patches.Rectangle((j - 0.5, i - 0.5), 1, 1, color=rgba, zorder=1)
                 ax.add_patch(rect)
 
                 # Cell annotation
@@ -8907,7 +8939,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         def worker():
             try:
                 for chunk in generate_tech_legal_setup_stream(
-                        report=self.cur_rpt,
+                        report=self.cur_rpt,  # type: ignore[arg-type]
                         car_name=self.cur_data.car_name if self.cur_data else "Unknown",
                         track_name=self.cur_data.track_name if self.cur_data else "Unknown",
                         api_key=key,
@@ -9400,8 +9432,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             return
         try:
             self._file_watcher = FileWatcher(
-                on_new_telemetry=lambda p: self.after(0, lambda: self._on_new_ibt_detected(p)),
-                on_new_setup=lambda p: self.after(0, lambda: self._auto_load_setup(p)),
+                on_new_telemetry=lambda p: (self.after(0, lambda: self._on_new_ibt_detected(p)), None)[-1],
+                on_new_setup=lambda p: (self.after(0, lambda: self._auto_load_setup(p)), None)[-1],
             )
             self._file_watcher.start()
             logger.info("File watcher auto-started")
@@ -9417,8 +9449,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             self.after(3000, lambda: self._status_lbl.configure(text=""))
         else:
             self._file_watcher = FileWatcher(
-                on_new_telemetry=lambda p: self.after(0, lambda: self._on_new_ibt_detected(p)),
-                on_new_setup=lambda p: self.after(0, lambda: self._auto_load_setup(p)),
+                on_new_telemetry=lambda p: (self.after(0, lambda: self._on_new_ibt_detected(p)), None)[-1],
+                on_new_setup=lambda p: (self.after(0, lambda: self._auto_load_setup(p)), None)[-1],
             )
             self._file_watcher.start()
             self._status_lbl.configure(text="👁 Watching for new files…")
@@ -9517,7 +9549,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             if self._live_monitor is None:
                 self._live_monitor = LiveTelemetryMonitor(poll_hz=10.0)
                 self._live_monitor.add_callback(
-                    lambda s: self.after(0, lambda sample=s: self._on_live_sample(sample)))
+                    lambda s: (self.after(0, lambda sample=s: self._on_live_sample(sample)), None)[-1])
                 self._live_monitor.start()
                 self._status_lbl.configure(text="🔴 Live — waiting for iRacing…")
             self._obs_overlay._monitor = self._live_monitor
@@ -9550,7 +9582,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             self.after(3000, lambda: self._status_lbl.configure(text=""))
         else:
             self._live_monitor = LiveTelemetryMonitor(poll_hz=10.0)
-            self._live_monitor.add_callback(lambda s: self.after(0, lambda sample=s: self._on_live_sample(sample)))
+            self._live_monitor.add_callback(lambda s: (self.after(0, lambda sample=s: self._on_live_sample(sample)), None)[-1])
             self._live_monitor.start()
             self._status_lbl.configure(text="🔴 Live — waiting for iRacing…")
             self._open_live_window()
@@ -9560,7 +9592,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         if self._live_win and self._live_win.winfo_exists():
             self._live_win.lift(); return
 
-        win = ctk.CTkToplevel(self)
+        win: Any = ctk.CTkToplevel(self)
         win.title("🔴  Live Telemetry Dashboard")
         win.geometry("520x560")
         win.configure(fg_color=DARK)
@@ -9702,7 +9734,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
 
         if self._live_win is None or not self._live_win.winfo_exists():
             return
-        win = self._live_win
+        win: Any = self._live_win
 
         # Throttle dashboard widget updates to ~4Hz (every 3rd sample at 10Hz poll)
         # Speed/gear/throttle update at full rate; lap times and tire data at 4Hz
@@ -9841,6 +9873,26 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 args=(car, track, api_key),
                 daemon=True,
             ).start()
+
+    def _run_presession_briefing(self, car: str, track: str, api_key: str) -> None:
+        """Generate and speak a pre-session briefing via AI (runs in background thread)."""
+        try:
+            import anthropic as _ant
+            client = _ant.Anthropic(api_key=api_key)
+            prompt = (
+                f"You are Steven, an elite racing engineer. Give a brief 2-3 sentence "
+                f"pre-session briefing for {car} at {track}. "
+                f"Focus on key corners, braking zones, and setup considerations."
+            )
+            resp = client.messages.create(
+                model="claude-sonnet-4-20250514", max_tokens=200,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = getattr(resp.content[0], 'text', '') if resp.content else ""
+            if text:
+                self.after(0, lambda: self._speak_text(text))
+        except Exception as e:
+            logger.debug("Pre-session briefing failed: %s", e)
 
     def _check_live_lap_complete(self, sample: LiveSample):
         """Detect a completed lap and trigger Steven coaching if active."""
@@ -10197,7 +10249,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             if focused == entry:
                 _btns[0].focus_set(); return
             try:
-                idx = _btns.index(focused)
+                idx = _btns.index(focused)  # type: ignore[arg-type]
             except ValueError:
                 _btns[0].focus_set(); return
             if event.keysym == "Down":
@@ -10224,6 +10276,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         if not self.cur_data or not self.cur_rpt:
             messagebox.showwarning("No Session", "Load a session first.")
             return
+        _data = self.cur_data
         cs = self._compute_consistency_score()
         summary = build_share_summary(
             self.cur_data, self.cur_rpt,
@@ -10244,7 +10297,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             path = filedialog.asksaveasfilename(
                 title="Export JSON", defaultextension=".json",
                 filetypes=[("JSON", "*.json")],
-                initialfile=f"share_{self.cur_data.car_name}_{datetime.now():%Y%m%d_%H%M}.json")
+                initialfile=f"share_{_data.car_name}_{datetime.now():%Y%m%d_%H%M}.json")
             if path:
                 export_json(summary, path)
                 messagebox.showinfo("Exported", f"Saved to:\n{path}")
@@ -10362,7 +10415,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                 rpt=self.engine.analyze(data)
                 if cancel.is_set(): return
                 self.after(0, lambda: self._status_lbl.configure(text="⏳ Analyzing sectors…"))
-                sec=SectorAnalyzer().analyze(data,3,sector_splits=data.session_info.get('iracing_sector_splits'))
+                sec=SectorAnalyzer().analyze(data,3,sector_splits=data.session_info.get('iracing_sector_splits') or [])
                 best=BestLapAnalyzer().analyze(data)
                 self.after(0, lambda: self._status_lbl.configure(text="⏳ Analyzing stints…"))
                 stint=StintAnalyzer().analyze(data)
@@ -10517,7 +10570,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             else:
                 _mask = None
             self.cur_enrichments = enrich_session(
-                session_info_str=_si,
+                session_info_str=_si,  # type: ignore[arg-type]
                 channels=_channels,
                 car_name=data.car_name or '',
                 flying_laps=_laps,
@@ -10739,18 +10792,20 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self._status_lbl.configure(text="")
         # Update race engineer driver profile in background
         if self.cur_rpt and self.cur_data:
+            _cd = self.cur_data
+            _cr = self.cur_rpt
             def _update_profile():
                 try:
-                    car_class = classify_car(self.cur_data.car_name) if self.cur_data.car_name else "default"
+                    car_class = classify_car(_cd.car_name) if _cd.car_name else "default"
                     self._profile_mgr.update_from_session(
                         self._driver_profile,
-                        self.cur_rpt,
+                        _cr,
                         style_report=style,
                         stint_report=stint,
                         corner_report=getattr(self, 'cur_corner_report', None),
-                        car_name=self.cur_data.car_name or "",
-                        track_name=self.cur_data.track_name or "",
-                        car_class=car_class,
+                        car_name=_cd.car_name or "",
+                        track_name=_cd.track_name or "",
+                        car_class=str(car_class),
                     )
                     self._profile_mgr.save(self._driver_profile)
                     if self._driver_profile.persona_unlocked and self._race_engineer is None:
