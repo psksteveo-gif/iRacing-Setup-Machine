@@ -3170,6 +3170,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self._sec_replay_btn = ctk.CTkButton(ctrl, text="▶ Replay", width=80, height=28,
             fg_color=CARD, hover_color=GREEN, command=self._toggle_sec_replay)
         self._sec_replay_btn.pack(side='left', padx=4)
+        _Tooltip(self._sec_replay_btn, "Animate a lap through each sector to see where time is gained or lost.")
         self._sec_replay_running = False
         self._secsc=ctk.CTkScrollableFrame(tab,fg_color="transparent")
         self._secsc.pack(fill='both',expand=True,padx=10,pady=(4,8))
@@ -4268,6 +4269,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             font=ctk.CTkFont(size=12), text_color=DIM,
             command=self._get_evolution_summary)
         self._ai_evo_btn.pack(side='left', padx=(0, 6))
+        _Tooltip(self._ai_evo_btn, "Summarize how your setup and lap times have evolved across recent sessions.")
 
         self._ai_flow_btn = ctk.CTkButton(hdr_right, text="🎯 Coaching Flow", width=130, height=30,
             fg_color="#1A2A1A", hover_color="#2ECC71",
@@ -4339,6 +4341,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             font=ctk.CTkFont(size=13, weight="bold"),
             command=self._ask_setup_question)
         self._ai_qb.pack(side='right', padx=(0, 10), pady=8)
+        _Tooltip(self._ai_qb, "Send your typed question to the AI advisor about this session.")
 
     def _update_ai_stats_row(self):
         """Update the AI panel subtitle with issue count, track, and car."""
@@ -5263,6 +5266,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             fg_color=ACCENT, hover_color="#C04A10",
             command=self._agent_ask)
         self._agent_btn.pack(side='right', padx=(0, 8))
+        _Tooltip(self._agent_btn, "Ask the AI assistant a question about this session's telemetry.")
 
     def _agent_set_question(self, text: str):
         if hasattr(self, '_agent_entry'):
@@ -5434,6 +5438,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self._debrief_btn = ctk.CTkButton(hdr, text="▶ Run Debrief", width=130, height=32,
             fg_color=ACCENT, hover_color="#C04A10", command=self._run_debrief)
         self._debrief_btn.pack(side='right', padx=8)
+        _Tooltip(self._debrief_btn, "Generate a debrief of your three biggest time losses this session, ranked.")
         ctk.CTkButton(hdr, text="🔊 Read Aloud", width=110, height=32,
             fg_color=CARD, hover_color=BLUE,
             command=lambda: self._speak_text(
@@ -5619,6 +5624,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self._qual_opt_btn = ctk.CTkButton(hdr, text="▶ Optimize", width=120, height=32,
             fg_color=ACCENT, hover_color="#C04A10", command=self._run_qualifier)
         self._qual_opt_btn.pack(side='right', padx=8)
+        _Tooltip(self._qual_opt_btn, "Analyze a flying lap and find where to extract every last tenth for qualifying.")
         self._qual_opt_status = lbl(hdr, "", 10, color=DIM)
         self._qual_opt_status.pack(side='right', padx=6)
         desc = ctk.CTkFrame(tab, fg_color=CARD, corner_radius=6)
@@ -8715,6 +8721,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self._opt_btn = ctk.CTkButton(row2, text="Run Optimizer", width=140, fg_color=ACCENT,
                                       hover_color="#C04A10", command=self._run_optimizer)
         self._opt_btn.pack(side='left', padx=(0, 12))
+        _Tooltip(self._opt_btn, "Run the genetic setup optimizer for the configured number of generations.")
         self._opt_class_lbl = lbl(row2, "", 10, color=DIM)
         self._opt_class_lbl.pack(side='left', padx=(0, 12))
         self._opt_status = lbl(row2, "Load a session, then run the optimizer.", 11, color=DIM)
@@ -8872,6 +8879,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             fg_color=ACCENT, hover_color="#C04A10",
             command=self._run_ai_setup_builder)
         self._ai_setup_btn.pack(side='left', padx=(0, 12))
+        _Tooltip(self._ai_setup_btn, "Generate a complete, tech-legal setup from your telemetry and driving style.")
 
         lbl(crow, "Session:", color=DIM).pack(side='left', padx=(0, 4))
         self._ai_stint_mode = ctk.StringVar(value="Race")
@@ -8911,6 +8919,7 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             fg_color=GREEN, hover_color='#1a7a3a', state='disabled',
             command=self._save_ai_setup_to_iracing)
         self._ai_setup_save_btn.pack(side='left', padx=(0, 12))
+        _Tooltip(self._ai_setup_save_btn, "Save the generated setup as a reference card to enter in the iRacing Garage.")
 
         self._ai_setup_filename_var = ctk.StringVar(value="ai_setup")
         ctk.CTkEntry(save_inner, textvariable=self._ai_setup_filename_var,
