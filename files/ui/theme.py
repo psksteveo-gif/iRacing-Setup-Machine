@@ -45,11 +45,16 @@ def sec_lbl(parent, text):
     lbl(parent, text, 14, bold=True, color=PURPLE).pack(anchor='w', pady=(10, 2))
 
 def stat_blk(parent, label_text, val, color=TEXT, tooltip=None):
-    f = ctk.CTkFrame(parent, fg_color="transparent"); f.pack(side='left', padx=10)
-    l = lbl(f, label_text, 11, color=DIM); l.pack()
-    v = lbl(f, val, 15, bold=True, color=color); v.pack()
+    # Bordered "chip": dark fill, subtle border; label dim, value in its (semantic) color
+    f = ctk.CTkFrame(parent, fg_color="#14141A", corner_radius=6,
+                     border_width=1, border_color="#1E1E2A")
+    f.pack(side='left', padx=6, pady=2)
+    inner = ctk.CTkFrame(f, fg_color="transparent"); inner.pack(padx=10, pady=6)
+    l = lbl(inner, label_text, 11, color="#555566"); l.pack()
+    v = lbl(inner, val, 14, bold=True, color=color); v.pack()
     if tooltip:
         _Tooltip(f, tooltip)
+        _Tooltip(inner, tooltip)
     return f
 
 
