@@ -1,0 +1,25 @@
+# optimal_sector.mplstyle — Optimal Sector dark chart theme
+# NOTE: hex colors are written WITHOUT a leading '#' — in mplstyle files '#'
+# starts a comment, so '#08080A' would be parsed as an empty value.
+figure.facecolor   : 08080A
+axes.facecolor     : 0F0F13
+axes.edgecolor     : 1E1E2A
+axes.labelcolor    : AAAACC
+axes.grid          : True
+grid.color         : 1E1E2A
+grid.linewidth     : 0.6
+xtick.color        : 888899
+ytick.color        : 888899
+xtick.labelsize    : 9
+ytick.labelsize    : 9
+lines.linewidth    : 1.8
+lines.antialiased  : True
+text.color         : CCCCDD
+font.family        : sans-serif
+font.size          : 10
+axes.prop_cycle    : cycler('color', ['E8611A','4A9EE8','2ECC71','F1C40F','E74C3C','9B59B6'])
+patch.facecolor    : E8611A
+figure.dpi         : 100
+savefig.dpi        : 150
+savefig.facecolor  : 08080A
+savefig.edgecolor  : none

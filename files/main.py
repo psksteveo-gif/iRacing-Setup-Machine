@@ -23,6 +23,16 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
 import matplotlib.patches
 
+# Apply the Optimal Sector dark chart theme (colors, grid, prop_cycle, export DPI).
+# Per-axes facecolor overrides in the UI still win where set. Silent fallback if absent.
+try:
+    _MPLSTYLE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             'optimal_sector.mplstyle')
+    if os.path.exists(_MPLSTYLE):
+        plt.style.use(_MPLSTYLE)
+except Exception:
+    pass
+
 # Drag-and-drop support (optional)
 try:
     from tkinterdnd2 import TkinterDnD, DND_FILES
@@ -111,8 +121,9 @@ from core.setup_recommend     import (find_sto_files, score_sto_matches, copy_ba
 from ui.obs_overlay           import OBSOverlay
 
 # ── Theme ─────────────────────────────────────────────────────────────────────
+# Keep in sync with ui/ds_components.py — same color theme regardless of import order.
 ctk.set_appearance_mode("dark")
-ctk.set_default_color_theme("blue")
+ctk.set_default_color_theme("dark-blue")
 
 # ── Custom fonts ───────────────────────────────────────────────────────────────
 _FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "fonts")

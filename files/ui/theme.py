@@ -53,7 +53,105 @@ def stat_blk(parent, label_text, val, color=TEXT, tooltip=None):
     return f
 
 
+# ── Neon glow for charts (native, no external dependency) ───────────────────────
+# mplcyberpunk is incompatible with matplotlib ≥3.11 (it calls the removed
+# matplotlib.style.core API), so these reproduce its look. Names mirror it:
+# add_glow / add_underglow / add_glow_effects. All default to the current axes and
+# skip dashed guides.
+
+_GLOW_GID = '_os_glow_copy'  # marks halo copies so they aren't glowed/filled again
+
+
+def _iter_solid_lines(ax, max_points):
+    for line in list(ax.get_lines()):
+        if line.get_gid() == _GLOW_GID:
+            continue
+        if line.get_linestyle() not in ('-', 'solid'):
+            continue
+        x, y = line.get_data()
+        try:
+            n = len(x)
+        except TypeError:
+            continue
+        if n == 0 or n > max_points:
+            continue
+        yield line, x, y
+
+
+def add_glow(ax=None, n_glow=6, alpha=0.12, lw_step=1.3, max_points=6000):
+    """Neon glow halo behind every solid line on `ax` (mplcyberpunk make_lines_glow).
+    Glow copies are unlabelled (legends unaffected) and skip dashed guides."""
+    if ax is None:
+        ax = plt.gca()
+    for line, x, y in _iter_solid_lines(ax, max_points):
+        color = line.get_color()
+        base_lw = line.get_linewidth()
+        base_z = line.get_zorder()
+        for i in range(1, n_glow + 1):
+            ax.plot(x, y, color=color,
+                    linewidth=base_lw + lw_step * i,
+                    alpha=alpha * (1.0 - i / (n_glow + 1)),
+                    solid_capstyle='round',
+                    zorder=base_z - 0.1 * i, gid=_GLOW_GID)
+
+
+def add_underglow(ax=None, alpha=0.55, max_points=6000):
+    """Vertical gradient fill beneath every solid line (color → transparent),
+    clipped to the area under the line. Preserves the axis limits."""
+    if ax is None:
+        ax = plt.gca()
+    import numpy as np
+    import matplotlib.colors as mcolors
+    from matplotlib.patches import Polygon
+    xlim, ylim = ax.get_xlim(), ax.get_ylim()
+    for line, x, y in _iter_solid_lines(ax, max_points):
+        x = np.asarray(x, dtype=float); y = np.asarray(y, dtype=float)
+        rgb = mcolors.to_rgb(line.get_color())
+        z = np.empty((256, 1, 4), dtype=float)
+        z[:, :, :3] = rgb
+        z[:, :, -1] = np.linspace(0.0, alpha, 256)[:, None]
+        xmin, xmax = float(np.min(x)), float(np.max(x))
+        ymin, ymax = float(np.min(y)), float(np.max(y))
+        if xmax <= xmin or ymax <= ymin:
+            continue
+        im = ax.imshow(z, aspect='auto', origin='lower',
+                       extent=[xmin, xmax, ymin, ymax],
+                       zorder=line.get_zorder() - 0.05, alpha=1.0)
+        verts = np.column_stack([x, y])
+        verts = np.vstack([[xmin, ymin], verts, [xmax, ymin], [xmin, ymin]])
+        clip = Polygon(verts, closed=True, facecolor='none', edgecolor='none')
+        ax.add_patch(clip)
+        im.set_clip_path(clip)
+    ax.set_xlim(xlim); ax.set_ylim(ylim)
+
+
+def add_glow_effects(ax=None, max_points=6000):
+    """Full look: line glow + underglow gradient fill (mplcyberpunk add_glow_effects)."""
+    if ax is None:
+        ax = plt.gca()
+    add_glow(ax, max_points=max_points)
+    add_underglow(ax, max_points=max_points)
+
+
 class _Tooltip:
+    """Themed hover tooltip. Uses CTkToolTip when available (rounded, animated,
+    cursor-following) and falls back to the lightweight legacy tooltip otherwise.
+    Public API unchanged: _Tooltip(widget, text)."""
+    def __init__(self, widget, text):
+        try:
+            from CTkToolTip import CTkToolTip
+            # extra kwargs (text_color/wraplength/justify) are forwarded to the
+            # internal CTkLabel via **message_kwargs.
+            self._impl = CTkToolTip(
+                widget, message=text, delay=0.45, follow=True,
+                bg_color="#14141A", corner_radius=8,
+                border_width=1, border_color=CARD_BORDER, alpha=0.96,
+                text_color=TEXT, wraplength=320, justify="left")
+        except Exception:
+            self._impl = _LegacyTooltip(widget, text)
+
+
+class _LegacyTooltip:
     """Hover tooltip — appears after a short delay, disappears on mouse-out."""
     def __init__(self, widget, text):
         self.widget = widget
@@ -110,14 +208,45 @@ class _Tooltip:
 
 
 class EmbedChart(ctk.CTkFrame):
-    def __init__(self, parent, figsize=(9, 3), **kw):
+    def __init__(self, parent, figsize=(9, 3), responsive=True, **kw):
         super().__init__(parent, fg_color=PANEL, **kw)
         self.fig = Figure(figsize=figsize, facecolor='#0F0F13')
         self.canvas = FigureCanvasTkAgg(self.fig, master=self)
-        self.canvas.get_tk_widget().pack(fill='both', expand=True)
+        self._tkc = self.canvas.get_tk_widget()
+        self._tkc.pack(fill='both', expand=True)
+        # Responsive layout: matplotlib's Tk backend resizes the figure but never
+        # re-runs tight_layout, so subplot positions go stale on resize. Reflow once
+        # the resize settles. Debounced; add='+' appends to the backend's handler.
+        self._resize_job = None
+        self._last_wh = (0, 0)
+        if responsive:
+            self._tkc.bind('<Configure>', self._on_configure, add='+')
+
+    def _on_configure(self, event):
+        if abs(event.width - self._last_wh[0]) < 6 and abs(event.height - self._last_wh[1]) < 6:
+            return
+        self._last_wh = (event.width, event.height)
+        if self._resize_job is not None:
+            try: self.after_cancel(self._resize_job)
+            except Exception: pass
+        self._resize_job = self.after(120, self._reflow)
+
+    def _reflow(self):
+        self._resize_job = None
+        if not self.fig.axes:
+            return
+        try:
+            self.fig.tight_layout()
+        except Exception:
+            pass
+        self.canvas.draw_idle()
+
     def clear(self): self.fig.clear()
     def draw(self): self.canvas.draw()
     def destroy(self):
+        if self._resize_job is not None:
+            try: self.after_cancel(self._resize_job)
+            except Exception: pass
         plt.close(self.fig)
         super().destroy()
     def std_ax(self, title="", xlabel="Track %"):
