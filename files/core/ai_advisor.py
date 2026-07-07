@@ -828,6 +828,87 @@ def generate_setup_brief_stream(
     except Exception as e:
         yield f'Brief generation failed: {e}'
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LOCAL (OLLAMA) BACKEND — offline driver brief, no API key, nothing leaves the PC
+# ─────────────────────────────────────────────────────────────────────────────
+
+_OLLAMA_HOST = "http://localhost:11434"
+# Preference order when the user hasn't pinned a model — small, open, CPU-friendly.
+_OLLAMA_PREFERRED = ("nemotron-3-nano", "nemotron", "llama3.2", "qwen2.5", "phi")
+
+
+def ollama_status(host: str = _OLLAMA_HOST, timeout: float = 1.5):
+    """Probe a local Ollama server. Returns (available: bool, models: list[str]).
+    Never raises — a down/absent server just returns (False, [])."""
+    try:
+        import urllib.request
+        import json
+        url = host.rstrip('/') + "/api/tags"
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            data = json.loads(r.read().decode('utf-8'))
+        models = [m.get('name', '') for m in data.get('models', []) if m.get('name')]
+        return True, models
+    except Exception:
+        return False, []
+
+
+def pick_ollama_model(models, preferred: str = "") -> str:
+    """Choose the best available Ollama model: an explicit pick, then a known
+    small model, then whatever is installed first."""
+    if not models:
+        return ""
+    if preferred and preferred in models:
+        return preferred
+    for pref in _OLLAMA_PREFERRED:
+        for m in models:
+            if m.lower().startswith(pref):
+                return m
+    return models[0]
+
+
+def stream_setup_brief_ollama(brief_prompt: str, model: str,
+                              host: str = _OLLAMA_HOST):
+    """Stream a driver brief from a local Ollama model (e.g. nemotron-3-nano:4b).
+    Same deterministic ``brief_prompt`` as the Claude path (SetupResult.driver_brief)
+    — only the backend differs. Runs fully offline; stdlib only."""
+    if not brief_prompt or not brief_prompt.strip():
+        return
+    if not model:
+        yield ("No local model found. Install Ollama (ollama.com) and pull one, e.g.:\n"
+               "    ollama pull nemotron-3-nano:4b")
+        return
+    try:
+        import urllib.request
+        import json
+        payload = json.dumps({
+            "model": model, "prompt": brief_prompt, "stream": True,
+            "options": {"temperature": 0.7},
+        }).encode('utf-8')
+        req = urllib.request.Request(
+            host.rstrip('/') + "/api/generate", data=payload,
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=180) as resp:
+            for raw in resp:               # Ollama streams newline-delimited JSON
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    obj = json.loads(raw.decode('utf-8'))
+                except Exception:
+                    continue
+                chunk = obj.get('response', '')
+                if chunk:
+                    yield chunk
+                if obj.get('done'):
+                    break
+    except Exception as exc:
+        yield (f"Local model unavailable ({exc}).\n"
+               f"Start Ollama (`ollama serve`) and pull the model "
+               f"(`ollama pull {model or 'nemotron-3-nano:4b'}`). "
+               f"The setup above is still complete and tech-legal.")
+
+
 def generate_session_note_stream(
         report,
         car_name: str,

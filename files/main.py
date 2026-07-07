@@ -8888,24 +8888,47 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             variable=self._ai_stint_mode,
             fg_color=CARD, button_color=ACCENT, width=120).pack(side='left', padx=(0, 12))
 
+        # Driver-brief backend: cloud Claude (quality) or local Ollama (offline/free)
+        lbl(crow, "Brief:", color=DIM).pack(side='left', padx=(0, 4))
+        self._ai_brief_backend = ctk.StringVar(value="Claude")
+        ctk.CTkOptionMenu(crow,
+            values=["Claude", "Local (Ollama)"],
+            variable=self._ai_brief_backend,
+            command=lambda _=None: self._u_ai_brief_backend_hint(),
+            fg_color=CARD, button_color=ACCENT, width=140).pack(side='left', padx=(0, 12))
+
         self._ai_class_lbl = lbl(crow, "", 10, color=DIM)
         self._ai_class_lbl.pack(side='left', padx=(0, 12))
 
-        self._ai_setup_status = lbl(crow, "Load a session and provide an API key in Settings (⚙).",
+        self._ai_setup_status = lbl(crow, "Load a session, then Generate. The setup is computed on-device; brief is optional.",
                                     11, color=DIM)
         self._ai_setup_status.pack(side='left')
 
-        # Output textbox (streaming)
+        # Setup changes — rendered as a CTkTable on generation
+        self._ai_setup_summary = lbl(f, "", 12, bold=True, color=DIM)
+        self._ai_setup_summary.pack(anchor='w', padx=12, pady=(2, 0))
+        self._ai_setup_table_host = ctk.CTkScrollableFrame(f, fg_color=PANEL)
+        self._ai_setup_table_host.pack(fill='both', expand=True, padx=10, pady=(4, 4))
+        self._ai_setup_table = None
+        self._ai_setup_placeholder = lbl(
+            self._ai_setup_table_host,
+            "Click 'Generate Tech-Legal Setup' to show the complete, tech-legal setup\n"
+            "computed from your telemetry — every value inside the car's legal garage\n"
+            "limits, no API key required. Recommended changes appear here as a table;\n"
+            "the driver brief streams below.",
+            12, color=DIM, justify='left')
+        self._ai_setup_placeholder.pack(anchor='w', padx=8, pady=8)
+
+        # Driver brief (optional, streamed from Claude or local Ollama)
         self._ai_setup_out = ctk.CTkTextbox(
-            f, fg_color=PANEL, text_color=TEXT,
-            font=ctk.CTkFont(family="Courier New", size=14), wrap='word')
-        self._ai_setup_out.pack(fill='both', expand=True, padx=10, pady=(4, 4))
+            f, fg_color=PANEL, text_color=TEXT, height=150,
+            font=ctk.CTkFont(family="Courier New", size=13), wrap='word')
+        self._ai_setup_out.pack(fill='x', padx=10, pady=(0, 4))
         self._ai_setup_out.insert(
             '1.0',
-            "Click 'Generate Tech-Legal Setup' to have Claude analyse your telemetry\n"
-            "and produce a complete, ready-to-use setup with every value within\n"
-            "the car's legal garage limits.\n\n"
-            "Requires: a loaded session  +  Anthropic API key in Settings (⚙).")
+            "Driver brief appears here after generation — add an Anthropic API key in "
+            "Settings (⚙) or select the Local (Ollama) backend for a plain-language "
+            "explanation of each change.")
         self._ai_setup_out.configure(state='disabled')
 
         # ── Save-to-iRacing row (enabled after generation) ────────────────────
@@ -8940,71 +8963,192 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             btn.configure(text="Show")
 
     def _run_ai_setup_builder(self):
-        if not self.cur_rpt:
-            messagebox.showwarning("No Session", "Load a session first.")
-            return
-        key = _get_api_key().strip()
-        if not key:
-            messagebox.showwarning("API Key Needed",
-                                   "Set your Anthropic API key in Settings (⚙) to use AI Setup Builder.")
-            self._settings()
+        # The deterministic engine already ran on session load and stored the
+        # result — the setup is guaranteed tech-legal and needs no API key. This
+        # button renders it as a table and (optionally) streams a driver brief.
+        result = getattr(self, 'cur_setup_result', None)
+        if result is None:
+            messagebox.showwarning(
+                "No Setup", "Load a session first — the setup is computed automatically.")
             return
 
-        # Consent (reuse existing consent flag)
-        if not self.cfg.get('ai_consent'):
+        from core.ai_advisor import (generate_setup_brief_stream, ollama_status,
+                                      pick_ollama_model, stream_setup_brief_ollama)
+
+        brief_backend = 'ollama' if self._ai_brief_backend.get().startswith("Local") else 'claude'
+        key = _get_api_key().strip()
+        ollama_model = ""
+
+        # The setup itself is on-device; only the optional driver brief may leave
+        # the machine. Consent is only needed for the Claude backend.
+        if brief_backend == 'ollama':
+            _avail, _models = ollama_status()
+            ollama_model = pick_ollama_model(_models) if _avail else ""
+            key = ""
+        elif key and not self.cfg.get('ai_consent'):
             ok = messagebox.askyesno(
                 "AI Data Notice",
-                "This will send session telemetry, tire data, driving style\n"
-                "metrics, and setup parameters to the Anthropic Claude API.\n\n"
-                "No personally identifiable information is included.\n\n"
-                "Allow data transmission?")
+                "The setup is computed locally and is never sent anywhere.\n\n"
+                "To also generate a plain-language driver brief, the list of setup\n"
+                "changes is sent to the Anthropic Claude API. No personally\n"
+                "identifiable information is included.\n\n"
+                "Allow the AI brief? (Choose No to still get the setup, without the brief.)")
             if not ok:
-                return
-            self.cfg['ai_consent'] = True
-            save_cfg(self.cfg)
+                key = ""
+            else:
+                self.cfg['ai_consent'] = True
+                save_cfg(self.cfg)
 
         self._ai_setup_btn.configure(state='disabled', text="Generating…")
-        self._ai_setup_status.configure(text="⏳ Streaming from Claude…")
-        self._ai_setup_out.configure(state='normal')
-        self._ai_setup_out.delete('1.0', 'end')
-        self._ai_setup_out.insert('1.0', "Generating tech-legal setup…\n\n")
+        self._ai_setup_status.configure(text="⏳ Rendering tech-legal setup…")
 
-        car_class_str = self.cur_rpt.car_class if self.cur_rpt else "default"
-        setup_flat = self.cur_setup.flat if self.cur_setup else None
-        track_info = None
-        if self.cur_data:
-            try:
-                from data.templates.track_templates import get_track_info
-                track_info = get_track_info(self.cur_data.track_name)
-            except Exception:
-                pass
-
-        _ai_stint_map = {"Race": "race", "Qualifying": "qualifying", "Endurance": "endurance"}
-        ai_stint_mode = _ai_stint_map.get(self._ai_stint_mode.get(), "race")
+        # Render the deterministic table immediately (main thread — fast, pure UI)
+        self._render_setup_table(result)
+        self._set_ai_setup_text("")
 
         def worker():
-            try:
-                for chunk in generate_tech_legal_setup_stream(
-                        report=self.cur_rpt,  # type: ignore[arg-type]
-                        car_name=self.cur_data.car_name if self.cur_data else "Unknown",
-                        track_name=self.cur_data.track_name if self.cur_data else "Unknown",
-                        api_key=key,
-                        car_class_str=car_class_str,
-                        style_report=self.cur_style,
-                        stint_report=self.cur_stint,
-                        sector_report=self.cur_sec,
-                        corner_report=getattr(self, 'cur_corner_report', None),
-                        current_setup=setup_flat,
-                        session_info=self.cur_data.session_info if self.cur_data else None,
-                        track_info=track_info,
-                        stint_mode=ai_stint_mode):
-                    self.after(0, lambda c=chunk: self._on_ai_setup_chunk(c))
-            except Exception as ex:
-                self.after(0, lambda: self._on_ai_setup_chunk(
-                    f"\n\n⚠ Generation failed: {ex}\nCheck your API key and connection."))
+            if result.driver_brief and (brief_backend == 'ollama' or key):
+                src = (f"Ollama · {ollama_model}" if ollama_model else "Ollama") \
+                    if brief_backend == 'ollama' else "Claude"
+                self.after(0, lambda s=src: self._on_ai_setup_chunk(f"DRIVER BRIEF  ({s})\n\n"))
+                self.after(0, lambda: self._ai_setup_status.configure(text="⏳ Writing driver brief…"))
+                try:
+                    if brief_backend == 'ollama':
+                        stream = stream_setup_brief_ollama(result.driver_brief, ollama_model)
+                    else:
+                        stream = generate_setup_brief_stream(result, key)
+                    for chunk in stream:
+                        self.after(0, lambda c=chunk: self._on_ai_setup_chunk(c))
+                except Exception as ex:
+                    self.after(0, lambda e=ex: self._on_ai_setup_chunk(f"\n\n⚠ Brief unavailable: {e}"))
+            else:
+                self.after(0, lambda: self._set_ai_setup_text(
+                    "Setup ready. Add an API key (Settings ⚙) or pick the Local (Ollama) "
+                    "backend to get a plain-language driver brief."))
             self.after(0, self._on_ai_setup_done)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _u_ai_brief_backend_hint(self):
+        """Update the status label when the brief backend changes. Probes Ollama
+        off the UI thread so switching to 'Local' never hitches the interface."""
+        if self._ai_brief_backend.get().startswith("Local"):
+            self._ai_setup_status.configure(text="⏳ Checking for local Ollama…")
+
+            def probe():
+                from core.ai_advisor import ollama_status, pick_ollama_model
+                avail, models = ollama_status()
+                if not avail:
+                    msg = "Ollama not running — start it, then: ollama pull nemotron-3-nano:4b"
+                elif not models:
+                    msg = "Ollama running, no models — run: ollama pull nemotron-3-nano:4b"
+                else:
+                    msg = f"Local model ready: {pick_ollama_model(models)}  (offline · no API key)"
+                self.after(0, lambda m=msg: self._ai_setup_status.configure(text=m))
+
+            threading.Thread(target=probe, daemon=True).start()
+        else:
+            self._ai_setup_status.configure(
+                text="Claude brief — needs an Anthropic API key in Settings (⚙).")
+
+    def _set_ai_setup_text(self, text: str):
+        """Replace the driver-brief box with `text` (thread-safe via after)."""
+        self._ai_setup_out.configure(state='normal')
+        self._ai_setup_out.delete('1.0', 'end')
+        self._ai_setup_out.insert('1.0', text)
+        self._ai_setup_out.see('end')
+        self._ai_setup_out.configure(state='disabled')
+
+    @staticmethod
+    def _fmt_setup_val(value: float, step: float) -> str:
+        """Format a setup value with precision inferred from its legal step."""
+        if step >= 1:
+            return f"{int(round(value))}"
+        decimals = 1 if step >= 0.1 else 2
+        return f"{value:.{decimals}f}"
+
+    # Section grouping shared by the CTkTable renderer and the reference-card writer
+    _SECTION_KEYWORDS = [
+        ('Tires',        ['pressure', 'tire type']),
+        ('Alignment',    ['camber', 'toe']),
+        ('Suspension',   ['spring', 'arb', 'anti-roll', 'ride height', 'bump',
+                          'rebound', 'damper', 'perch']),
+        ('Aerodynamics', ['wing', 'duct', 'aero', 'downforce']),
+        ('Brakes',       ['brake bias', 'brake pressure', 'max brake', 'brake pad', 'brake']),
+        ('Electronics',  ['tc', 'traction control', 'abs']),
+        ('Differential', ['diff', 'preload', 'power ramp', 'coast ramp']),
+    ]
+
+    @classmethod
+    def _section_for_param(cls, param: str) -> str:
+        p = param.lower()
+        for sec_name, keywords in cls._SECTION_KEYWORDS:
+            if any(kw in p for kw in keywords):
+                return sec_name
+        return 'General'
+
+    def _render_setup_table(self, result):
+        """Render a SetupResult's changes as a CTkTable in the setup pane."""
+        from CTkTable import CTkTable
+        host = self._ai_setup_table_host
+        for w in host.winfo_children():
+            w.destroy()
+        self._ai_setup_table = None
+        self._ai_setup_placeholder = None
+
+        n_clamped = sum(1 for d in result.deltas if getattr(d, 'clamped', False))
+        icon = "✅ TECH PASS" if result.tech_pass else "⚠ NEEDS REVIEW"
+        summary = (f"{icon}   ·   {result.car_name}  @  {result.track_name}   ·   "
+                   f"{result.laps_analyzed} laps   ·   {result.confidence_overall:.0%} confidence   ·   "
+                   f"{len(result.deltas)} change(s)")
+        if n_clamped:
+            summary += f"   ·   {n_clamped} clamped to legal limits"
+        self._ai_setup_summary.configure(
+            text=summary, text_color=(GREEN if result.tech_pass else YELLOW))
+
+        header = ["Parameter", "Current", "New", "Δ", "Why"]
+        rows = result.changes_table or []
+        if rows:
+            values = [header] + [
+                [r.get('param', ''), r.get('current', ''), r.get('recommended', ''),
+                 r.get('delta', ''), (r.get('reasoning') or '')[:90]]
+                for r in rows]
+        else:
+            values = [header, ["—", "—", "—", "—",
+                               "No changes justified by the data — the car is already balanced."]]
+
+        self._ai_setup_table = CTkTable(
+            host, values=values, header_color=ACCENT,
+            colors=[PANEL, CARD], text_color=TEXT, border_width=1,
+            border_color=CARD, corner_radius=6,
+            font=ctk.CTkFont(size=12), wraplength=260, justify='left', anchor='w')
+        self._ai_setup_table.pack(fill='both', expand=True, padx=4, pady=4)
+
+    def _parsed_from_result(self, result):
+        """Build a ParsedSetup from SetupResult.final_setup (internal keys → floats),
+        using tech_inspector display names — the exact engine-computed tech-legal values."""
+        from core.setup_parser import ParsedSetup, SetupSection
+        from core.tech_inspector import get_bounds
+        bounds = get_bounds(result.car_class)
+        setup = ParsedSetup(car=result.car_name, track=result.track_name,
+                            filename='(Optimal Sector)',
+                            parsed_at=datetime.now().isoformat())
+        sections_dict: dict = {}
+        for internal, val in result.final_setup.items():
+            b = bounds.get(internal)
+            if b is None:
+                continue
+            disp = b.display_name or internal
+            vstr = f"{self._fmt_setup_val(val, b.step)} {b.unit}".strip()
+            sec = self._section_for_param(disp)
+            sections_dict.setdefault(sec, {})[disp] = vstr
+            setup.flat[disp] = vstr
+        _ORDER = ['Tires', 'Alignment', 'Suspension', 'Aerodynamics',
+                  'Brakes', 'Electronics', 'Differential', 'General']
+        for sec_name in _ORDER:
+            if sections_dict.get(sec_name):
+                setup.sections.append(SetupSection(sec_name, sections_dict[sec_name]))
+        return setup
 
     def _on_ai_setup_chunk(self, chunk: str):
         self._ai_setup_out.configure(state='normal')
@@ -9097,31 +9241,30 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
 
     def _save_ai_setup_to_iracing(self):
         """
-        Parse the AI-generated setup table, validate against car-class tech bounds,
-        clamp any out-of-range values, and write a .sto file directly to the
-        iRacing setups folder.
+        Write the generated tech-legal setup to a reference card. Prefers the
+        engine-computed SetupResult (exact values); falls back to parsing the
+        legacy text table only if no result is available.
         """
-        # Grab the full generated text
-        self._ai_setup_out.configure(state='normal')
-        ai_text = self._ai_setup_out.get('1.0', 'end').strip()
-        self._ai_setup_out.configure(state='disabled')
+        result = getattr(self, 'cur_setup_result', None)
+        if result is not None:
+            car_name, track_name = result.car_name, result.track_name
+            setup = self._parsed_from_result(result)
+        else:
+            self._ai_setup_out.configure(state='normal')
+            ai_text = self._ai_setup_out.get('1.0', 'end').strip()
+            self._ai_setup_out.configure(state='disabled')
+            if not ai_text or 'appears here' in ai_text or '|' not in ai_text:
+                messagebox.showwarning("Nothing to Save",
+                                       "Generate a setup first, then save.")
+                return
+            car_name   = self.cur_data.car_name   if self.cur_data else ''
+            track_name = self.cur_data.track_name if self.cur_data else ''
+            setup = self._parse_ai_setup_table(ai_text, car_name, track_name)
 
-        if not ai_text or 'Generate Tech-Legal Setup' in ai_text:
-            messagebox.showwarning("Nothing to Save",
-                                   "Generate a setup first, then save.")
-            return
-
-        car_name   = self.cur_data.car_name   if self.cur_data else ''
-        track_name = self.cur_data.track_name if self.cur_data else ''
-
-        # Parse the AI table into a ParsedSetup
-        setup = self._parse_ai_setup_table(ai_text, car_name, track_name)
         if not setup.flat:
-            messagebox.showerror(
-                "Parse Failed",
-                "Could not find a setup table in the AI output.\n\n"
-                "Make sure the generation completed successfully — the output "
-                "should contain a PARAMETER | VALUE table.")
+            messagebox.showwarning(
+                "Nothing to Save",
+                "The generated setup is empty. Generate a setup first, then save.")
             return
 
         # ── Tech inspection: clamp & report ───────────────────────────────────
