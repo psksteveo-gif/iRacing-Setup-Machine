@@ -37,9 +37,13 @@ a = Analysis(
         ('version.py', '.'),
         ('LICENSE', '.'),
         ('THIRD_PARTY_NOTICES.md', '.'),
+        ('optimal_sector.mplstyle', '.'),
     ] + dnd_datas,
     hiddenimports=[
         'customtkinter',
+        'CTkToolTip',
+        'CTkTable',
+        'ttkbootstrap',
         'tkinter',
         'numpy',
         'matplotlib',
