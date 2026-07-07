@@ -125,6 +125,21 @@ from ui.obs_overlay           import OBSOverlay
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("dark-blue")
 
+# ttkbootstrap Meter widgets (the live RPM gauge) need a ttk theme. Initialise a
+# near-black dark theme lazily — only if the live dashboard opens — so ttkbootstrap
+# isn't pulled in on normal startup. Safe: the app uses no other ttk widgets.
+_TTKB_STYLE = None
+def _ensure_ttkb_dark():
+    """Return a ttkbootstrap dark Style (created once), or None if unavailable."""
+    global _TTKB_STYLE
+    if _TTKB_STYLE is None:
+        try:
+            import ttkbootstrap as _tb
+            _TTKB_STYLE = _tb.Style(theme='cyborg')
+        except Exception:
+            _TTKB_STYLE = False
+    return _TTKB_STYLE or None
+
 # ── Custom fonts ───────────────────────────────────────────────────────────────
 _FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "fonts")
 for _font_file in ("BarlowCondensed-SemiBold.ttf", "Barlow-Regular.ttf", "JetBrainsMono-Regular.ttf"):
@@ -4194,12 +4209,23 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             ax.set_facecolor('#0F0F13'); ch.fig.patch.set_facecolor('#0F0F13')
             ch.fig.tight_layout(pad=0.5); ch.draw()
 
-        # ── Text list for all changes ─────────────────────────────────────────
-        for ch in changes:
-            rw=ctk.CTkFrame(f,fg_color="#14141A",corner_radius=5); rw.pack(fill='x',pady=2,padx=4)
-            lbl(rw,ch['param'],11,bold=True).pack(anchor='w',padx=8,pady=(5,0))
-            lbl(rw,f"A: {ch['before']}",11,color=RED).pack(anchor='w',padx=8)
-            lbl(rw,f"B: {ch['after']}",11,color=GREEN).pack(anchor='w',padx=8,pady=(0,5))
+        # ── All changes as a table ────────────────────────────────────────────
+        from CTkTable import CTkTable
+        values = [["Parameter", "A (before)", "B (after)"]] + [
+            [c['param'], str(c['before']), str(c['after'])] for c in changes]
+        tbl = CTkTable(f, values=values, header_color=ACCENT,
+                       colors=[PANEL, CARD], text_color=TEXT,
+                       border_width=1, border_color=CARD, corner_radius=6,
+                       font=ctk.CTkFont(size=11), wraplength=220,
+                       justify='left', anchor='w')
+        tbl.pack(fill='x', padx=4, pady=(6, 4))
+        # Tint the before/after columns red/green (data rows only; skip header)
+        try:
+            for _i in range(1, len(values)):
+                tbl.edit(_i, 1, text_color=RED)
+                tbl.edit(_i, 2, text_color=GREEN)
+        except Exception:
+            pass
 
     # ══════════════════════════════════════════════════════════════════════════
     # AI ADVISOR
@@ -9633,8 +9659,23 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         win._spd_lbl.pack(side='left', padx=20, pady=8)
         win._gear_lbl = lbl(sg, "G--", 36, bold=True, color=YELLOW)
         win._gear_lbl.pack(side='left', padx=20)
-        win._rpm_lbl = lbl(sg, "RPM: ----", 14, color=TEXT)
-        win._rpm_lbl.pack(side='left', padx=20)
+        # RPM: a ttkbootstrap semi Meter when available, else a text label
+        win._rpm_meter = None
+        win._rpm_lbl = None
+        win._rpm_max = 9000
+        if _ensure_ttkb_dark():
+            try:
+                import ttkbootstrap as _tb
+                win._rpm_meter = _tb.Meter(
+                    sg, metersize=120, amountused=0, amounttotal=win._rpm_max,
+                    metertype='semi', subtext='RPM', bootstyle='danger',
+                    interactive=False)
+                win._rpm_meter.pack(side='left', padx=20, pady=4)
+            except Exception:
+                win._rpm_meter = None
+        if win._rpm_meter is None:
+            win._rpm_lbl = lbl(sg, "RPM: ----", 14, color=TEXT)
+            win._rpm_lbl.pack(side='left', padx=20)
 
         # Throttle / Brake bars
         bars = ctk.CTkFrame(win, fg_color=PANEL, corner_radius=8)
@@ -9787,7 +9828,14 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
             spd_color = GREEN if sample.speed_kph > 10 else DIM
             win._spd_lbl.configure(text=units.fmt_speed_from_kmh(sample.speed_kph, 0), text_color=spd_color)
             win._gear_lbl.configure(text=f"G{sample.gear}")
-            win._rpm_lbl.configure(text=f"RPM: {sample.rpm:.0f}")
+            if getattr(win, '_rpm_meter', None) is not None:
+                _rpm = max(0, int(sample.rpm))
+                if _rpm > win._rpm_max:  # grow the gauge max so it never pins at full
+                    win._rpm_max = ((_rpm // 500) + 1) * 500
+                    win._rpm_meter.configure(amounttotal=win._rpm_max)
+                win._rpm_meter.configure(amountused=_rpm)
+            elif win._rpm_lbl is not None:
+                win._rpm_lbl.configure(text=f"RPM: {sample.rpm:.0f}")
 
             win._thr_bar.set(sample.throttle)
             win._thr_pct.configure(text=f"{sample.throttle * 100:.0f}%")

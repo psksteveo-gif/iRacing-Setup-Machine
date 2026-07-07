@@ -8,7 +8,7 @@ from matplotlib.colors import Normalize
 from matplotlib.lines import Line2D
 
 from ui.theme import (DARK, PANEL, CARD, ACCENT, BLUE, TEXT, DIM, GREEN, YELLOW,
-                      RED, PURPLE, lbl, EmbedChart)
+                      RED, PURPLE, lbl, EmbedChart, add_glow, add_glow_effects)
 from core.analysis_engine import DOWNSAMPLE_CHART, DOWNSAMPLE_LAP, format_laptime
 from core.lap_overlay import extract_lap_trace, compare_laps
 from core import units
@@ -223,6 +223,10 @@ class TelemetryTabMixin:
                 ax.plot(x[::step], arr[s:e][::step],
                         label=f"{lab}{lap_suffix}", color=col,
                         lw=1.2, alpha=0.6 if multi else 0.9)
+
+        # Full neon effect on the focused single-lap view; skip busy multi-lap overlays
+        if not multi:
+            add_glow_effects(ax)
 
         self._pad_yaxis(ax, pct=0.10)
         self._draw_corner_markers([ax], d.track_name)
@@ -731,6 +735,7 @@ class TelemetryTabMixin:
         dist_pct = result.dist_pct * 100
         delta = result.delta_s
         ax.plot(dist_pct, delta, color=ACCENT, lw=1.8, alpha=0.9, label='Current vs Ref')
+        add_glow(ax)  # neon glow on the delta trace (dashed zero-line is skipped)
         ax.fill_between(dist_pct, delta, 0, where=delta < 0, alpha=0.18, color=GREEN,
                         label='Faster than ref')
         ax.fill_between(dist_pct, delta, 0, where=delta > 0, alpha=0.18, color=RED,
