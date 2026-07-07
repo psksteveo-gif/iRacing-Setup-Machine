@@ -1147,63 +1147,6 @@ class IBTSignalExtractor:
         except Exception as e:
             logger.debug("body motion extraction failed: %s", e)
 
-    def _body_motion_rules(self, bundle: SignalBundle,
-                            car_class: CarClass) -> List[SetupDelta]:
-        """ARB and spring recommendations from body roll/pitch rates."""
-        results = []
-        if bundle.body_motion_confidence < 0.5:
-            return results
-        # Per-car-class thresholds
-        try:
-            from core.car_profiles import get_class_thresholds
-            _thresholds = get_class_thresholds(car_class.value if hasattr(car_class, 'value') else str(car_class))
-            _roll_thresh  = _thresholds.get('roll_rate_threshold_rads', 0.80)
-            _pitch_thresh = _thresholds.get('pitch_rate_threshold_rads', 1.00)
-        except Exception:
-            _roll_thresh, _pitch_thresh = 0.80, 1.00
-        bounds = get_bounds(car_class)
-        # High roll rate → ARBs too soft
-        if bundle.roll_rate_cornering > _roll_thresh:
-            side = 'rear' if (bundle.balance_score or 0) > 0.3 else 'front'
-            param = f'arb_{side}'
-            b = bounds.get(param)
-            if b:
-                cur = self._current(bundle, param, (b.min_val + b.max_val) / 2)
-                results.append(SetupDelta(
-                    param=param,
-                    display_name=f'{side.title()} ARB',
-                    garage_tab='CHASSIS',
-                    garage_location=PARAM_GARAGE_INFO.get(param, ('CHASSIS',''))[1],
-                    current_value=cur, recommended_value=cur, delta=+1, unit='step',
-                    signal_source=f'Roll rate: {bundle.roll_rate_cornering:.2f} rad/s (threshold {_roll_thresh:.2f})',
-                    confidence=bundle.body_motion_confidence * 0.75,
-                    reasoning=(f'Body roll rate {bundle.roll_rate_cornering:.2f} rad/s during '
-                                f'cornering indicates excessive roll. Stiffening {side} ARB '
-                                f'by 1 step improves tire contact patch consistency.'),
-                    driver_feel='Sharper roll response. Slightly more mechanical understeer on turn-in.',
-                    priority=1,
-                ))
-        # High pitch → front springs too soft
-        if bundle.pitch_rate_braking > _pitch_thresh:
-            b = bounds.get('spring_lf') or bounds.get('spring_rf')
-            if b:
-                cur = self._current(bundle, 'spring_lf', (b.min_val + b.max_val) / 2)
-                results.append(SetupDelta(
-                    param='spring_lf',
-                    display_name='Front Spring Rate',
-                    garage_tab='CHASSIS',
-                    garage_location=PARAM_GARAGE_INFO.get('spring_lf', ('CHASSIS',''))[1],
-                    current_value=cur, recommended_value=cur, delta=+b.step, unit=b.unit,
-                    signal_source=f'Pitch rate braking: {bundle.pitch_rate_braking:.2f} rad/s (threshold {_pitch_thresh:.2f})',
-                    confidence=bundle.body_motion_confidence * 0.65,
-                    reasoning=(f'Pitch rate {bundle.pitch_rate_braking:.2f} rad/s under braking '
-                                f'indicates nose-dive. Increasing front spring rate by '
-                                f'{b.step:.0f} {b.unit} reduces dive and stabilises brake balance.'),
-                    driver_feel='Less front dive under braking. More consistent brake pedal feel.',
-                    priority=1,
-                ))
-        return results
-
     def _classify_track(self, bundle: SignalBundle, corner_report):
         name = bundle.track_name.lower()
         if any(w in name for w in ('oval', 'daytona', 'talladega', 'bristol',
@@ -1451,6 +1394,63 @@ class SetupDeltaEngine:
                 'Brake hydraulics confirm brake bias direction — '
                 'confidence boosted to %.2f', bundle.brake_bias_confidence)
 
+        return results
+
+    def _body_motion_rules(self, bundle: SignalBundle,
+                            car_class: CarClass) -> List[SetupDelta]:
+        """ARB and spring recommendations from body roll/pitch rates."""
+        results = []
+        if bundle.body_motion_confidence < 0.5:
+            return results
+        # Per-car-class thresholds
+        try:
+            from core.car_profiles import get_class_thresholds
+            _thresholds = get_class_thresholds(car_class.value if hasattr(car_class, 'value') else str(car_class))
+            _roll_thresh  = _thresholds.get('roll_rate_threshold_rads', 0.80)
+            _pitch_thresh = _thresholds.get('pitch_rate_threshold_rads', 1.00)
+        except Exception:
+            _roll_thresh, _pitch_thresh = 0.80, 1.00
+        bounds = get_bounds(car_class)
+        # High roll rate → ARBs too soft
+        if bundle.roll_rate_cornering > _roll_thresh:
+            side = 'rear' if (bundle.balance_score or 0) > 0.3 else 'front'
+            param = f'arb_{side}'
+            b = bounds.get(param)
+            if b:
+                cur = self._current(bundle, param, (b.min_val + b.max_val) / 2)
+                results.append(SetupDelta(
+                    param=param,
+                    display_name=f'{side.title()} ARB',
+                    garage_tab='CHASSIS',
+                    garage_location=PARAM_GARAGE_INFO.get(param, ('CHASSIS',''))[1],
+                    current_value=cur, recommended_value=cur, delta=+1, unit='step',
+                    signal_source=f'Roll rate: {bundle.roll_rate_cornering:.2f} rad/s (threshold {_roll_thresh:.2f})',
+                    confidence=bundle.body_motion_confidence * 0.75,
+                    reasoning=(f'Body roll rate {bundle.roll_rate_cornering:.2f} rad/s during '
+                                f'cornering indicates excessive roll. Stiffening {side} ARB '
+                                f'by 1 step improves tire contact patch consistency.'),
+                    driver_feel='Sharper roll response. Slightly more mechanical understeer on turn-in.',
+                    priority=1,
+                ))
+        # High pitch → front springs too soft
+        if bundle.pitch_rate_braking > _pitch_thresh:
+            b = bounds.get('spring_lf') or bounds.get('spring_rf')
+            if b:
+                cur = self._current(bundle, 'spring_lf', (b.min_val + b.max_val) / 2)
+                results.append(SetupDelta(
+                    param='spring_lf',
+                    display_name='Front Spring Rate',
+                    garage_tab='CHASSIS',
+                    garage_location=PARAM_GARAGE_INFO.get('spring_lf', ('CHASSIS',''))[1],
+                    current_value=cur, recommended_value=cur, delta=+b.step, unit=b.unit,
+                    signal_source=f'Pitch rate braking: {bundle.pitch_rate_braking:.2f} rad/s (threshold {_pitch_thresh:.2f})',
+                    confidence=bundle.body_motion_confidence * 0.65,
+                    reasoning=(f'Pitch rate {bundle.pitch_rate_braking:.2f} rad/s under braking '
+                                f'indicates nose-dive. Increasing front spring rate by '
+                                f'{b.step:.0f} {b.unit} reduces dive and stabilises brake balance.'),
+                    driver_feel='Less front dive under braking. More consistent brake pedal feel.',
+                    priority=1,
+                ))
         return results
 
     def _bump_stop_rules(self, bundle: SignalBundle,
