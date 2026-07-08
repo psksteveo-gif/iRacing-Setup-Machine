@@ -140,6 +140,41 @@ def _ensure_ttkb_dark():
             _TTKB_STYLE = False
     return _TTKB_STYLE or None
 
+
+def _draw_balance_bar(ax, score, label):
+    """Draw a single horizontal balance gauge bar on `ax`.
+    score < -0.10 → understeer → blue bar extends LEFT from center
+    score >  0.10 → oversteer  → orange bar extends RIGHT from center
+    |score| ≤ 0.10 → neutral   → green, very short."""
+    score = max(-1.0, min(1.0, float(score or 0.0)))
+    if score > 0.10:
+        color, glow = '#E8611A', '#FF8844'   # oversteer
+    elif score < -0.10:
+        color, glow = '#4A9EE8', '#66BBFF'   # understeer
+    else:
+        color, glow = '#2ECC71', '#66FF99'   # neutral
+
+    ax.set_facecolor('#0F0F13')
+    ax.set_xlim(-1.0, 1.0); ax.set_ylim(-0.6, 0.6); ax.set_yticks([])
+    ax.set_xticks([-1, -0.5, 0, 0.5, 1])
+    ax.set_xticklabels(['-1', '', '0', '', '+1'], color='#555566', fontsize=7.5)
+    ax.tick_params(axis='x', length=3, color='#333344', pad=2)
+    ax.spines['top'].set_visible(False); ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_visible(False); ax.spines['bottom'].set_color('#222233')
+    ax.grid(False)
+    ax.axvline(x=0, color='#444455', linewidth=1.0, zorder=1)           # center line
+    ax.barh(y=0, width=2.0, left=-1.0, height=0.32, color='#0A0A14', zorder=2)  # track
+    bar_left = min(0.0, score)                                          # neg extends left
+    ax.barh(y=0, width=abs(score), left=bar_left, height=0.32, color=color, alpha=0.92, zorder=3)
+    ax.barh(y=0, width=abs(score), left=bar_left, height=0.42, color=glow, alpha=0.18, zorder=2)
+    label_x = max(-0.85, min(0.85, score))
+    ax.text(label_x, 0.42, f'{score:+.2f}', ha='center', va='bottom',
+            color=color, fontsize=12, fontweight='bold', zorder=5)
+    ax.text(-0.92, -0.48, 'US', color='#4A9EE8', fontsize=8, fontweight='bold')
+    ax.text( 0.65, -0.48, 'OS', color='#E8611A', fontsize=8, fontweight='bold')
+    ax.set_title(label, color='#CCCCDD', fontsize=10, fontweight='bold', pad=6)
+
+
 # ── Custom fonts ───────────────────────────────────────────────────────────────
 _FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "fonts")
 for _font_file in ("BarlowCondensed-SemiBold.ttf", "Barlow-Regular.ttf", "JetBrainsMono-Regular.ttf"):
@@ -1981,10 +2016,10 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         self._dash_sc=ctk.CTkScrollableFrame(tab,fg_color="transparent")
         r1=ctk.CTkFrame(self._dash_sc,fg_color="transparent"); r1.pack(fill='x',padx=10,pady=(8,4))
         self._di=card_frame(r1); self._di.pack(side='left',fill='both',expand=True,padx=(0,6))
-        self._dc=EmbedChart(r1,figsize=(6,2.5)); self._dc.pack(side='left',fill='both',expand=True)
+        self._dc=EmbedChart(r1,figsize=(9,2.6),responsive=False); self._dc.pack(side='left',fill='both',expand=True)
         r2=ctk.CTkFrame(self._dash_sc,fg_color="transparent"); r2.pack(fill='x',padx=10,pady=4)
         self._dth=EmbedChart(r2,figsize=(5,2.8)); self._dth.pack(side='left',fill='both',expand=True,padx=(0,6))
-        self._dl=ctk.CTkFrame(r2,fg_color=PANEL,corner_radius=8); self._dl.pack(side='left',fill='both',expand=True)
+        self._dl=ctk.CTkScrollableFrame(r2,fg_color=PANEL,corner_radius=8,height=300); self._dl.pack(side='left',fill='both',expand=True)
         self._dif=ctk.CTkFrame(self._dash_sc,fg_color="transparent"); self._dif.pack(fill='x',padx=10,pady=(4,4))
         self._dbal=EmbedChart(self._dash_sc,figsize=(10,2.0))
         self._dh=ctk.CTkFrame(self._dash_sc,fg_color="transparent"); self._dh.pack(fill='x',padx=10,pady=(0,10))
@@ -2323,16 +2358,18 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
                     if _s3.lap_times and i<len(_s3.lap_times) and _s3.lap_times[i]==_s3.best_time:
                         _sbest.append(f"S{_si3+1}")
                 if _sbest: sec_note=f"  ★{''.join(_sbest)}"
-            # Row with a coloured left-border bar: best=orange, displayed=blue, else dim
+            # Row: the frame's own bg is the coloured left stripe (best=orange,
+            # displayed=blue, else dim); a 3px left pad exposes it beside the text.
             border_col = ACCENT if is_pb else (BLUE if i in _selected else '#1E1E2A')
-            row=ctk.CTkFrame(self._dl, fg_color='transparent', corner_radius=0)
+            row=ctk.CTkFrame(self._dl, fg_color=border_col, corner_radius=0)
             row.pack(fill='x', padx=8, pady=1)
-            ctk.CTkFrame(row, fg_color=border_col, width=3, corner_radius=0).pack(side='left', fill='y')
-            txt=lbl(row,f"Lap {i+1}: {format_laptime(t)}{delta}{fc_s}{flag}{sec_note}",12,color=clr)
-            txt.pack(side='left', anchor='w', padx=(8,0))
-            def _enter(_e, rw=row): rw.configure(fg_color='#16161E')
-            def _leave(_e, rw=row): rw.configure(fg_color='transparent')
-            for _wdg in (row, txt):
+            inner=ctk.CTkFrame(row, fg_color='transparent', corner_radius=0)
+            inner.pack(fill='x', padx=(3,0))   # 3px of the row bg shows as the stripe
+            txt=lbl(inner,f"Lap {i+1}: {format_laptime(t)}{delta}{fc_s}{flag}{sec_note}",12,color=clr)
+            txt.pack(side='left', anchor='w', padx=(6,2), pady=2)
+            def _enter(_e, iw=inner): iw.configure(fg_color='#16161E')
+            def _leave(_e, iw=inner): iw.configure(fg_color='transparent')
+            for _wdg in (row, inner, txt):
                 _wdg.bind('<Enter>', _enter, add='+'); _wdg.bind('<Leave>', _leave, add='+')
         for w in self._dif.winfo_children(): w.destroy()
         lbl(self._dif,"Top Issues",13,bold=True).pack(anchor='w',pady=(4,4))
@@ -2440,40 +2477,20 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
 
     def _draw_balance(self,score):
         c=self._dc; c.clear()
+        fig=c.fig
+        fig.patch.set_facecolor('#08080A')
         r = self.cur_rpt
-        # 4 horizontal bar gauges: overall + entry/mid/exit, -1 (US) … +1 (OS)
         phases = [
             ("Overall", score),
             ("Entry", r.balance_entry if r else 0),
             ("Mid", r.balance_mid if r else 0),
             ("Exit", r.balance_exit if r else 0),
         ]
-        for idx, (name, val) in enumerate(phases):
-            val = float(val or 0)
-            ax = c.fig.add_subplot(1, 4, idx + 1, facecolor=PANEL)
-            # Bar color by balance sign: understeer / neutral / oversteer
-            if abs(val) <= 0.1:
-                bar_col = '#2ECC71'
-            elif val < 0:
-                bar_col = '#4A9EE8'   # understeer
-            else:
-                bar_col = '#E8611A'   # oversteer
-            ax.barh([0], [val], height=0.5, color=bar_col, zorder=3,
-                    edgecolor='none')
-            ax.axvline(0, color='#888899', lw=1.0, zorder=2)   # center line
-            ax.set_xlim(-1.0, 1.0); ax.set_ylim(-0.6, 0.95)
-            ax.set_yticks([])
-            ax.set_xticks([-1, -0.5, 0, 0.5, 1])
-            ax.set_xticklabels(['-1', '', '0', '', '+1'], color=DIM, fontsize=7)
-            ax.tick_params(axis='x', length=2, colors=DIM, pad=1)
-            for sp in ('top', 'right', 'left'):
-                ax.spines[sp].set_visible(False)
-            ax.spines['bottom'].set_color('#1E1E2A')
-            ax.grid(False)
-            ax.text(0, 0.55, f"{val:+.2f}", ha='center', va='bottom',
-                    color=bar_col, fontsize=11, fontweight='bold')
-            ax.set_title(name, color=TEXT, fontsize=10, pad=3)
-        c.fig.tight_layout(pad=0.5); c.draw()
+        axes = fig.subplots(1, 4)
+        for ax, (label_name, score_val) in zip(axes, phases):
+            _draw_balance_bar(ax, score_val, label_name)
+        fig.subplots_adjust(left=0.01, right=0.99, top=0.78, bottom=0.22, wspace=0.08)
+        c.draw()
 
     def _draw_track_evolution(self, d, r):
         """Rolling 3-lap pace chart — reveals track grip build-up lap-over-lap."""
@@ -2597,26 +2614,18 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         c=self._dth; c.clear(); ax=c.fig.add_subplot(111,facecolor=PANEL)
         ax.set_title(f"Tire Temps ({units.temp_label()})",color=TEXT,fontsize=13); ax.set_xlim(0,4); ax.set_ylim(0,3); ax.axis('off')
         pos={'LF':(0.5,2.2),'RF':(2.5,2.2),'LR':(0.5,0.2),'RR':(2.5,0.2)}
-        _zone_lbl={'inner':'IN','mid':'CTR','outer':'OUT'}
         for corner,(cx,cy) in pos.items():
             t=ts.get(corner,{})
             if not t: continue
             for i,z in enumerate(['inner','mid','outer']):
                 tv=t.get(z,75); norm=np.clip((tv-70)/40,0,1)
                 cmap=matplotlib.colormaps['RdYlGn_r']
-                bx=cx+i*0.28-0.42
-                rect=matplotlib.patches.Rectangle((bx,cy),0.28,0.5,facecolor=cmap(norm),edgecolor='#1A1A22',lw=0.5)
+                rect=matplotlib.patches.Rectangle((cx+i*0.28-0.42,cy),0.28,0.5,facecolor=cmap(norm),edgecolor='#1A1A22',lw=0.5)
                 ax.add_patch(rect)
-                # temp value (upper) + corner-zone label (lower), 8pt white bold
-                ax.text(bx+0.14,cy+0.33,f"{tv:.0f}",ha='center',va='center',fontsize=9,color='white',fontweight='bold')
-                ax.text(bx+0.14,cy+0.13,_zone_lbl[z],ha='center',va='center',fontsize=8,color='white',fontweight='bold')
+                ax.text(cx+i*0.28-0.28,cy+0.25,f"{tv:.0f}",ha='center',va='center',fontsize=9,color='white',fontweight='bold')
             ax.text(cx,cy+0.72,corner,ha='center',fontsize=13,color=TEXT,fontweight='bold')
             avg_c=t.get('avg',0)
-            # avg colored by operating window (°C): green 80–100, yellow 70–80/100–110, else red
-            if 80<=avg_c<=100:      _avg_col=GREEN
-            elif 70<=avg_c<80 or 100<avg_c<=110: _avg_col=YELLOW
-            else:                    _avg_col=RED
-            ax.text(cx,cy-0.20,f"avg {units.fmt_temp(avg_c)}",ha='center',fontsize=12,color=_avg_col,fontweight='bold')
+            ax.text(cx,cy-0.18,f"avg {units.fmt_temp(avg_c)}",ha='center',fontsize=10,color=DIM)
         c.fig.tight_layout(pad=0.3); c.draw()
 
     def _compute_consistency_score(self) -> ConsistencyBreakdown | None:
