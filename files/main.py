@@ -175,6 +175,73 @@ def _draw_balance_bar(ax, score, label):
     ax.set_title(label, color='#CCCCDD', fontsize=10, fontweight='bold', pad=6)
 
 
+def _arc_xy(a1, a2, R, n=160):
+    """Points along a circular arc from a1° to a2° at radius R (centre origin)."""
+    t = np.linspace(np.radians(a1), np.radians(a2), n)
+    return R * np.cos(t), R * np.sin(t)
+
+
+def _score_to_color(score):
+    """Map a balance score to (main, glow, condition label).
+    score > +0.10 → oversteer (orange); < -0.10 → understeer (blue); else neutral (green)."""
+    if score > 0.10:
+        return ACCENT, "#FF8A4A", "OVERSTEER"
+    if score < -0.10:
+        return BLUE, "#7CC0FF", "UNDERSTEER"
+    return GREEN, "#6FF0B4", "NEUTRAL"
+
+
+def _draw_arc_gauge(ax, score, label):
+    """Semi-circle arc balance gauge: glow sweep from neutral (top) to the score
+    angle, a rim marker, centred score typography + condition label, US/OS anchors.
+    Replaces the flat _draw_balance_bar look. score ∈ [-1, +1]."""
+    from matplotlib.patches import Circle
+    score = max(-1.0, min(1.0, float(score or 0.0)))
+    color, glow, cond = _score_to_color(score)
+    ax.set_facecolor(PANEL)
+    ax.set_aspect('equal')
+    ax.set_xlim(-1.36, 1.36)
+    ax.set_ylim(-0.40, 1.48)
+    ax.axis('off')
+    R = 1.0
+    # base track + subtle directional tint (blue left = US, orange right = OS)
+    bx, by = _arc_xy(180, 0, R)
+    ax.plot(bx, by, color="#07070D", lw=15, solid_capstyle='round', zorder=1)
+    lx, ly = _arc_xy(180, 90, R)
+    ax.plot(lx, ly, color=BLUE, lw=8, alpha=0.10, solid_capstyle='round', zorder=1.05)
+    rx, ry = _arc_xy(90, 0, R)
+    ax.plot(rx, ry, color=ACCENT, lw=8, alpha=0.10, solid_capstyle='round', zorder=1.05)
+    ax.plot(bx, by, color="#1E1E28", lw=8, solid_capstyle='round', zorder=1.1)
+    # fine tick marks (top/neutral emphasised)
+    for a in (0, 45, 90, 135, 180):
+        ar = np.radians(a); c, s = np.cos(ar), np.sin(ar)
+        top = (a == 90)
+        ax.plot([R * 1.04 * c, R * 1.12 * c], [R * 1.04 * s, R * 1.12 * s],
+                color=(TEXT if top else DIM), lw=(1.6 if top else 1.0),
+                alpha=(0.85 if top else 0.5), zorder=1.3)
+    # value sweep from neutral (top, 90°) to the score angle
+    theta = 90.0 - score * 90.0
+    lo, hi = sorted((90.0, theta))
+    sx, sy = _arc_xy(lo, hi, R)
+    for w, a in ((18, 0.06), (13, 0.11), (10, 0.17)):
+        ax.plot(sx, sy, color=glow, lw=w, alpha=a, solid_capstyle='round', zorder=1.5)
+    ax.plot(sx, sy, color=color, lw=8, solid_capstyle='round', zorder=2)
+    # rim marker (donut) at the value angle
+    tr = np.radians(theta); mx, my = R * np.cos(tr), R * np.sin(tr)
+    ax.add_patch(Circle((mx, my), 0.11, color=glow, alpha=0.30, zorder=2.6))
+    ax.add_patch(Circle((mx, my), 0.075, color=color, zorder=3))
+    ax.add_patch(Circle((mx, my), 0.034, color=DARK, zorder=4))
+    # end anchors
+    ax.text(-1.06, -0.10, 'US', color=BLUE, fontsize=7, fontweight='bold', ha='center')
+    ax.text(1.06, -0.10, 'OS', color=ACCENT, fontsize=7, fontweight='bold', ha='center')
+    # centred typography (nothing crosses it)
+    ax.text(0, 0.46, f'{score:+.2f}', color=color, fontsize=18, fontweight='bold',
+            ha='center', va='center')
+    ax.text(0, 0.19, cond, color=color, fontsize=7.5, fontweight='bold',
+            ha='center', va='center')
+    ax.set_title(label, color=TEXT, fontsize=10.5, fontweight='bold', pad=1)
+
+
 # ── Custom fonts ───────────────────────────────────────────────────────────────
 _FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "fonts")
 for _font_file in ("BarlowCondensed-SemiBold.ttf", "Barlow-Regular.ttf", "JetBrainsMono-Regular.ttf"):
@@ -2488,8 +2555,8 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         ]
         axes = fig.subplots(1, 4)
         for ax, (label_name, score_val) in zip(axes, phases):
-            _draw_balance_bar(ax, score_val, label_name)
-        fig.subplots_adjust(left=0.01, right=0.99, top=0.78, bottom=0.22, wspace=0.08)
+            _draw_arc_gauge(ax, score_val, label_name)
+        fig.subplots_adjust(left=0.02, right=0.98, top=0.90, bottom=0.02, wspace=0.10)
         c.draw()
 
     def _draw_track_evolution(self, d, r):
@@ -2614,18 +2681,27 @@ class App(TelemetryTabMixin, CornersTabMixin, StintTabMixin, ctk.CTk):
         c=self._dth; c.clear(); ax=c.fig.add_subplot(111,facecolor=PANEL)
         ax.set_title(f"Tire Temps ({units.temp_label()})",color=TEXT,fontsize=13); ax.set_xlim(0,4); ax.set_ylim(0,3); ax.axis('off')
         pos={'LF':(0.5,2.2),'RF':(2.5,2.2),'LR':(0.5,0.2),'RR':(2.5,0.2)}
+        zone_lbl={'inner':'IN','mid':'CTR','outer':'OUT'}
+        cmap=matplotlib.colormaps['RdYlGn_r']
         for corner,(cx,cy) in pos.items():
             t=ts.get(corner,{})
             if not t: continue
             for i,z in enumerate(['inner','mid','outer']):
                 tv=t.get(z,75); norm=np.clip((tv-70)/40,0,1)
-                cmap=matplotlib.colormaps['RdYlGn_r']
-                rect=matplotlib.patches.Rectangle((cx+i*0.28-0.42,cy),0.28,0.5,facecolor=cmap(norm),edgecolor='#1A1A22',lw=0.5)
+                bx=cx+i*0.28-0.42
+                rect=matplotlib.patches.Rectangle((bx,cy),0.28,0.5,facecolor=cmap(norm),edgecolor='#1A1A22',lw=0.5)
                 ax.add_patch(rect)
-                ax.text(cx+i*0.28-0.28,cy+0.25,f"{tv:.0f}",ha='center',va='center',fontsize=9,color='white',fontweight='bold')
+                ax.text(bx+0.14,cy+0.38,zone_lbl[z],ha='center',va='center',fontsize=8,color='white',fontweight='bold')
+                ax.text(bx+0.14,cy+0.15,f"{tv:.0f}",ha='center',va='center',fontsize=9,color='white',fontweight='bold')
             ax.text(cx,cy+0.72,corner,ha='center',fontsize=13,color=TEXT,fontweight='bold')
             avg_c=t.get('avg',0)
-            ax.text(cx,cy-0.18,f"avg {units.fmt_temp(avg_c)}",ha='center',fontsize=10,color=DIM)
+            if avg_c and avg_c>0:
+                if 80<=avg_c<=100: avg_col=GREEN
+                elif (70<=avg_c<80) or (100<avg_c<=110): avg_col=YELLOW
+                else: avg_col=RED
+            else:
+                avg_col=DIM
+            ax.text(cx,cy-0.18,f"avg {units.fmt_temp(avg_c)}",ha='center',fontsize=10,color=avg_col,fontweight='bold')
         c.fig.tight_layout(pad=0.3); c.draw()
 
     def _compute_consistency_score(self) -> ConsistencyBreakdown | None:
