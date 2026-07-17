@@ -378,4 +378,21 @@ _CAR_CLASS_PROFILES = {
         "narrow tires. Setup changes have an outsized effect because there is so little "
         "overall grip. The driver's inputs matter far more than the setup — small setup "
         "changes that would be barely noticeable in a GT3 are very noticeable here. "
-        "Keep setup simple and predictable. Focus on
+        "Keep setup simple and predictable. Focus on balance and smooth inputs. "
+        "Common failure: over-camber causing the already-narrow tires to overheat."
+    ),
+    CarClass.DEFAULT: (
+        "General road-course car — setup priorities are balanced grip, predictable balance, "
+        "and appropriate wing for the track's speed demands. Start from the class baseline "
+        "and adjust from telemetry data."
+    ),
+}
+
+
+def car_class_profile_text(car_class: CarClass) -> str:
+    """
+    Return a paragraph describing what makes this car class unique from a setup
+    perspective. Used in AI setup builder prompts so Claude understands the car's
+    character before suggesting values.
+    """
+    return _CAR_CLASS_PROFILES.get(car_class, _CAR_CLASS_PROFILES[CarClass.DEFAULT])

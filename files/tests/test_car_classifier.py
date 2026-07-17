@@ -48,4 +48,10 @@ class TestLookupDicts:
         for cls in CarClass:
             assert cls in PRESSURE_TARGETS, f"Missing PRESSURE_TARGETS for {cls}"
 
-    def test_fuel_e
+    def test_fuel_effect_for_all_classes(self):
+        for cls in CarClass:
+            assert cls in FUEL_EFFECT_S_PER_KG, f"Missing FUEL_EFFECT for {cls}"
+
+    def test_pressure_targets_have_four_corners(self):
+        for cls, targets in PRESSURE_TARGETS.items():
+            assert len(targets) == 4, f"{cls} needs 4 pressure targets"
