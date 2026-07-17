@@ -196,4 +196,11 @@ class TestAIPromptWithCorners:
         from core.ai_advisor import _build_prompt
 
         rpt = AnalysisEngine().analyze(demo_data)
-        prompt = _build_prompt(rpt, demo_data.car_name, demo_data.tra
+        prompt = _build_prompt(rpt, demo_data.car_name, demo_data.track_name,
+                               None, None, None, None, None,
+                               corner_report=None)
+        # Prompt is a valid, non-trivial setup-advice request (now a JSON-only
+        # contract rather than the old "iRacing setup engineer" persona wording).
+        assert isinstance(prompt, str) and len(prompt) > 100
+        assert "JSON" in prompt
+        assert "Corner-by-Corner" not in prompt
