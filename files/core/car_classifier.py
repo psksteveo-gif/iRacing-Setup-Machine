@@ -129,7 +129,9 @@ _CAR_KEYWORDS = {
         'audirs3lms', 'audi_rs3', 'audirs3',
         'renaultcliocup', 'renault_clio',
         'bmwm2csr', 'bmw_m2_csr',
-        'cadillac_cts', 'cadillac cts', 'cts-v racecar', 'ctsvr',  # Cadillac CTS-V Racecar
+        # NOTE: The Cadillac CTS-V Racecar is a RWD V8 sports/touring car, NOT a
+        # front-wheel-drive TCR. Its keywords live under SPORTS_CAR below. Listing
+        # 'ctsvr' here caused 'cadillacctsvr' to match TCR first (substring match).
     ],
     CarClass.V8_SUPERCAR: [
         'v8supercar', 'v8_supercar', 'supercar',
@@ -194,7 +196,7 @@ _CAR_KEYWORDS = {
         'fr500s', 'fr_500s',
         'kiaoptima', 'kia_optima',
         'jettatdi', 'jetta_tdi',
-        'cadillacctsvr', 'cadillac_cts_vr',
+        'cadillacctsvr', 'cadillac_cts_vr', 'cadillac_cts', 'cts_v_racecar', 'ctsvr',
         'audi90gto', 'audi_90_gto',
         'astonmartin dbr9', 'aston_martin_dbr9',
     ],
@@ -202,13 +204,24 @@ _CAR_KEYWORDS = {
 
 
 def classify_car(car_name: str) -> CarClass:
-    """Classify a car name string into a CarClass."""
+    """Classify a car name string into a CarClass.
+
+    Uses longest-keyword-wins: among every keyword that appears in the
+    (normalised) car name, the longest, most specific one decides the class.
+    This prevents a short generic keyword in an earlier class from shadowing
+    a specific car defined in a later class (e.g. the generic 'gtp' keyword
+    must not swallow the historic 'nissangtpzxt' prototype, nor 'trucks'
+    swallow the off-road 'protrucks'). Ties fall to definition order.
+    """
     lower = car_name.lower().replace(' ', '_').replace('-', '_')
+    best_cls = CarClass.DEFAULT
+    best_len = 0
     for cls, keywords in _CAR_KEYWORDS.items():
         for kw in keywords:
-            if kw in lower:
-                return cls
-    return CarClass.DEFAULT
+            if kw in lower and len(kw) > best_len:
+                best_cls = cls
+                best_len = len(kw)
+    return best_cls
 
 
 # ── Class-specific analysis parameters ────────────────────────────────────
@@ -365,21 +378,4 @@ _CAR_CLASS_PROFILES = {
         "narrow tires. Setup changes have an outsized effect because there is so little "
         "overall grip. The driver's inputs matter far more than the setup — small setup "
         "changes that would be barely noticeable in a GT3 are very noticeable here. "
-        "Keep setup simple and predictable. Focus on balance and smooth inputs. "
-        "Common failure: over-camber causing the already-narrow tires to overheat."
-    ),
-    CarClass.DEFAULT: (
-        "General road-course car — setup priorities are balanced grip, predictable balance, "
-        "and appropriate wing for the track's speed demands. Start from the class baseline "
-        "and adjust from telemetry data."
-    ),
-}
-
-
-def car_class_profile_text(car_class: CarClass) -> str:
-    """
-    Return a paragraph describing what makes this car class unique from a setup
-    perspective. Used in AI setup builder prompts so Claude understands the car's
-    character before suggesting values.
-    """
-    return _CAR_CLASS_PROFILES.get(car_class, _CAR_CLASS_PROFILES[CarClass.DEFAULT])
+        "Keep setup simple and predictable. Focus on

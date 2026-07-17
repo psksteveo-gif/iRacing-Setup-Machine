@@ -2,7 +2,7 @@
 
 > Professional telemetry analysis and setup optimization for iRacing — powered by AI.
 
-![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue)
+![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue)
 ![License MIT](https://img.shields.io/badge/License-MIT-green)
 ![Platform Windows](https://img.shields.io/badge/Platform-Windows-lightgrey)
 
